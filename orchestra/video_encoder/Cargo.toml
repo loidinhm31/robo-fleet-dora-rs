@@ -1,0 +1,19 @@
+[package]
+name = "video_encoder"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dora-node-api = { workspace = true }
+eyre = "0.6"
+tracing = "0.1"
+image = { version = "0.25", features = ["jpeg", "png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+robo_rover_lib = { path = "../../robo_rover_lib" }
+
+[features]
+# Hardware encoding features (future)
+hardware-accel = []
+# h264-encoding = ["dep:openh264"]
+# ffmpeg = ["dep:ffmpeg-next"]

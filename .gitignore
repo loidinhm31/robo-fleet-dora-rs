@@ -1,5 +1,6 @@
-/target
-/models/vosk-model-self
-core/Cargo.lock
-core/target
-core/.idea
+# ONNX Runtime library (downloaded separately)
+onnxruntime-linux-x64-*/
+onnxruntime-*.tgz
+/venv
+/models/.cache/*
+/models/scripts/venv

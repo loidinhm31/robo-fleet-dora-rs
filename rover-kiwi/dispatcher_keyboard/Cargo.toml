@@ -1,0 +1,17 @@
+[package]
+name = "dispatcher_keyboard"
+version = "0.1.0"
+edition = "2021"
+description = "Central keyboard dispatcher for arm and rover control commands"
+
+[dependencies]
+# Workspace dependencies
+dora-node-api = { workspace = true }
+dora-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+eyre = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+robo_rover_lib = { path = "../../robo_rover_lib" }

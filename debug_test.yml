@@ -1,0 +1,9 @@
+nodes:
+  - id: dispatcher_keyboard
+    build: cargo build -p dispatcher_keyboard
+    path: target/debug/dispatcher_keyboard
+    args: local-keyboard
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - local_keyboard

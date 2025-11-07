@@ -1,0 +1,60 @@
+name = "4DOF Robotic Arm"
+dof = 4
+
+[[joint_limits]]
+min_angle = -3.14159
+max_angle = 3.14159
+max_velocity = 2.0
+max_acceleration = 4.0
+
+[[joint_limits]]
+min_angle = -1.5708
+max_angle = 1.5708
+max_velocity = 2.0
+max_acceleration = 4.0
+
+[[joint_limits]]
+min_angle = -2.0944
+max_angle = 2.0944
+max_velocity = 2.0
+max_acceleration = 4.0
+
+[[joint_limits]]
+min_angle = -3.14159
+max_angle = 3.14159
+max_velocity = 3.0
+max_acceleration = 6.0
+
+[kinematics]
+link_lengths = [0.0, 0.3, 0.25, 0.15]
+base_offset = [0.0, 0.0, 0.1]
+
+[[kinematics.dh_parameters]]
+a = 0.0
+alpha = 1.5708  # 90 degrees
+d = 0.1
+theta = 0.0
+
+[[kinematics.dh_parameters]]
+a = 0.3
+alpha = 0.0
+d = 0.0
+theta = 0.0
+
+[[kinematics.dh_parameters]]
+a = 0.25
+alpha = 0.0
+d = 0.0
+theta = 0.0
+
+[[kinematics.dh_parameters]]
+a = 0.15
+alpha = 0.0
+d = 0.0
+theta = 0.0
+
+[control]
+max_cartesian_velocity = 0.5
+max_cartesian_acceleration = 1.0
+position_tolerance = 0.001
+orientation_tolerance = 0.017  # ~1 degree

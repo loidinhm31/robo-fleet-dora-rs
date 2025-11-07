@@ -1,0 +1,20 @@
+[package]
+name = "sim_interface"
+version = "0.1.0"
+edition = "2021"
+description = "Simulation interface node for Unity WebSocket and mock simulation"
+
+[dependencies]
+# Existing dependencies
+dora-node-api = { workspace = true }
+dora-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+eyre = { workspace = true }
+tracing = { workspace = true }
+
+# Add SocketIO server
+tokio = { version = "1.24.2", features = ["full"] }
+
+robo_rover_lib = { path = "../../robo_rover_lib" }
+reqwest = { version = "0.12.22", features = ["json"] }

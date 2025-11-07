@@ -1,0 +1,15 @@
+[package]
+name = "performance_monitor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dora-node-api = { workspace = true }
+eyre = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+robo_rover_lib = { path = "../../robo_rover_lib" }
+chrono = "0.4"
+sysinfo = "0.31"
+log = "0.4.28"

@@ -1,0 +1,186 @@
+nodes:
+  # Audio capture - microphone input
+  - id: audio-capture
+    build: cargo build --release -p audio_capture
+    path: target/release/audio_capture
+    inputs:
+      tick: dora/timer/millis/50  # 20 Hz
+      audio_control: zenoh-bridge/audio_command
+    outputs:
+      - audio  # Float32 audio data
+    env:
+      SAMPLE_RATE: "16000"
+      CHANNELS: "1"
+      CHUNK_SIZE: "800"
+
+  # TTS - Kokoro local voice feedback
+  - id: kokoro-tts
+    build: cargo build --release -p kokoro_tts
+    path: target/release/kokoro_tts
+    inputs:
+      tts_command: zenoh-bridge/tts_command  # From Orchestra
+    env:
+      RUST_LOG: info
+      TTS_VOICE: "bf_emma"
+      TTS_VOLUME: "0.8"
+
+  # Audio playback - Speaker output (walkie-talkie)
+  - id: audio-playback
+    build: cargo build --release -p audio_playback
+    path: target/release/audio_playback
+    inputs:
+      audio: zenoh-bridge/audio_stream  # From Orchestra (Web UI mic)
+    env:
+      RUST_LOG: info
+      SAMPLE_RATE: "16000"
+      CHANNELS: "1"
+
+  # Performance monitor - Local system metrics
+  - id: performance-monitor
+    build: cargo build --release -p performance_monitor
+    path: target/release/performance_monitor
+    inputs:
+      tick: dora/timer/millis/5000
+    outputs:
+      - metrics  # SystemMetrics
+    env:
+      RUST_LOG: info
+
+  # GStreamer camera capture
+  - id: gst-camera
+    build: cargo build -p kornia_capture --release
+    path: target/release/kornia_capture
+    inputs:
+      tick: dora/timer/millis/33  # ~30 FPS
+      camera_control: zenoh-bridge/camera_command  # From Orchestra
+    outputs:
+      - frame  # Raw RGB8 frames
+    env:
+      SOURCE_TYPE: "webcam"
+      SOURCE_URI: "/dev/video0"
+      IMAGE_COLS: "640"
+      IMAGE_ROWS: "480"
+      SOURCE_FPS: "30"
+
+  # Object detector - YOLOv12n inference
+  - id: object-detector
+    build: cargo build --release -p object_detector
+    path: target/release/object_detector
+    inputs:
+      frame: gst-camera/frame  # RGB8 from local camera
+    outputs:
+      - detections  # DetectionFrame with bounding boxes
+    env:
+      RUST_LOG: info
+      MODEL_PATH: "../models/.cache/yolo/yolo12n.onnx"
+      CONFIDENCE_THRESHOLD: "0.5"
+      NMS_THRESHOLD: "0.4"
+      TARGET_CLASSES: ""
+      ORT_DYLIB_PATH: "/usr/local/lib/libonnxruntime.so"
+
+  # Object tracker - SORT algorithm (moved from orchestra)
+  - id: object-tracker
+    build: cargo build --release -p object_tracker
+    path: target/release/object_tracker
+    inputs:
+      detections: object-detector/detections
+      tracking_command: zenoh-bridge/tracking_command  # From Orchestra
+    outputs:
+      - tracked_detections  # DetectionFrame with tracking IDs
+      - tracking_telemetry  # Tracking state and target info
+    env:
+      RUST_LOG: info
+      MAX_TRACKING_AGE: "30"
+      MIN_HITS: "3"
+      IOU_THRESHOLD: "0.3"
+
+  - id: visual-servo-controller
+    build: cargo build --release -p visual_servo_controller
+    path: target/release/visual_servo_controller
+    inputs:
+      tracking_telemetry: object-tracker/tracking_telemetry
+    outputs:
+      - servo_command
+      - servo_telemetry
+    env:
+      RUST_LOG: info
+      LATERAL_PID_KP: "1.5"
+      LATERAL_PID_KI: "0.0"
+      LATERAL_PID_KD: "0.2"
+      LONGITUDINAL_PID_KP: "0.8"
+      LONGITUDINAL_PID_KI: "0.0"
+      LONGITUDINAL_PID_KD: "0.15"
+      MIN_DISTANCE: "1.0"
+      MAX_VELOCITY: "0.5"
+      MAX_ANGULAR_VELOCITY: "1.0"
+      TARGET_BBOX_HEIGHT: "0.3"
+      DEAD_ZONE: "0.05"
+
+  # Arm controller
+  - id: arm-controller
+    build: cargo build --release -p arm_controller
+    path: target/release/arm_controller
+    inputs:
+      arm_command: zenoh-bridge/arm_command  # From Orchestra via Zenoh
+      arm_telemetry: sim-interface/arm_telemetry
+    outputs:
+      - processed_arm_command
+    env:
+      RUST_LOG: info
+      ARM_CONFIG: config/arm_6dof.toml
+
+  # Rover controller
+  - id: rover-controller
+    build: cargo build --release -p rover_controller
+    path: target/release/rover_controller
+    inputs:
+      rover_command: zenoh-bridge/rover_command  # From Orchestra via Zenoh
+      servo_command: visual-servo-controller/servo_command
+      rover_telemetry: sim-interface/rover_telemetry
+    outputs:
+      - processed_rover_command
+    env:
+      RUST_LOG: info
+
+  # Simulation interface
+  - id: sim-interface
+    build: cargo build --release -p sim_interface
+    path: target/release/sim_interface
+    inputs:
+      arm_command: arm-controller/processed_arm_command
+      rover_command: rover-controller/processed_rover_command
+    outputs:
+      - rover_telemetry
+      - arm_telemetry
+    env:
+      RUST_LOG: info
+
+  # Zenoh bridge - On-rover bridge
+  - id: zenoh-bridge
+    build: cargo build --release -p rover_zenoh_bridge
+    path: target/release/rover_zenoh_bridge
+    inputs:
+      # RAW data TO publish to Orchestra (telemetry OUT)
+      video_frame: gst-camera/frame              # RGB8
+      audio_frame: audio-capture/audio           # Float32 for STT
+      rover_telemetry: sim-interface/rover_telemetry
+      arm_telemetry: sim-interface/arm_telemetry
+      servo_telemetry: visual-servo-controller/servo_telemetry
+      performance_metrics: performance-monitor/metrics
+      # Detection and tracking data (moved from orchestra)
+      tracked_detections: object-tracker/tracked_detections  # For web UI display
+      tracking_telemetry: object-tracker/tracking_telemetry  # For web UI display
+    outputs:
+      # Commands and processed results FROM Orchestra (commands IN)
+      - camera_command      # Camera on/off
+      - audio_command       # Audio on/off
+      - rover_command       # Movement commands
+      - arm_command         # Arm commands
+      - tracking_command    # Tracking commands from web UI (moved from orchestra)
+      - tts_command         # TTS commands for local playback
+      - audio_stream        # Audio stream from web UI
+    env:
+      RUST_LOG: info
+      ZENOH_MODE: "peer"
+      ENTITY_ID: "rover-kiwi"  # This rover's unique ID in the fleet
+      ZENOH_CONFIG: "/home/loidinh/ws/robo-rover-dora/rover-kiwi/zenoh_bridge/zenoh_config.json5"

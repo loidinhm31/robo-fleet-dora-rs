@@ -1,0 +1,11 @@
+[package]
+name = "kornia_capture"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dora-node-api = { workspace = true }
+robo_rover_lib = { path = "../../robo_rover_lib" }
+serde_json = "1.0"
+kornia-io = { version = "0.1.10-rc.3", features = ["gstreamer"] }
+tracing = { workspace = true }

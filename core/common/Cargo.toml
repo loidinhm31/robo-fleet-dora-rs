@@ -1,9 +1,0 @@
-[package]
-name = "july-common"
-version = "0.1.0"
-
-[dependencies]
-july-lib = { path = "../lib" }
-tts = "0.25.0"
-cpal = "0.14.0"
-dasp = "0.11"

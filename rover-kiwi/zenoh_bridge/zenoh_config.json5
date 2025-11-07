@@ -1,0 +1,30 @@
+// Zenoh Configuration for Rover-Kiwi (Raspberry Pi 5)
+// Connects to orchestra workstation via peer mode or router
+{
+  "mode": "peer",  // peer mode for direct P2P with orchestra
+
+  // Connect to specific orchestra IP
+  "connect": {
+    "endpoints": [
+      "tcp/192.168.1.77:7447"        // Orchestra local network IP
+    ]
+  },
+
+  "transport": {
+    "link": {
+      "tx": {
+        "lease": 10000,       // 10s keep-alive
+        "keep_alive": 4,
+        "batch_size": 8192    // Smaller batch for Raspberry Pi
+      }
+    }
+  },
+
+  "scouting": {
+    "multicast": {
+      "enabled": true,        // Enable multicast discovery on LAN
+      "address": "224.0.0.224:7446",
+      "interface": "auto"
+    }
+  }
+}

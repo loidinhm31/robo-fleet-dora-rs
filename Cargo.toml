@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+    # Shared library
+    "robo_rover_lib",
+
+    # Orchestra (Workstation) - Fleet control hub
+    "orchestra/web_bridge",
+    "rover-kiwi/object_detector",
+    "rover-kiwi/object_tracker",
+    "orchestra/speech_recognizer",
+    "orchestra/command_parser",
+    "orchestra/audio_converter",
+    "orchestra/video_encoder",
+    "orchestra/sim_interface",
+    "orchestra/zenoh_bridge",
+
+    # Rover-kiwi - On-robot nodes
+    "rover-kiwi/rover_controller",
+    "rover-kiwi/arm_controller",
+    "rover-kiwi/kornia_capture",
+    "rover-kiwi/audio_capture",
+    "rover-kiwi/audio_playback",
+    "rover-kiwi/visual_servo_controller",
+    "rover-kiwi/kokoro_tts",
+    "rover-kiwi/performance_monitor",
+    "rover-kiwi/zenoh_bridge",
+    "rover-kiwi/dispatcher_keyboard",
+]
+
+[workspace.dependencies]
+# Shared dependencies across all workspace members
+dora-node-api = "0.3.13"
+dora-core = "0.3.13"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+nalgebra = "0.33"
+eyre = "0.6.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1.0", features = ["v4"] }
+zenoh = "1.0"
+zenoh-config = "1.0"

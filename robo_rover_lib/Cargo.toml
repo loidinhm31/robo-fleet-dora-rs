@@ -1,0 +1,17 @@
+[package]
+name = "robo_rover_lib"
+version = "0.1.0"
+edition = "2021"
+description = "Shared library for robotic controller types and utilities"
+
+[dependencies]
+# Use workspace dependencies
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+nalgebra = { workspace = true }
+eyre = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+chrono = "0.4"

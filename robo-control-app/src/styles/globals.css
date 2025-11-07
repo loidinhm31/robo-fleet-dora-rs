@@ -1,0 +1,174 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Glassmorphic Cube Theme - Light Mode */
+    --background: 200 100% 97%;
+    --foreground: 220 20% 20%;
+    --card: 0 0% 100%;
+    --card-foreground: 220 20% 20%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 20% 20%;
+
+    /* Primary - Cyan/Blue */
+    --primary: 189 94% 43%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Secondary - Light cyan for cards */
+    --secondary: 186 77% 77%;
+    --secondary-foreground: 220 20% 20%;
+
+    /* Muted - Glassmorphic background */
+    --muted: 200 50% 95%;
+    --muted-foreground: 220 15% 50%;
+
+    /* Accent - Orange/Yellow gradient */
+    --accent: 24 95% 60%;
+    --accent-foreground: 0 0% 100%;
+
+    /* Destructive - Keep red for errors */
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 200 30% 85%;
+    --input: 200 30% 90%;
+    --ring: 189 94% 43%;
+
+    /* Custom colors for gradient cubes */
+    --cube-blue: 189 94% 43%;
+    --cube-cyan: 186 77% 77%;
+    --cube-orange: 24 95% 60%;
+    --cube-yellow: 45 93% 67%;
+    --cube-pink: 340 75% 65%;
+
+    --radius: 1.5rem;
+    --font-sans: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+    --font-mono: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, monospace;
+  }
+
+  .dark {
+    /* Dark mode with same glassmorphic aesthetic */
+    --background: 220 25% 15%;
+    --foreground: 0 0% 98%;
+    --card: 220 20% 20%;
+    --card-foreground: 0 0% 98%;
+    --popover: 220 20% 20%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 189 94% 43%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 186 50% 35%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 220 20% 25%;
+    --muted-foreground: 220 10% 65%;
+    --accent: 24 95% 60%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 62% 50%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 220 20% 30%;
+    --input: 220 20% 25%;
+    --ring: 189 94% 43%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+
+  /* Smooth scrolling */
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+@layer components {
+  /* Glassmorphic card style */
+  .glass-card {
+    @apply backdrop-blur-xl bg-white/10 border border-white/20 shadow-2xl;
+  }
+
+  .glass-card-light {
+    @apply backdrop-blur-lg bg-white/40 border border-white/30 shadow-xl;
+  }
+
+  /* Gradient button with orange-yellow theme */
+  .btn-gradient {
+    @apply bg-gradient-to-r from-orange-400 via-orange-500 to-yellow-500
+    text-white font-bold shadow-lg hover:shadow-xl
+    transition-all duration-300 hover:scale-105;
+  }
+
+  /* Gradient button with cyan-blue theme */
+  .btn-gradient-cyan {
+    @apply bg-gradient-to-r from-cyan-400 via-cyan-500 to-blue-500
+    text-white font-bold shadow-lg hover:shadow-xl
+    transition-all duration-300 hover:scale-105;
+  }
+
+  /* Gradient button with orange theme (for TTS) */
+  .btn-gradient-orange {
+    @apply bg-gradient-to-br from-orange-500 via-orange-600 to-amber-500
+    text-white font-bold shadow-lg hover:shadow-xl
+    transition-all duration-300 hover:scale-105;
+  }
+
+  /* Gradient button with green theme (for microphone) */
+  .btn-gradient-green {
+    @apply bg-gradient-to-br from-green-500 via-green-600 to-emerald-500
+    text-white font-bold shadow-lg hover:shadow-xl
+    transition-all duration-300 hover:scale-105;
+  }
+
+  /* Cube decorations - floating geometric elements */
+  .cube-decoration {
+    @apply absolute w-20 h-20 opacity-20 pointer-events-none rounded-2xl;
+    transform: rotate(45deg);
+    animation: float 6s ease-in-out infinite;
+  }
+
+  @keyframes float {
+    0%, 100% { transform: translateY(0) rotate(45deg); }
+    50% { transform: translateY(-20px) rotate(45deg); }
+  }
+
+  /* Animated gradient background */
+  .gradient-bg {
+    @apply bg-gradient-to-br from-blue-900 via-purple-900 to-pink-800;
+    background-size: 200% 200%;
+    animation: gradient-shift 15s ease infinite;
+  }
+
+  @keyframes gradient-shift {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+  }
+
+  /* Frosted glass input fields */
+  .glass-input {
+    @apply backdrop-blur-md bg-white/10 border border-white/20
+    text-white placeholder:text-white/50
+    focus:bg-white/15 focus:border-white/30
+    transition-all duration-300;
+  }
+
+  /* Glass slider/range input */
+  .glass-slider {
+    @apply h-3 bg-white/10 rounded-full appearance-none cursor-pointer;
+  }
+
+  .glass-slider::-webkit-slider-thumb {
+    @apply appearance-none w-6 h-6 rounded-full bg-gradient-to-r from-cyan-400 to-blue-500 shadow-lg cursor-pointer;
+  }
+
+  .glass-slider::-moz-range-thumb {
+    @apply w-6 h-6 rounded-full bg-gradient-to-r from-cyan-400 to-blue-500 shadow-lg cursor-pointer border-0;
+  }
+}

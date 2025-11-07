@@ -1,0 +1,18 @@
+[package]
+name = "orchestra_zenoh_bridge"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+zenoh = { workspace = true }
+zenoh-config = { workspace = true }
+dora-node-api = { workspace = true }
+robo_rover_lib = { path = "../../robo_rover_lib" }
+eyre = { workspace = true }
+tracing = { workspace = true }
+tokio = { version = "1", features = ["full"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+arrow = "53"
+flume = "0.11"
+futures = "0.3"

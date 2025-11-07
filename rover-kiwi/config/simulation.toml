@@ -1,0 +1,57 @@
+# Unity WebSocket connection settings
+unity_websocket_port = 4567
+
+# Simulation update rate in Hz
+update_rate_hz = 60.0
+
+# Physics simulation timestep in seconds
+physics_timestep = 0.016667  # ~60 FPS
+
+[networking]
+# Timeout for Unity connection attempts (seconds)
+connection_timeout = 5.0
+
+# Reconnection attempts before giving up
+max_reconnection_attempts = -1  # -1 means infinite
+
+# Time between reconnection attempts (seconds)
+reconnection_interval = 2.0
+
+[mock_simulation]
+# Settings for mock simulation when Unity is not available
+enabled = true
+
+# Mock simulation update rate
+mock_update_rate_hz = 30.0
+
+# Simulation of joint movement response time
+joint_response_time = 0.1
+
+# Maximum joint velocity in mock mode (rad/s)
+max_joint_velocity = 2.0
+
+[physics]
+# Gravity vector [x, y, z] in m/s²
+gravity = [0.0, 0.0, -9.81]
+
+# Default mass of links (kg)
+default_link_mass = 1.0
+
+# Default friction coefficients
+static_friction = 0.6
+dynamic_friction = 0.4
+
+[visualization]
+# Enable trajectory visualization
+show_trajectory = true
+
+# Trajectory history length (number of points)
+trajectory_history_length = 100
+
+# Update rate for visualization (Hz)
+visualization_update_rate = 30.0
+
+# Colors for different visualization elements (RGBA)
+arm_color = [0.8, 0.4, 0.2, 1.0]
+target_color = [0.2, 0.8, 0.2, 1.0]
+trajectory_color = [0.2, 0.4, 0.8, 0.7]

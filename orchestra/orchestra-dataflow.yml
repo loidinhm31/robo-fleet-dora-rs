@@ -1,0 +1,170 @@
+nodes:
+  # Orchestra Zenoh Bridge - Connects orchestra dataflow to Zenoh network
+  # Subscribes to selected rover's telemetry, publishes commands back
+  - id: orchestra-bridge
+    build: cargo build --release -p orchestra_zenoh_bridge
+    path: target/release/orchestra_zenoh_bridge
+    inputs:
+      # Processed data TO send to selected rover via Zenoh
+      tracking_command_parser: command-parser/tracking_command
+      rover_command_parser: command-parser/rover_command
+      camera_control_parser: command-parser/camera_control
+      tts_command_parser: command-parser/tts_command
+      tts_command_web: web-bridge/tts_command
+      rover_command_web: web-bridge/rover_command
+      arm_command_web: web-bridge/arm_command
+      tracking_command_web: web-bridge/tracking_command
+      camera_command_web: web-bridge/camera_command
+      audio_command_web: web-bridge/audio_command
+      audio_stream_web: web-bridge/audio_stream
+      voice_audio_web: web-bridge/voice_command_audio
+      fleet_subscription_command: web-bridge/fleet_subscription_command
+      fleet_select_command: web-bridge/fleet_select_command
+    outputs:
+      # Data FROM active rovers via Zenoh (subscribers)
+      - video_frame         # RGB8 frames from rover camera (with entity_id in metadata)
+      - audio_frame         # Float32 audio from rover microphone (with entity_id in metadata)
+      - rover_telemetry     # Rover position/velocity telemetry (with entity_id)
+      - arm_telemetry       # Arm joint positions (with entity_id)
+      - servo_telemetry     # Visual servoing telemetry (with entity_id)
+      - tracked_detections  # DetectionFrame with tracking IDs from rover (with entity_id)
+      - tracking_telemetry  # Object tracking telemetry from rover (with entity_id)
+      - performance_metrics # System metrics from rover (with entity_id)
+    env:
+      RUST_LOG: info
+      ZENOH_MODE: "peer"
+      ENTITY_ID: "orchestra"                    # This node's ID
+      ACTIVE_ROVERS: "rover-kiwi"               # Comma-separated list of rovers to subscribe to initially
+      ZENOH_CONFIG: "/home/loidinh/ws/robo-rover-dora/orchestra/zenoh_bridge/zenoh_config.json5"
+      VIDEO_WIDTH: "640"
+      VIDEO_HEIGHT: "480"
+      AUDIO_SAMPLE_RATE: "16000"
+      AUDIO_CHANNELS: "1"
+
+  # Speech recognizer - Whisper.cpp STT
+  - id: speech-recognizer
+    build: cargo build --release -p speech_recognizer
+    path: target/release/speech_recognizer
+    inputs:
+      audio_rover: orchestra-bridge/audio_frame     # From rover microphone
+      audio_web: web-bridge/voice_command_audio      # From web UI microphone
+    outputs:
+      - transcription  # SpeechTranscription
+    env:
+      RUST_LOG: info
+      WHISPER_MODEL_PATH: "../models/.cache/ggml/ggml-tiny.bin"
+      SAMPLE_RATE: "16000"
+      BUFFER_DURATION_MS: "5000"
+      CONFIDENCE_THRESHOLD: "0.5"
+      ENERGY_THRESHOLD: "0.02"
+
+  # Command parser - NLU with pattern matching
+  - id: command-parser
+    build: cargo build --release -p command_parser
+    path: target/release/command_parser
+    inputs:
+      text: speech-recognizer/transcription
+    outputs:
+      - rover_command     # RoverCommand from parsed intent
+      - tracking_command  # TrackingCommand for object tracking
+      - camera_control    # CameraControl for camera on/off
+      - feedback          # String feedback for web UI
+      - tts_command       # TtsCommand for voice feedback
+    env:
+      RUST_LOG: info
+      CONFIDENCE_THRESHOLD: "0.7"
+  
+  # Audio converter - Float32 to Int16LE (for web streaming)
+  - id: audio-converter
+    build: cargo build --release -p audio_converter
+    path: target/release/audio_converter
+    inputs:
+      audio_input: orchestra-bridge/audio_frame  # Float32 audio from rover
+    outputs:
+      - audio_output  # Int16LE PCM
+    env:
+      RUST_LOG: info
+      OUTPUT_FORMAT: "int16"
+      SAMPLE_RATE: "16000"
+      CHANNELS: "1"
+
+  # Video encoder - RGB8 to JPEG (for web streaming)
+  - id: video-encoder
+    build: cargo build --release -p video_encoder
+    path: target/release/video_encoder
+    inputs:
+      video_frame: orchestra-bridge/video_frame  # RGB8 from rover
+    outputs:
+      - encoded_frame  # JPEG binary data
+    env:
+      RUST_LOG: info
+      JPEG_QUALITY: "80"
+      IMAGE_WIDTH: "640"
+      IMAGE_HEIGHT: "480"
+
+  # Web bridge - Fleet control with entity selection
+  - id: web-bridge
+    build: cargo build --release -p web_bridge
+    path: target/release/web_bridge
+    inputs:
+      # Media streams (encoded data for web clients)
+      video_frame: video-encoder/encoded_frame     # JPEG from video-encoder
+      audio_frame: audio-converter/audio_output    # Int16LE PCM from audio-converter
+
+      # Telemetry from selected rover (via orchestra-bridge)
+      rover_telemetry: orchestra-bridge/rover_telemetry
+      arm_telemetry: orchestra-bridge/arm_telemetry
+      servo_telemetry: orchestra-bridge/servo_telemetry
+      performance_metrics: orchestra-bridge/performance_metrics
+
+      # Processed data (from rovers via orchestra-bridge)
+      tracked_detections: orchestra-bridge/tracked_detections
+      tracking_telemetry: orchestra-bridge/tracking_telemetry
+      transcription: speech-recognizer/transcription
+      command_feedback: command-parser/feedback
+    outputs:
+      # Commands to selected rover (via orchestra-bridge)
+      - rover_command
+      - arm_command
+      - tracking_command
+      - camera_command
+      - audio_command
+      - tts_command
+      - audio_stream          # Direct audio to rover speakers
+      - voice_command_audio   # Audio for STT processing
+      - fleet_subscription_command  # Fleet subscription management (activate/deactivate rovers)
+      - fleet_select_command        # Fleet selection (which rover receives commands)
+    env:
+      RUST_LOG: info
+
+      # Mode
+      MODE: "orchestra"                  # Orchestra mode (no local Dora nodes)
+      ZENOH_ENABLED: "false"             # Don't use Zenoh in web_bridge (orchestra-bridge handles it)
+
+      # Network Configuration
+      BIND_ADDRESS: "0.0.0.0"
+      SOCKET_IO_PORT: "3030"
+
+      # Authentication
+      AUTH_USERNAME: "admin"
+      AUTH_PASSWORD: "password"
+
+      # CORS
+      ALLOWED_ORIGINS: "http://localhost:1420,http://localhost:3000"
+
+      # Rate Limiting
+      RATE_LIMIT_AUTH_PER_MINUTE: "5"
+      RATE_LIMIT_COMMANDS_PER_SECOND: "100"
+
+      # Input Validation
+      MAX_TTS_TEXT_LENGTH: "1000"
+      MAX_AUDIO_SAMPLES_PER_MESSAGE: "16000"
+      MAX_WHEEL_VELOCITY: "2.0"
+
+      # Security
+      ENABLE_AUDIT_LOGGING: "true"
+      LOG_AUTH_ATTEMPTS: "true"
+
+      # Fleet Management
+      SELECTED_ENTITY_ID: "rover-kiwi"   # Default selected rover
+      FLEET_ROSTER: "rover-kiwi,rover-a,rover-b"

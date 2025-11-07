@@ -1,0 +1,691 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="ALL" />
+  </component>
+  <component name="CargoProjects">
+    <cargoProject FILE="$PROJECT_DIR$/Cargo.toml">
+      <package file="$PROJECT_DIR$/rover-kiwi/arm_controller">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/rover-kiwi/audio_capture">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/orchestra/audio_converter">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/rover-kiwi/audio_playback">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/orchestra/command_parser">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/rover-kiwi/dispatcher_keyboard">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/rover-kiwi/kokoro_tts">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/rover-kiwi/kornia_capture">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/orchestra/object_detector">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/orchestra/object_tracker">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/orchestra/zenoh_bridge">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/rover-kiwi/performance_monitor">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/robo_rover_lib">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/rover-kiwi/rover_controller">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/rover-kiwi/zenoh_bridge">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/orchestra/sim_interface">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/orchestra/speech_recognizer">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/orchestra/video_encoder">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/rover-kiwi/visual_servo_controller">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/orchestra/web_bridge">
+        <feature name="default" enabled="true" />
+      </package>
+    </cargoProject>
+    <cargoProject FILE="$PROJECT_DIR$/robo-control-app/src-tauri/Cargo.toml">
+      <package file="$PROJECT_DIR$/robo-control-app/src-tauri">
+        <feature name="default" enabled="true" />
+      </package>
+    </cargoProject>
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="c826e566-ae53-4371-8a1b-6e725a1e3daf" name="Changes" comment="Implement replacement for zenoh">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Cargo.lock" beforeDir="false" afterPath="$PROJECT_DIR$/Cargo.lock" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Cargo.toml" beforeDir="false" afterPath="$PROJECT_DIR$/Cargo.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/models/scripts/download_kokoro_models.sh" beforeDir="false" afterPath="$PROJECT_DIR$/models/scripts/download_kokoro_models.sh" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/orchestra/orchestra-dataflow.yml" beforeDir="false" afterPath="$PROJECT_DIR$/orchestra/orchestra-dataflow.yml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/orchestra/sim_interface/src/main.rs" beforeDir="false" afterPath="$PROJECT_DIR$/orchestra/sim_interface/src/main.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/orchestra/web_bridge/src/main.rs" beforeDir="false" afterPath="$PROJECT_DIR$/orchestra/web_bridge/src/main.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/orchestra/zenoh_bridge/Cargo.toml" beforeDir="false" afterPath="$PROJECT_DIR$/orchestra/zenoh_bridge/Cargo.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/orchestra/zenoh_bridge/src/main.rs" beforeDir="false" afterPath="$PROJECT_DIR$/orchestra/zenoh_bridge/src/main.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/robo-control-app/src/components/organisms/FleetSelector.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/robo-control-app/src/components/organisms/FleetSelector.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/robo_rover_lib/src/types/arm_telemetry.rs" beforeDir="false" afterPath="$PROJECT_DIR$/robo_rover_lib/src/types/arm_telemetry.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/robo_rover_lib/src/types/detection_types.rs" beforeDir="false" afterPath="$PROJECT_DIR$/robo_rover_lib/src/types/detection_types.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/robo_rover_lib/src/types/fleet_types.rs" beforeDir="false" afterPath="$PROJECT_DIR$/robo_rover_lib/src/types/fleet_types.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/robo_rover_lib/src/types/performance_types.rs" beforeDir="false" afterPath="$PROJECT_DIR$/robo_rover_lib/src/types/performance_types.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/robo_rover_lib/src/types/rover_types.rs" beforeDir="false" afterPath="$PROJECT_DIR$/robo_rover_lib/src/types/rover_types.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/robo_rover_lib/src/types/video_types.rs" beforeDir="false" afterPath="$PROJECT_DIR$/robo_rover_lib/src/types/video_types.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/robo_rover_lib/src/utils/tracing.rs" beforeDir="false" afterPath="$PROJECT_DIR$/robo_rover_lib/src/utils/tracing.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/rover-kiwi/kokoro_tts/src/main.rs" beforeDir="false" afterPath="$PROJECT_DIR$/rover-kiwi/kokoro_tts/src/main.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/rover-kiwi/zenoh_bridge/src/main.rs" beforeDir="false" afterPath="$PROJECT_DIR$/rover-kiwi/zenoh_bridge/src/main.rs" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="FileTemplateManagerImpl">
+    <option name="RECENT_TEMPLATES">
+      <list>
+        <option value="Rust File" />
+      </list>
+    </option>
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+    <option name="RESET_MODE" value="SOFT" />
+  </component>
+  <component name="MacroExpansionManager">
+    <option name="directoryName" value="YxQ1BJwb" />
+  </component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 0
+}</component>
+  <component name="ProjectId" id="2yxBoc63e3rLpyZlhbf2HJ5gQts" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.rust.reset.selective.auto.import&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;main&quot;,
+    &quot;ignore.virus.scanning.warn.message&quot;: &quot;true&quot;,
+    &quot;last_opened_file_path&quot;: &quot;/home/loidinh/ws/alie-center&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;npm.dev.executor&quot;: &quot;Run&quot;,
+    &quot;org.rust.cargo.project.model.PROJECT_DISCOVERY&quot;: &quot;true&quot;,
+    &quot;org.rust.cargo.project.model.impl.CargoExternalSystemProjectAware.subscribe.first.balloon&quot;: &quot;&quot;,
+    &quot;prettierjs.PrettierConfiguration.Package&quot;: &quot;G:\\ws\\robo-rover-dora\\robo-rover-app\\node_modules\\prettier&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;preferences.pluginManager&quot;,
+    &quot;ts.external.directory.path&quot;: &quot;/home/loidinh/ws/robo-rover-dora/robo-control-app/node_modules/typescript/lib&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
+  }
+}</component>
+  <component name="RecentsManager">
+    <key name="CopyFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/robo-control-app/src/components/pages" />
+      <recent name="$PROJECT_DIR$/robo-control-app/src/types" />
+      <recent name="$PROJECT_DIR$/robo-control-app" />
+      <recent name="$PROJECT_DIR$/robo-control-app/src" />
+      <recent name="$PROJECT_DIR$/robo-control-app/src/components" />
+    </key>
+    <key name="MoveFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/models/.cache" />
+      <recent name="$PROJECT_DIR$/rover-kiwi" />
+      <recent name="$PROJECT_DIR$/orchestra" />
+      <recent name="$PROJECT_DIR$/models/scripts" />
+      <recent name="$PROJECT_DIR$/models/.cache/yolo" />
+    </key>
+  </component>
+  <component name="RunManager">
+    <configuration name="dev" type="js.build_tools.npm" temporary="true" nameIsGenerated="true">
+      <package-json value="$PROJECT_DIR$/robo-control-app/package.json" />
+      <command value="run" />
+      <scripts>
+        <script value="dev" />
+      </scripts>
+      <node-interpreter value="project" />
+      <envs />
+      <method v="2" />
+    </configuration>
+    <recent_temporary>
+      <list>
+        <item itemvalue="npm.dev" />
+      </list>
+    </recent_temporary>
+  </component>
+  <component name="RustProjectSettings">
+    <option name="toolchainHomeDirectory" value="$USER_HOME$/.cargo/bin" />
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="c826e566-ae53-4371-8a1b-6e725a1e3daf" name="Changes" comment="" />
+      <created>1750766519578</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1750766519578</updated>
+      <workItem from="1750766520772" duration="19916000" />
+      <workItem from="1750902328997" duration="14331000" />
+      <workItem from="1750936869468" duration="2274000" />
+      <workItem from="1751282916828" duration="18000" />
+      <workItem from="1751620814028" duration="50371000" />
+      <workItem from="1751736132594" duration="12521000" />
+      <workItem from="1751783998379" duration="28961000" />
+      <workItem from="1752380464290" duration="17154000" />
+      <workItem from="1755416527752" duration="61000" />
+      <workItem from="1755918903192" duration="1622000" />
+      <workItem from="1756051145484" duration="1058000" />
+      <workItem from="1760536984295" duration="53180000" />
+      <workItem from="1761302632999" duration="34633000" />
+      <workItem from="1761529464543" duration="14378000" />
+      <workItem from="1761578712934" duration="5855000" />
+      <workItem from="1761586393901" duration="636000" />
+      <workItem from="1761589971710" duration="495000" />
+      <workItem from="1761607229640" duration="2838000" />
+      <workItem from="1761614561653" duration="7373000" />
+      <workItem from="1761624055501" duration="1160000" />
+      <workItem from="1761718208743" duration="8662000" />
+      <workItem from="1761752510959" duration="396000" />
+      <workItem from="1761795187827" duration="10002000" />
+      <workItem from="1761825326698" duration="7250000" />
+      <workItem from="1761870587382" duration="29474000" />
+      <workItem from="1761919898117" duration="6569000" />
+      <workItem from="1761931651584" duration="21345000" />
+      <workItem from="1761987131056" duration="13065000" />
+      <workItem from="1762003043033" duration="16475000" />
+      <workItem from="1762059527991" duration="10146000" />
+      <workItem from="1762070592640" duration="1934000" />
+      <workItem from="1762072906607" duration="19763000" />
+      <workItem from="1762134636763" duration="30499000" />
+      <workItem from="1762226445834" duration="2986000" />
+      <workItem from="1762229519825" duration="2882000" />
+      <workItem from="1762255269809" duration="15509000" />
+      <workItem from="1762306951956" duration="17617000" />
+      <workItem from="1762339539577" duration="709000" />
+      <workItem from="1762344276002" duration="18095000" />
+      <workItem from="1762390941185" duration="4442000" />
+    </task>
+    <task id="LOCAL-00003" summary="Refactor process command and telemetry">
+      <option name="closed" value="true" />
+      <created>1751708625819</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1751708625819</updated>
+    </task>
+    <task id="LOCAL-00004" summary="Implement Web control">
+      <option name="closed" value="true" />
+      <created>1751708732819</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1751708732819</updated>
+    </task>
+    <task id="LOCAL-00005" summary="Remove unnecessary files">
+      <option name="closed" value="true" />
+      <created>1751993025479</created>
+      <option name="number" value="00005" />
+      <option name="presentableId" value="LOCAL-00005" />
+      <option name="project" value="LOCAL" />
+      <updated>1751993025479</updated>
+    </task>
+    <task id="LOCAL-00006" summary="Implement Web control app">
+      <option name="closed" value="true" />
+      <created>1751993873458</created>
+      <option name="number" value="00006" />
+      <option name="presentableId" value="LOCAL-00006" />
+      <option name="project" value="LOCAL" />
+      <updated>1751993873458</updated>
+    </task>
+    <task id="LOCAL-00007" summary="Implement Web control app">
+      <option name="closed" value="true" />
+      <created>1751994209418</created>
+      <option name="number" value="00007" />
+      <option name="presentableId" value="LOCAL-00007" />
+      <option name="project" value="LOCAL" />
+      <updated>1751994209418</updated>
+    </task>
+    <task id="LOCAL-00008" summary="Implement Web control app">
+      <option name="closed" value="true" />
+      <created>1751994270360</created>
+      <option name="number" value="00008" />
+      <option name="presentableId" value="LOCAL-00008" />
+      <option name="project" value="LOCAL" />
+      <updated>1751994270360</updated>
+    </task>
+    <task id="LOCAL-00009" summary="Add keyboard function">
+      <option name="closed" value="true" />
+      <created>1751995136825</created>
+      <option name="number" value="00009" />
+      <option name="presentableId" value="LOCAL-00009" />
+      <option name="project" value="LOCAL" />
+      <updated>1751995136825</updated>
+    </task>
+    <task id="LOCAL-00010" summary="Clear source">
+      <option name="closed" value="true" />
+      <created>1752380945622</created>
+      <option name="number" value="00010" />
+      <option name="presentableId" value="LOCAL-00010" />
+      <option name="project" value="LOCAL" />
+      <updated>1752380945622</updated>
+    </task>
+    <task id="LOCAL-00011" summary="Try to transfer data in websocket with Apache Arrow">
+      <option name="closed" value="true" />
+      <created>1752509510650</created>
+      <option name="number" value="00011" />
+      <option name="presentableId" value="LOCAL-00011" />
+      <option name="project" value="LOCAL" />
+      <updated>1752509510650</updated>
+    </task>
+    <task id="LOCAL-00012" summary="Update for arm controller base on LeKiwi">
+      <option name="closed" value="true" />
+      <created>1761244333553</created>
+      <option name="number" value="00012" />
+      <option name="presentableId" value="LOCAL-00012" />
+      <option name="project" value="LOCAL" />
+      <updated>1761244333553</updated>
+    </task>
+    <task id="LOCAL-00013" summary="Update for rover controller base on LeKiw">
+      <option name="closed" value="true" />
+      <created>1761304008039</created>
+      <option name="number" value="00013" />
+      <option name="presentableId" value="LOCAL-00013" />
+      <option name="project" value="LOCAL" />
+      <updated>1761304008039</updated>
+    </task>
+    <task id="LOCAL-00014" summary="Update app to control LeKiwi">
+      <option name="closed" value="true" />
+      <created>1761304031995</created>
+      <option name="number" value="00014" />
+      <option name="presentableId" value="LOCAL-00014" />
+      <option name="project" value="LOCAL" />
+      <updated>1761304031995</updated>
+    </task>
+    <task id="LOCAL-00015" summary="Update Glassmorphic style for app">
+      <option name="closed" value="true" />
+      <created>1761305978458</created>
+      <option name="number" value="00015" />
+      <option name="presentableId" value="LOCAL-00015" />
+      <option name="project" value="LOCAL" />
+      <updated>1761305978458</updated>
+    </task>
+    <task id="LOCAL-00016" summary="Update Glassmorphic style for app">
+      <option name="closed" value="true" />
+      <created>1761306192059</created>
+      <option name="number" value="00016" />
+      <option name="presentableId" value="LOCAL-00016" />
+      <option name="project" value="LOCAL" />
+      <updated>1761306192059</updated>
+    </task>
+    <task id="LOCAL-00017" summary="Change control layout for app">
+      <option name="closed" value="true" />
+      <created>1761323006327</created>
+      <option name="number" value="00017" />
+      <option name="presentableId" value="LOCAL-00017" />
+      <option name="project" value="LOCAL" />
+      <updated>1761323006327</updated>
+    </task>
+    <task id="LOCAL-00018" summary="Create visualization for LeKiwi urdf">
+      <option name="closed" value="true" />
+      <created>1761333760884</created>
+      <option name="number" value="00018" />
+      <option name="presentableId" value="LOCAL-00018" />
+      <option name="project" value="LOCAL" />
+      <updated>1761333760884</updated>
+    </task>
+    <task id="LOCAL-00019" summary="Create visualization for LeKiwi urdf">
+      <option name="closed" value="true" />
+      <created>1761335334070</created>
+      <option name="number" value="00019" />
+      <option name="presentableId" value="LOCAL-00019" />
+      <option name="project" value="LOCAL" />
+      <updated>1761335334070</updated>
+    </task>
+    <task id="LOCAL-00020" summary="Update stream with video and audio">
+      <option name="closed" value="true" />
+      <created>1761620816653</created>
+      <option name="number" value="00020" />
+      <option name="presentableId" value="LOCAL-00020" />
+      <option name="project" value="LOCAL" />
+      <updated>1761620816653</updated>
+    </task>
+    <task id="LOCAL-00021" summary="Add capture audio node and fix stream audio">
+      <option name="closed" value="true" />
+      <created>1761722183929</created>
+      <option name="number" value="00021" />
+      <option name="presentableId" value="LOCAL-00021" />
+      <option name="project" value="LOCAL" />
+      <updated>1761722183929</updated>
+    </task>
+    <task id="LOCAL-00022" summary="Control audio hardware">
+      <option name="closed" value="true" />
+      <created>1761727915187</created>
+      <option name="number" value="00022" />
+      <option name="presentableId" value="LOCAL-00022" />
+      <option name="project" value="LOCAL" />
+      <updated>1761727915187</updated>
+    </task>
+    <task id="LOCAL-00023" summary="Add basic authen for web_bridge node">
+      <option name="closed" value="true" />
+      <created>1761730203894</created>
+      <option name="number" value="00023" />
+      <option name="presentableId" value="LOCAL-00023" />
+      <option name="project" value="LOCAL" />
+      <updated>1761730203894</updated>
+    </task>
+    <task id="LOCAL-00024" summary="Implement yolo">
+      <option name="closed" value="true" />
+      <created>1761825547140</created>
+      <option name="number" value="00024" />
+      <option name="presentableId" value="LOCAL-00024" />
+      <option name="project" value="LOCAL" />
+      <updated>1761825547140</updated>
+    </task>
+    <task id="LOCAL-00025" summary="Implement yolo">
+      <option name="closed" value="true" />
+      <created>1761825566256</created>
+      <option name="number" value="00025" />
+      <option name="presentableId" value="LOCAL-00025" />
+      <option name="project" value="LOCAL" />
+      <updated>1761825566256</updated>
+    </task>
+    <task id="LOCAL-00026" summary="Implement yolo">
+      <option name="closed" value="true" />
+      <created>1761825585433</created>
+      <option name="number" value="00026" />
+      <option name="presentableId" value="LOCAL-00026" />
+      <option name="project" value="LOCAL" />
+      <updated>1761825585433</updated>
+    </task>
+    <task id="LOCAL-00027" summary="Display bounding box for detections">
+      <option name="closed" value="true" />
+      <created>1761834896573</created>
+      <option name="number" value="00027" />
+      <option name="presentableId" value="LOCAL-00027" />
+      <option name="project" value="LOCAL" />
+      <updated>1761834896573</updated>
+    </task>
+    <task id="LOCAL-00028" summary="Implement object tracker">
+      <option name="closed" value="true" />
+      <created>1761842263596</created>
+      <option name="number" value="00028" />
+      <option name="presentableId" value="LOCAL-00028" />
+      <option name="project" value="LOCAL" />
+      <updated>1761842263596</updated>
+    </task>
+    <task id="LOCAL-00029" summary="Implement object tracker">
+      <option name="closed" value="true" />
+      <created>1761843883597</created>
+      <option name="number" value="00029" />
+      <option name="presentableId" value="LOCAL-00029" />
+      <option name="project" value="LOCAL" />
+      <updated>1761843883597</updated>
+    </task>
+    <task id="LOCAL-00030" summary="Implement object tracker">
+      <option name="closed" value="true" />
+      <created>1761844112573</created>
+      <option name="number" value="00030" />
+      <option name="presentableId" value="LOCAL-00030" />
+      <option name="project" value="LOCAL" />
+      <updated>1761844112573</updated>
+    </task>
+    <task id="LOCAL-00031" summary="Add visual estimation">
+      <option name="closed" value="true" />
+      <created>1761849862911</created>
+      <option name="number" value="00031" />
+      <option name="presentableId" value="LOCAL-00031" />
+      <option name="project" value="LOCAL" />
+      <updated>1761849862911</updated>
+    </task>
+    <task id="LOCAL-00032" summary="Remove unused nodes">
+      <option name="closed" value="true" />
+      <created>1761871309199</created>
+      <option name="number" value="00032" />
+      <option name="presentableId" value="LOCAL-00032" />
+      <option name="project" value="LOCAL" />
+      <updated>1761871309199</updated>
+    </task>
+    <task id="LOCAL-00033" summary="Add speech_recognizer node for speech-to-text">
+      <option name="closed" value="true" />
+      <created>1761879353118</created>
+      <option name="number" value="00033" />
+      <option name="presentableId" value="LOCAL-00033" />
+      <option name="project" value="LOCAL" />
+      <updated>1761879353118</updated>
+    </task>
+    <task id="LOCAL-00034" summary="Add speech_recognizer node for speech-to-text">
+      <option name="closed" value="true" />
+      <created>1761879403820</created>
+      <option name="number" value="00034" />
+      <option name="presentableId" value="LOCAL-00034" />
+      <option name="project" value="LOCAL" />
+      <updated>1761879403820</updated>
+    </task>
+    <task id="LOCAL-00035" summary="Add speech_recognizer node for speech-to-text">
+      <option name="closed" value="true" />
+      <created>1761879510127</created>
+      <option name="number" value="00035" />
+      <option name="presentableId" value="LOCAL-00035" />
+      <option name="project" value="LOCAL" />
+      <updated>1761879510127</updated>
+    </task>
+    <task id="LOCAL-00036" summary="Add command parser node">
+      <option name="closed" value="true" />
+      <created>1761979037057</created>
+      <option name="number" value="00036" />
+      <option name="presentableId" value="LOCAL-00036" />
+      <option name="project" value="LOCAL" />
+      <updated>1761979037057</updated>
+    </task>
+    <task id="LOCAL-00037" summary="Implement aho-corasick to improve string search in command_parser">
+      <option name="closed" value="true" />
+      <created>1761993467052</created>
+      <option name="number" value="00037" />
+      <option name="presentableId" value="LOCAL-00037" />
+      <option name="project" value="LOCAL" />
+      <updated>1761993467052</updated>
+    </task>
+    <task id="LOCAL-00038" summary="Add kokoro_tts for text-to-speech">
+      <option name="closed" value="true" />
+      <created>1761993517901</created>
+      <option name="number" value="00038" />
+      <option name="presentableId" value="LOCAL-00038" />
+      <option name="project" value="LOCAL" />
+      <updated>1761993517901</updated>
+    </task>
+    <task id="LOCAL-00039" summary="Refactor UI">
+      <option name="closed" value="true" />
+      <created>1762019281586</created>
+      <option name="number" value="00039" />
+      <option name="presentableId" value="LOCAL-00039" />
+      <option name="project" value="LOCAL" />
+      <updated>1762019281586</updated>
+    </task>
+    <task id="LOCAL-00040" summary="Refactor UI">
+      <option name="closed" value="true" />
+      <created>1762019380845</created>
+      <option name="number" value="00040" />
+      <option name="presentableId" value="LOCAL-00040" />
+      <option name="project" value="LOCAL" />
+      <updated>1762019380845</updated>
+    </task>
+    <task id="LOCAL-00041" summary="Implement audio playback">
+      <option name="closed" value="true" />
+      <created>1762020144205</created>
+      <option name="number" value="00041" />
+      <option name="presentableId" value="LOCAL-00041" />
+      <option name="project" value="LOCAL" />
+      <updated>1762020144205</updated>
+    </task>
+    <task id="LOCAL-00042" summary="Standardize tracing logs">
+      <option name="closed" value="true" />
+      <created>1762060733537</created>
+      <option name="number" value="00042" />
+      <option name="presentableId" value="LOCAL-00042" />
+      <option name="project" value="LOCAL" />
+      <updated>1762060733537</updated>
+    </task>
+    <task id="LOCAL-00043" summary="Update README">
+      <option name="closed" value="true" />
+      <created>1762095507213</created>
+      <option name="number" value="00043" />
+      <option name="presentableId" value="LOCAL-00043" />
+      <option name="project" value="LOCAL" />
+      <updated>1762095507213</updated>
+    </task>
+    <task id="LOCAL-00044" summary="Update control for camera metrics">
+      <option name="closed" value="true" />
+      <created>1762142692783</created>
+      <option name="number" value="00044" />
+      <option name="presentableId" value="LOCAL-00044" />
+      <option name="project" value="LOCAL" />
+      <updated>1762142692783</updated>
+    </task>
+    <task id="LOCAL-00045" summary="Update control for camera metrics">
+      <option name="closed" value="true" />
+      <created>1762145182053</created>
+      <option name="number" value="00045" />
+      <option name="presentableId" value="LOCAL-00045" />
+      <option name="project" value="LOCAL" />
+      <updated>1762145182053</updated>
+    </task>
+    <task id="LOCAL-00046" summary="Minimize voice interfaces">
+      <option name="closed" value="true" />
+      <created>1762173509367</created>
+      <option name="number" value="00046" />
+      <option name="presentableId" value="LOCAL-00046" />
+      <option name="project" value="LOCAL" />
+      <updated>1762173509367</updated>
+    </task>
+    <task id="LOCAL-00047" summary="Improve security features">
+      <option name="closed" value="true" />
+      <created>1762182145373</created>
+      <option name="number" value="00047" />
+      <option name="presentableId" value="LOCAL-00047" />
+      <option name="project" value="LOCAL" />
+      <updated>1762182145373</updated>
+    </task>
+    <task id="LOCAL-00048" summary="Split converter/encoder to reduce complexity in web_bridge">
+      <option name="closed" value="true" />
+      <created>1762270885052</created>
+      <option name="number" value="00048" />
+      <option name="presentableId" value="LOCAL-00048" />
+      <option name="project" value="LOCAL" />
+      <updated>1762270885052</updated>
+    </task>
+    <task id="LOCAL-00049" summary="test">
+      <option name="closed" value="true" />
+      <created>1762309212095</created>
+      <option name="number" value="00049" />
+      <option name="presentableId" value="LOCAL-00049" />
+      <option name="project" value="LOCAL" />
+      <updated>1762309212095</updated>
+    </task>
+    <task id="LOCAL-00050" summary="Implement replacement for zenoh">
+      <option name="closed" value="true" />
+      <created>1762325392652</created>
+      <option name="number" value="00050" />
+      <option name="presentableId" value="LOCAL-00050" />
+      <option name="project" value="LOCAL" />
+      <updated>1762325392653</updated>
+    </task>
+    <task id="LOCAL-00051" summary="Implement replacement for zenoh">
+      <option name="closed" value="true" />
+      <created>1762363505469</created>
+      <option name="number" value="00051" />
+      <option name="presentableId" value="LOCAL-00051" />
+      <option name="project" value="LOCAL" />
+      <updated>1762363505470</updated>
+    </task>
+    <option name="localTasksCounter" value="52" />
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State />
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+  <component name="VcsManagerConfiguration">
+    <option name="CHECK_CODE_SMELLS_BEFORE_PROJECT_COMMIT" value="false" />
+    <option name="CHECK_NEW_TODO" value="false" />
+    <MESSAGE value="Change control layout for app" />
+    <MESSAGE value="Create visualization for LeKiwi urdf" />
+    <MESSAGE value="Update stream with video and audio" />
+    <MESSAGE value="Add capture audio node and fix stream audio" />
+    <MESSAGE value="Control audio hardware" />
+    <MESSAGE value="Add basic authen for web_bridge node" />
+    <MESSAGE value="Implement yolo" />
+    <MESSAGE value="Display bounding box for detections" />
+    <MESSAGE value="Implement object tracker" />
+    <MESSAGE value="Add visual estimation" />
+    <MESSAGE value="Remove unused nodes" />
+    <MESSAGE value="Add speech_recognizer node for speech-to-text" />
+    <MESSAGE value="Add command parser node" />
+    <MESSAGE value="Implement aho-corasick to improve string search in command_parser" />
+    <MESSAGE value="Add kokoro_tts for text-to-speech" />
+    <MESSAGE value="Refactor UI" />
+    <MESSAGE value="Implement audio playback" />
+    <MESSAGE value="Standardize tracing logs" />
+    <MESSAGE value="Update README" />
+    <MESSAGE value="Update control for camera metrics" />
+    <MESSAGE value="Minimize voice interfaces" />
+    <MESSAGE value="Improve security features" />
+    <MESSAGE value="Split converter/encoder to reduce complexity in web_bridge" />
+    <MESSAGE value="test" />
+    <MESSAGE value="Implement replacement for zenoh" />
+    <option name="LAST_COMMIT_MESSAGE" value="Implement replacement for zenoh" />
+    <option name="NON_MODAL_COMMIT_POSTPONE_SLOW_CHECKS" value="false" />
+  </component>
+  <component name="XDebuggerManager">
+    <breakpoint-manager>
+      <breakpoints>
+        <line-breakpoint enabled="true" type="com.jetbrains.cidr.execution.debugger.OCBreakpointType">
+          <url>file://$PROJECT_DIR$/config_test/src/main.rs</url>
+          <option name="timeStamp" value="1" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" type="com.jetbrains.cidr.execution.debugger.OCBreakpointType">
+          <url>file://$PROJECT_DIR$/robo_rover_lib/src/types/arm_types.rs</url>
+          <line>25</line>
+          <option name="timeStamp" value="10" />
+        </line-breakpoint>
+      </breakpoints>
+    </breakpoint-manager>
+  </component>
+  <component name="XSLT-Support.FileAssociations.UIState">
+    <expand />
+    <select />
+  </component>
+</project>

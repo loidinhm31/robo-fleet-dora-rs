@@ -1,0 +1,36 @@
+[package]
+name = "web_bridge"
+version = "0.1.0"
+edition = "2021"
+description = "Web bridge node via SocketIO with video streaming"
+
+[dependencies]
+# Workspace dependencies
+dora-node-api = { workspace = true }
+dora-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+eyre = { workspace = true }
+uuid = { workspace = true }
+
+# SocketIO server dependencies
+tokio = { version = "1.24.2", features = ["full"] }
+socketioxide = "0.12"
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors"] }
+
+# Base64 encoding for video frames
+base64 = "0.21"
+
+# Image processing for JPEG encoding
+image = "0.25"
+
+robo_rover_lib = { path = "../../robo_rover_lib" }
+log = "0.4.28"
+tracing = "0.1.41"
+
+# Security dependencies
+bcrypt = "0.15"
+jsonwebtoken = "9.2"
+governor = "0.6"
