@@ -9,6 +9,8 @@ use robo_rover_lib::init_tracing;
 use robo_rover_lib::types::{NodeMetrics, SystemMetrics};
 use serde_json;
 use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
 use std::time::{Duration, Instant};
 use sysinfo::{ProcessRefreshKind, RefreshKind, System};
 
@@ -94,10 +96,61 @@ impl NodePerformanceTracker {
     }
 }
 
+/// Read battery information from Linux /sys/class/power_supply/
+/// Returns (battery_level_percent, battery_voltage_volts) if available
+fn read_battery_info() -> (Option<f32>, Option<f32>) {
+    let power_supply_path = Path::new("/sys/class/power_supply");
+
+    if !power_supply_path.exists() {
+        return (None, None);
+    }
+
+    // Try to find a battery device (BAT0, BAT1, etc.)
+    if let Ok(entries) = fs::read_dir(power_supply_path) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+
+            // Look for battery devices (skip AC adapters)
+            if name.starts_with("BAT") || name.to_lowercase().contains("battery") {
+                let mut battery_level = None;
+                let mut battery_voltage = None;
+
+                // Read battery capacity (percentage)
+                if let Ok(capacity) = fs::read_to_string(path.join("capacity")) {
+                    if let Ok(level) = capacity.trim().parse::<f32>() {
+                        battery_level = Some(level);
+                    }
+                }
+
+                // Read battery voltage (microvolts -> volts)
+                if let Ok(voltage_now) = fs::read_to_string(path.join("voltage_now")) {
+                    if let Ok(voltage_uv) = voltage_now.trim().parse::<f32>() {
+                        battery_voltage = Some(voltage_uv / 1_000_000.0);
+                    }
+                }
+
+                // If we found battery info, return it
+                if battery_level.is_some() || battery_voltage.is_some() {
+                    return (battery_level, battery_voltage);
+                }
+            }
+        }
+    }
+
+    (None, None)
+}
+
 fn main() -> Result<()> {
     let _guard = init_tracing();
 
     tracing::info!("Starting performance_monitor node");
+
+    // Get entity ID from environment
+    let entity_id = std::env::var("ENTITY_ID").ok();
+    if let Some(ref id) = entity_id {
+        tracing::info!("Monitoring rover: {}", id);
+    }
 
     // Initialize system info
     let mut sys = System::new_all();
@@ -109,17 +162,19 @@ fn main() -> Result<()> {
     let (mut node, mut events) = DoraNode::init_from_env()?;
     let mut trackers: HashMap<String, NodePerformanceTracker> = HashMap::new();
 
-    // Nodes to monitor
+    // Nodes to monitor - specific nodes
     let monitored_nodes = vec![
         "gst-camera",
         "object-detector",
         "object-tracker",
         "visual-servo-controller",
-        "web-bridge",
         "audio-capture",
-        "speech-recognizer",
-        "command-parser",
-        "kokoro-tts",
+        "audio-playback",
+        "sherpa-tts",
+        "arm-controller",
+        "rover-controller",
+        "sim-interface",
+        "zenoh-bridge",
     ];
 
     // Initialize trackers
@@ -145,11 +200,19 @@ fn main() -> Result<()> {
 
                     let mut system_metrics = SystemMetrics::new();
 
+                    // Set entity ID for fleet tracking
+                    system_metrics.entity_id = entity_id.clone();
+
                     // Collect system-wide metrics
                     system_metrics.total_cpu_percent = sys.global_cpu_usage();
                     system_metrics.total_memory_mb = (sys.used_memory() as f32) / 1024.0 / 1024.0;
                     system_metrics.available_memory_mb = (sys.available_memory() as f32) / 1024.0 / 1024.0;
                     system_metrics.total_system_memory_mb = (sys.total_memory() as f32) / 1024.0 / 1024.0;
+
+                    // Collect battery information if available
+                    let (battery_level, battery_voltage) = read_battery_info();
+                    system_metrics.battery_level = battery_level;
+                    system_metrics.battery_voltage = battery_voltage;
 
                     // Collect per-node metrics
                     for (node_name, tracker) in trackers.iter_mut() {
@@ -177,7 +240,8 @@ fn main() -> Result<()> {
                     system_metrics.calculate_dataflow_fps();
 
                     // Estimate end-to-end latency (sum of avg processing times in vision pipeline)
-                    let vision_pipeline = ["gst-camera", "object-detector", "object-tracker", "web-bridge"];
+                    // For rover-kiwi: camera -> detector -> tracker -> zenoh-bridge
+                    let vision_pipeline = ["gst-camera", "object-detector", "object-tracker", "zenoh-bridge"];
                     system_metrics.end_to_end_latency_ms = vision_pipeline
                         .iter()
                         .filter_map(|node| system_metrics.node_metrics.get(*node))
@@ -193,13 +257,22 @@ fn main() -> Result<()> {
                         arrow_data
                     )?;
 
+                    // Log metrics with battery info if available
+                    let battery_info = match (system_metrics.battery_level, system_metrics.battery_voltage) {
+                        (Some(level), Some(voltage)) => format!(", Battery: {:.1}% ({:.2}V)", level, voltage),
+                        (Some(level), None) => format!(", Battery: {:.1}%", level),
+                        (None, Some(voltage)) => format!(", Battery: {:.2}V", voltage),
+                        (None, None) => String::new(),
+                    };
+
                     tracing::debug!(
-                        "System metrics - CPU: {:.1}%, Memory: {:.0}MB/{:.0}MB, Dataflow FPS: {:.1}, Latency: {:.1}ms",
+                        "System metrics - CPU: {:.1}%, Memory: {:.0}MB/{:.0}MB, Dataflow FPS: {:.1}, Latency: {:.1}ms{}",
                         system_metrics.total_cpu_percent,
                         system_metrics.total_memory_mb,
                         system_metrics.available_memory_mb,
                         system_metrics.dataflow_fps,
-                        system_metrics.end_to_end_latency_ms
+                        system_metrics.end_to_end_latency_ms,
+                        battery_info
                     );
                 }
             }

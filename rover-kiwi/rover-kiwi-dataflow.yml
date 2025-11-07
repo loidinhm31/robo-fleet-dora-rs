@@ -49,6 +49,7 @@ nodes:
       - metrics  # SystemMetrics
     env:
       RUST_LOG: info
+      ENTITY_ID: "rover-kiwi"  # Rover identity for fleet tracking
 
   # GStreamer camera capture
   - id: gst-camera

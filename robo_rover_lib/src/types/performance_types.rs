@@ -37,6 +37,12 @@ pub struct SystemMetrics {
     pub available_memory_mb: f32,
     /// Total system memory in megabytes
     pub total_system_memory_mb: f32,
+    /// Battery level percentage (0.0-100.0, None if not available)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub battery_level: Option<f32>,
+    /// Battery voltage (None if not available)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub battery_voltage: Option<f32>,
     /// Overall dataflow FPS (minimum FPS across all vision nodes)
     pub dataflow_fps: f32,
     /// End-to-end latency in milliseconds (camera → web UI)
@@ -56,6 +62,8 @@ impl SystemMetrics {
             total_memory_mb: 0.0,
             available_memory_mb: 0.0,
             total_system_memory_mb: 0.0,
+            battery_level: None,
+            battery_voltage: None,
             dataflow_fps: 0.0,
             end_to_end_latency_ms: 0.0,
             node_metrics: HashMap::new(),

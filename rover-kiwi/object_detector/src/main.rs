@@ -276,10 +276,10 @@ fn main() -> Result<()> {
         .collect::<Vec<_>>();
     
     info!("Configuration:");
-    info!("  Model path: {}", model_path);
-    info!("  Confidence threshold: {}", confidence_threshold);
-    info!("  NMS threshold: {}", nms_threshold);
-    info!("  Target classes: {:?}", target_classes);
+    info!("Model path: {}", model_path);
+    info!("Confidence threshold: {}", confidence_threshold);
+    info!("NMS threshold: {}", nms_threshold);
+    info!("Target classes: {:?}", target_classes);
     
     // Initialize detector
     let mut detector = YoloDetector::new(

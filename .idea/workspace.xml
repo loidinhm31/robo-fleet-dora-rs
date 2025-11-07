@@ -76,23 +76,16 @@
     </cargoProject>
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="8ae13099-c180-4a8a-a38b-82e3e6232ddd" name="Changes" comment="Update repo to robo fleet control app">
-      <change afterPath="$PROJECT_DIR$/SETUP_ENVIRONMENT.md" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/models/scripts/download_sherpa_vits_models.sh" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/rover-kiwi/sherpa_tts/Cargo.toml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/rover-kiwi/sherpa_tts/src/main.rs" afterDir="false" />
+    <list default="true" id="8ae13099-c180-4a8a-a38b-82e3e6232ddd" name="Changes" comment="Use lightweight tts for local process in rover-kiwi">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/ARCHITECTURE.md" beforeDir="false" afterPath="$PROJECT_DIR$/ARCHITECTURE.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Cargo.lock" beforeDir="false" afterPath="$PROJECT_DIR$/Cargo.lock" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Cargo.toml" beforeDir="false" afterPath="$PROJECT_DIR$/Cargo.toml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/models/scripts/check_all_models.py" beforeDir="false" afterPath="$PROJECT_DIR$/models/scripts/check_all_models.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/models/scripts/download_kokoro_models.sh" beforeDir="false" afterPath="$PROJECT_DIR$/models/scripts/download_kokoro_models.sh" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/models/scripts/download_onnxruntime.sh" beforeDir="false" afterPath="$PROJECT_DIR$/models/scripts/download_onnxruntime.sh" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/models/scripts/export_yolo_to_onnx.py" beforeDir="false" afterPath="$PROJECT_DIR$/models/scripts/export_yolo_to_onnx.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/orchestra/orchestra-dataflow.yml" beforeDir="false" afterPath="$PROJECT_DIR$/orchestra/orchestra-dataflow.yml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/rover-kiwi/kokoro_tts/Cargo.toml" beforeDir="false" afterPath="$PROJECT_DIR$/orchestra/kokoro_tts/Cargo.toml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/rover-kiwi/kokoro_tts/src/main.rs" beforeDir="false" afterPath="$PROJECT_DIR$/orchestra/kokoro_tts/src/main.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/robo-control-app/src/components/FloatingMetrics.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/robo-control-app/src/components/FloatingMetrics.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/robo-control-app/src/components/atoms/index.ts" beforeDir="false" afterPath="$PROJECT_DIR$/robo-control-app/src/components/atoms/index.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/robo-control-app/src/components/organisms/FleetSelector.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/robo-control-app/src/components/organisms/FleetSelector.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/robo-control-app/src/components/pages/RoboRoverControl.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/robo-control-app/src/components/pages/RoboRoverControl.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/robo-control-app/src/types/performance.ts" beforeDir="false" afterPath="$PROJECT_DIR$/robo-control-app/src/types/performance.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/robo_rover_lib/src/types/performance_types.rs" beforeDir="false" afterPath="$PROJECT_DIR$/robo_rover_lib/src/types/performance_types.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/rover-kiwi/object_detector/src/main.rs" beforeDir="false" afterPath="$PROJECT_DIR$/rover-kiwi/object_detector/src/main.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/rover-kiwi/performance_monitor/src/main.rs" beforeDir="false" afterPath="$PROJECT_DIR$/rover-kiwi/performance_monitor/src/main.rs" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/rover-kiwi/rover-kiwi-dataflow.yml" beforeDir="false" afterPath="$PROJECT_DIR$/rover-kiwi/rover-kiwi-dataflow.yml" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -498,7 +491,7 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1762490951418</updated>
-      <workItem from="1762490952636" duration="13907000" />
+      <workItem from="1762490952636" duration="20261000" />
     </task>
     <task id="LOCAL-00001" summary="Update repo to robo fleet control app">
       <option name="closed" value="true" />
@@ -516,7 +509,15 @@
       <option name="project" value="LOCAL" />
       <updated>1762491209428</updated>
     </task>
-    <option name="localTasksCounter" value="3" />
+    <task id="LOCAL-00003" summary="Use lightweight tts for local process in rover-kiwi">
+      <option name="closed" value="true" />
+      <created>1762517890971</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1762517890971</updated>
+    </task>
+    <option name="localTasksCounter" value="4" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -537,7 +538,8 @@
     <option name="CHECK_CODE_SMELLS_BEFORE_PROJECT_COMMIT" value="false" />
     <option name="CHECK_NEW_TODO" value="false" />
     <MESSAGE value="Update repo to robo fleet control app" />
-    <option name="LAST_COMMIT_MESSAGE" value="Update repo to robo fleet control app" />
+    <MESSAGE value="Use lightweight tts for local process in rover-kiwi" />
+    <option name="LAST_COMMIT_MESSAGE" value="Use lightweight tts for local process in rover-kiwi" />
     <option name="NON_MODAL_COMMIT_POSTPONE_SLOW_CHECKS" value="false" />
   </component>
 </project>
