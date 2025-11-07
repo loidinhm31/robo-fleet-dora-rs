@@ -186,27 +186,8 @@ The web UI displays:
 dora destroy
 ```
 
-## System Architecture
-
-### Dataflow Pipeline
-
-```
-┌─────────────┐     ┌──────────────┐     ┌───────────────┐
-│ gst-camera  │────▶│ object-      │────▶│ object-       │
-│ (30 FPS)    │     │ detector     │     │ tracker       │
-└─────────────┘     └──────────────┘     └───────┬───────┘
-                                                  │
-                                                  ▼
-                    ┌─────────────┐     ┌───────────────┐
-                    │ rover-      │◀────│ visual-servo- │
-                    │ controller  │     │ controller    │
-                    └─────────────┘     └───────────────┘
-                           │
-                           ▼
-                    ┌─────────────┐
-                    │ web-bridge  │────▶ Web UI (React)
-                    └─────────────┘
-```
+## System Architecture with Dataflow Pipeline
+Check - [ARCHITECTURE](ARCHITECTURE.md)
 
 ### Nodes
 
@@ -266,42 +247,6 @@ The autonomous tracking system works as follows:
 - `speech_transcription`: Transcribed voice commands
 - `arm_telemetry`: Arm position and status
 - `rover_telemetry`: Rover position and velocity
-
-## Configuration
-
-### PID Tuning (Visual Servoing)
-
-Edit `web-dataflow.yml`:
-
-```yaml
-visual-servo-controller:
-  env:
-    # Lateral control (centering)
-    LATERAL_PID_KP: "1.5"    # Proportional gain
-    LATERAL_PID_KI: "0.0"    # Integral gain
-    LATERAL_PID_KD: "0.2"    # Derivative gain
-
-    # Longitudinal control (distance)
-    LONGITUDINAL_PID_KP: "0.8"
-    LONGITUDINAL_PID_KI: "0.0"
-    LONGITUDINAL_PID_KD: "0.15"
-
-    # Safety constraints
-    MIN_DISTANCE: "1.0"           # meters - minimum approach distance
-    MAX_VELOCITY: "0.5"           # m/s - maximum linear velocity
-    MAX_ANGULAR_VELOCITY: "1.0"   # rad/s - maximum rotation speed
-
-    # Control parameters
-    TARGET_BBOX_HEIGHT: "0.3"  # Target 30% of frame height
-    DEAD_ZONE: "0.05"          # 5% centering dead zone (reduces oscillation)
-```
-
-**Tuning Tips**:
-- Increase `LATERAL_PID_KP` for faster centering (may oscillate)
-- Increase `LONGITUDINAL_PID_KP` for faster approach
-- Add `LATERAL_PID_KD` to reduce oscillation
-- Increase `MIN_DISTANCE` to stay farther from target
-- Decrease `MAX_VELOCITY` for smoother, slower motion
 
 ### Object Detection
 
@@ -704,61 +649,6 @@ socket.emit('tracking_command', {
 });
 ```
 
-## Contributing
-
-When adding new features:
-
-1. Update relevant sections in this README
-2. Update CLAUDE.md with technical details
-3. Add types to `robo_rover_lib` for shared data structures
-4. Follow existing patterns for node communication
-5. Test with both dev and web dataflows
-6. Update web UI TypeScript types if adding new telemetry
-7. Run tests and type checking before committing
-
-## Project Structure
-
-```
-robo-rover-dora/
-├── Vision & Detection Nodes
-│   ├── kornia_capture/          # GStreamer camera capture (gst-camera)
-│   ├── object_detector/         # YOLOv12n inference (ONNX)
-│   ├── object_tracker/          # SORT tracking with Kalman filter
-│   └── visual_servo_controller/ # PID-based autonomous following
-│
-├── Audio & Voice Nodes
-│   ├── audio_capture/           # cpal audio capture (Rust)
-│   ├── audio_playback/          # Audio playback for walkie-talkie
-│   ├── speech_recognizer/       # Whisper.cpp speech-to-text
-│   ├── command_parser/          # NLU for voice commands
-│   └── kokoro_tts/              # Kokoro-82M text-to-speech
-│
-├── Control Nodes
-│   ├── arm_controller/          # 6-DOF arm control node
-│   ├── rover_controller/        # Mecanum wheel control with arbitration
-│   ├── dispatcher_keyboard/     # Keyboard input for dev mode
-│   └── sim_interface/           # Unity simulation bridge
-│
-├── Communication
-│   ├── web_bridge/              # Socket.IO server (port 3030)
-│   └── robo_rover_lib/          # Shared types and utilities
-│
-├── Web Application
-│   └── robo-control-app/        # Vite + React + Tauri app
-│       ├── src/                 # React components and views
-│       └── src-tauri/           # Tauri desktop wrapper
-│
-├── Configuration & Models
-│   ├── config/                  # Arm configurations (*.toml)
-│   ├── models/                  # AI models directory
-│   │   ├── *.onnx              # YOLO detection models
-│   │   ├── *.bin               # Whisper speech models
-│   │   └── .cache/             # Kokoro TTS models
-│   ├── web-dataflow.yml         # Production dataflow
-│   ├── dev-dataflow.yml         # Development dataflow
-│   └── README.md                # This file
-```
-
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
@@ -786,4 +676,3 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [Tauri](https://tauri.app/) - Desktop app framework
 - [Socket.IO](https://socket.io/) - Real-time communication
 - [shadcn/ui](https://ui.shadcn.com/) + [Tailwind CSS](https://tailwindcss.com/) - UI components
->>>>>>> robo-rover-dora/main
