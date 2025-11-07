@@ -14,6 +14,7 @@ members = [
     "orchestra/video_encoder",
     "orchestra/sim_interface",
     "orchestra/zenoh_bridge",
+    "orchestra/kokoro_tts",
 
     # Rover-kiwi - On-robot nodes
     "rover-kiwi/rover_controller",
@@ -22,7 +23,7 @@ members = [
     "rover-kiwi/audio_capture",
     "rover-kiwi/audio_playback",
     "rover-kiwi/visual_servo_controller",
-    "rover-kiwi/kokoro_tts",
+    "rover-kiwi/sherpa_tts",
     "rover-kiwi/performance_monitor",
     "rover-kiwi/zenoh_bridge",
     "rover-kiwi/dispatcher_keyboard",

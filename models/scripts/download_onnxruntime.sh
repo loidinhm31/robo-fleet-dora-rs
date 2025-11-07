@@ -12,14 +12,18 @@ echo ""
 VERSION="1.19.2"
 ARCH="linux-x64"
 DOWNLOAD_URL="https://github.com/microsoft/onnxruntime/releases/download/v${VERSION}/onnxruntime-${ARCH}-${VERSION}.tgz"
-TAR_FILE="onnxruntime-${ARCH}-${VERSION}.tgz"
-EXTRACT_DIR="onnxruntime-${ARCH}-${VERSION}"
+CACHE_DIR="$HOME/.cache/onnxruntime-downloads"
+TAR_FILE="$CACHE_DIR/onnxruntime-${ARCH}-${VERSION}.tgz"
+EXTRACT_DIR="$CACHE_DIR/onnxruntime-${ARCH}-${VERSION}"
+
+# Create cache directory
+mkdir -p "$CACHE_DIR"
 
 echo "Downloading ONNX Runtime ${VERSION}..."
 wget -O "$TAR_FILE" "$DOWNLOAD_URL"
 
 echo "Extracting..."
-tar -xzf "$TAR_FILE"
+tar -xzf "$TAR_FILE" -C "$CACHE_DIR"
 
 echo "Removing old ONNX Runtime library..."
 sudo rm -f /usr/local/lib/libonnxruntime.so*

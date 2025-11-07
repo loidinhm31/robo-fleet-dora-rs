@@ -3,22 +3,21 @@
 
 set -e
 
-MODEL_DIR="models/obj"
-CACHE_DIR="$HOME/.cache/kokoros"
+CACHE_DIR="$HOME/.cache/kokoro"
 
 echo "=== Kokoro TTS Model Downloader ==="
 echo ""
 
-# Create directories
-mkdir -p "$MODEL_DIR"
+# Create cache directory
 mkdir -p "$CACHE_DIR"
 
 # Model URLs
-ONNX_MODEL_URL="https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/kokoro-v1.0.onnx"
-VOICES_URL="https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices-v1.0.bin"
+ONNX_MODEL_URL="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files/kokoro-v1.0.onnx"
+VOICES_URL="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files/voices-v1.0.bin"
 
-ONNX_MODEL_PATH="$MODEL_DIR/kokoro-v1.0.onnx"
-VOICES_PATH="$MODEL_DIR/voices-v1.0.bin"
+```
+ONNX_MODEL_PATH="$CACHE_DIR/kokoro-v1.0.onnx"
+VOICES_PATH="$CACHE_DIR/voices-v1.0.bin"
 
 # Download ONNX model if not exists
 if [ -f "$ONNX_MODEL_PATH" ]; then
@@ -38,21 +37,11 @@ else
     echo "✓ Downloaded: $VOICES_PATH"
 fi
 
-# Copy to cache directory for kokoro-tiny to use
-echo ""
-echo "Installing models to cache directory..."
-cp "$ONNX_MODEL_PATH" "$CACHE_DIR/"
-cp "$VOICES_PATH" "$CACHE_DIR/"
-echo "✓ Models installed to: $CACHE_DIR"
-
 echo ""
 echo "=== Download Complete ==="
-echo "Model files:"
+echo ""
+echo "Model files installed to:"
 echo "  - $ONNX_MODEL_PATH"
 echo "  - $VOICES_PATH"
-echo ""
-echo "Cache location:"
-echo "  - $CACHE_DIR/kokoro-v1.0.onnx"
-echo "  - $CACHE_DIR/voices-v1.0.bin"
 echo ""
 echo "You can now run the TTS node without internet connection!"

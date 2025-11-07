@@ -63,6 +63,7 @@ robo-rover-dora/
 │   ├── video_encoder/              # RGB8 → JPEG
 │   ├── web_bridge/                 # Socket.IO server
 │   ├── sim_interface/              # Unity simulation (can run on either side)
+│   ├── kokoro_tts/                 # High-quality TTS (Kokoro-82M, workstation audio, optional)
 │   ├── zenoh_bridge/               # Orchestra Zenoh bridge (orchestra-only)
 │   └── orchestra-dataflow.yml      # Orchestra Dora dataflow
 │
@@ -75,7 +76,7 @@ robo-rover-dora/
 │   ├── arm_controller/             # Arm servo control
 │   ├── rover_controller/           # Motor control
 │   ├── visual_servo_controller/    # PID autonomous following
-│   ├── kokoro_tts/                 # Local TTS feedback
+│   ├── sherpa_tts/                 # Lightweight edge TTS (VITS-Piper, rover speakers)
 │   ├── performance_monitor/        # System metrics
 │   ├── dispatcher_keyboard/        # Keyboard control (dev)
 │   ├── zenoh_bridge/               # Rover Zenoh bridge (rover-only)
@@ -166,27 +167,6 @@ ZENOH_MODE=peer
 4. **Rover zenoh-bridge** → controllers (Dora)
 5. **Controllers execute** on hardware
 
-## Performance Characteristics
-
-### Rover (Raspberry Pi 5)
-- **CPU**: ~60% (includes local ML inference)
-  - Hardware I/O: 10%
-  - Control loops: 15%
-  - YOLO inference: 25%
-  - SORT tracking: 10%
-- **Memory**: ~800MB (includes YOLO model)
-- **Network**: ~27 MB/s upload (RGB8 @ 30fps + detections)
-- **Latency**: <5ms visual servo response (local tracking)
-
-### Orchestra (Workstation)
-- **CPU**: ~55% (no ML inference)
-  - Whisper: 20% CPU (or GPU)
-  - Video encoding: 30%
-  - Audio conversion: 5%
-- **Memory**: ~700MB (Whisper model only)
-- **Network**: ~27 MB/s download + 1 MB/s upload
-- **Latency**: 1-5ms Zenoh overhead
-
 ### Network Requirements
 - **Bandwidth**: 30 Mbps (gigabit LAN recommended)
 - **Latency**: <10ms on LAN
@@ -205,14 +185,14 @@ cargo install dora-cli
 
 **On Orchestra**:
 - Whisper model for STT
-- Kokoro TTS models (optional)
+- Kokoro TTS models (optional, for workstation audio)
 
 **On Rover-Kiwi**:
 - GStreamer for camera
 - cpal for audio
-- ONNX Runtime for YOLO
+- ONNX Runtime for YOLO and TTS
 - YOLO model (yolo12n.onnx)
-- Kokoro TTS models for local feedback
+- Sherpa-ONNX VITS-Piper model for lightweight edge TTS (~61MB)
 
 ### Build and Deploy
 

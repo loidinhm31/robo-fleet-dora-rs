@@ -13,16 +13,20 @@ nodes:
       CHANNELS: "1"
       CHUNK_SIZE: "800"
 
-  # TTS - Kokoro local voice feedback
-  - id: kokoro-tts
-    build: cargo build --release -p kokoro_tts
-    path: target/release/kokoro_tts
+  # TTS - Sherpa-ONNX lightweight neural TTS for edge device
+  - id: sherpa-tts
+    build: cargo build --release -p sherpa_tts
+    path: target/release/sherpa_tts
     inputs:
       tts_command: zenoh-bridge/tts_command  # From Orchestra
     env:
       RUST_LOG: info
-      TTS_VOICE: "bf_emma"
+      TTS_MODEL_DIR: "${HOME}/.cache/sherpa-onnx/vits-piper-en_US-lessac-medium"
       TTS_VOLUME: "0.8"
+      TTS_SPEED: "1.0"
+      TTS_NUM_THREADS: "2"
+      TTS_PROVIDER: "cpu"
+      LD_LIBRARY_PATH: "${HOME}/ws/robo-fleet-dora-rs/target/release"
 
   # Audio playback - Speaker output (walkie-talkie)
   - id: audio-playback
@@ -72,7 +76,7 @@ nodes:
       - detections  # DetectionFrame with bounding boxes
     env:
       RUST_LOG: info
-      MODEL_PATH: "../models/.cache/yolo/yolo12n.onnx"
+      MODEL_PATH: "${HOME}/.cache/yolo/yolo12n.onnx"
       CONFIDENCE_THRESHOLD: "0.5"
       NMS_THRESHOLD: "0.4"
       TARGET_CLASSES: ""
@@ -183,4 +187,4 @@ nodes:
       RUST_LOG: info
       ZENOH_MODE: "peer"
       ENTITY_ID: "rover-kiwi"  # This rover's unique ID in the fleet
-      ZENOH_CONFIG: "/home/loidinh/ws/robo-rover-dora/rover-kiwi/zenoh_bridge/zenoh_config.json5"
+      ZENOH_CONFIG: "${HOME}/ws/robo-fleet-dora-rs/rover-kiwi/zenoh_bridge/zenoh_config.json5"

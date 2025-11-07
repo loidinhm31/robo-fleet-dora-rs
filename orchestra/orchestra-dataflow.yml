@@ -35,7 +35,7 @@ nodes:
       ZENOH_MODE: "peer"
       ENTITY_ID: "orchestra"                    # This node's ID
       ACTIVE_ROVERS: "rover-kiwi"               # Comma-separated list of rovers to subscribe to initially
-      ZENOH_CONFIG: "/home/loidinh/ws/robo-rover-dora/orchestra/zenoh_bridge/zenoh_config.json5"
+      ZENOH_CONFIG: "/home/loidinh/ws/robo-fleet-dora-rs/orchestra/zenoh_bridge/zenoh_config.json5"
       VIDEO_WIDTH: "640"
       VIDEO_HEIGHT: "480"
       AUDIO_SAMPLE_RATE: "16000"
@@ -73,7 +73,19 @@ nodes:
     env:
       RUST_LOG: info
       CONFIDENCE_THRESHOLD: "0.7"
-  
+
+  # Kokoro TTS - High-quality neural TTS for workstation audio
+#  - id: kokoro-tts
+#    build: cargo build --release -p kokoro_tts
+#    path: target/release/kokoro_tts
+#    inputs:
+#      tts_command_parser: command-parser/tts_command
+#      tts_command_web: web-bridge/tts_command
+#    env:
+#      RUST_LOG: info
+#      TTS_VOICE: "bf_emma"
+#      TTS_VOLUME: "0.8"
+
   # Audio converter - Float32 to Int16LE (for web streaming)
   - id: audio-converter
     build: cargo build --release -p audio_converter

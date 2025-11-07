@@ -1,0 +1,22 @@
+[package]
+name = "sherpa_tts"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dora-node-api = { workspace = true }
+eyre = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+# Sherpa-ONNX TTS - Lightweight, efficient neural TTS for edge devices
+sherpa-rs = { version = "0.6", features = ["tts", "download-binaries"] }
+
+# Audio playback
+rodio = "0.19"
+
+# Directory utilities
+dirs = "5.0"
+
+robo_rover_lib = { path = "../../robo_rover_lib" }

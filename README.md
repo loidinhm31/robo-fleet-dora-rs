@@ -29,7 +29,9 @@ A hybrid robotic rover control system with autonomous object tracking and visual
 - **Dynamic Audio Control** (start/stop without dataflow restart)
 - **Speech Recognition** using Whisper.cpp for voice commands
 - **Natural Language Understanding** with Aho-Corasick pattern matching
-- **Text-to-Speech** using Kokoro-82M for voice feedback
+- **Text-to-Speech** with dual implementation:
+  - **Rover**: Sherpa-ONNX VITS-Piper (lightweight, edge-optimized)
+  - **Orchestra**: Kokoro-82M (high-quality, optional for workstation)
 - **Audio Playback** for walkie-talkie/intercom functionality
 - **Multi-modal Voice Communication** (command, feedback, and direct streaming)
 
@@ -98,14 +100,6 @@ python3 scripts/export_yolo_to_onnx.py
 cd models
 # Download Whisper tiny model (recommended for Raspberry Pi 5)
 wget https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin -O ggml-tiny.bin
-```
-
-**Kokoro TTS Models** (text-to-speech):
-```shell
-cd models/.cache
-# Download Kokoro TTS model and voices
-wget https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files/kokoro-v1.0.onnx
-wget https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files/voices-v1.0.bin
 ```
 
 For detailed model setup instructions, see [models/README.md](models/README.md).
@@ -201,7 +195,8 @@ Check - [ARCHITECTURE](ARCHITECTURE.md)
 - **audio-capture**: cpal-based audio capture (Rust)
 - **speech-recognizer**: Whisper.cpp speech-to-text (Raspberry Pi optimized)
 - **command-parser**: NLU for voice command intent extraction
-- **kokoro-tts**: Kokoro-82M text-to-speech for voice feedback
+- **sherpa-tts** (rover): Lightweight VITS-Piper TTS for edge devices
+- **kokoro-tts** (orchestra): High-quality Kokoro-82M TTS (optional, workstation)
 - **audio-playback**: Real-time audio playback for walkie-talkie mode
 
 **Control & Communication:**
@@ -297,15 +292,30 @@ command-parser:
   env:
     # No configuration needed - uses built-in pattern matching
 
+# Rover TTS (Lightweight, always active)
+sherpa-tts:
+  env:
+    TTS_MODEL_DIR: "/home/user/.cache/sherpa-onnx/vits-piper-en_US-lessac-medium"
+    TTS_VOLUME: "0.8"                            # Audio volume (0.0-1.0)
+    TTS_SPEED: "1.0"                             # Speech speed multiplier
+    TTS_NUM_THREADS: "2"                         # CPU threads for inference
+    TTS_PROVIDER: "cpu"                          # Execution provider
+    LD_LIBRARY_PATH: "target/release"            # sherpa-onnx library path
+
+# Orchestra TTS (High-quality, optional - currently disabled)
 kokoro-tts:
   env:
-    MODEL_DIR: "models/.cache"                   # TTS model location
-    VOICE: "af"                                  # Voice style (af/af_sarah/bf_emma/etc)
-    VOLUME: "1.0"                                # Audio volume (0.0-2.0)
+    TTS_VOICE: "bf_emma"                         # Voice style
+    TTS_VOLUME: "0.8"                            # Audio volume (0.0-2.0)
 ```
 
-**Supported Voice Styles:**
-- `af` - American Female
+**Sherpa-ONNX Voice** (rover):
+- Single voice: `en_US-lessac-medium` (built into VITS-Piper model)
+- Optimized for edge devices with minimal resource usage
+- Apache 2.0 license
+
+**Kokoro Voice Styles** (orchestra, optional):
+- `af` / `af_sky` - American Female
 - `af_sarah` - American Female (Sarah)
 - `bf_emma` - British Female (Emma)
 - `am` - American Male
@@ -502,11 +512,19 @@ pnpm check-types
 - Lower `ENERGY_THRESHOLD` if voice not detected (try 0.01)
 - Check `SAMPLE_RATE` matches audio-capture (must be 16000)
 
-**TTS not working**:
-- Verify Kokoro models downloaded: `ls -lh models/.cache/kokoro-v1.0.onnx`
+**TTS not working on rover**:
+- Verify Sherpa-ONNX model downloaded: `ls -lh ~/.cache/sherpa-onnx/vits-piper-en_US-lessac-medium/`
+- Check required files: `model.onnx`, `tokens.txt`, `espeak-ng-data/`
+- Verify library path: `ls -lh target/release/libsherpa-onnx-c-api.so`
 - Check audio output device: `pactl list sinks`
-- Increase `VOLUME` in kokoro-tts config
-- Check logs for model loading errors
+- Increase `TTS_VOLUME` in sherpa-tts config
+- Check logs for initialization errors (typical: 2-3s initialization time)
+
+**TTS not working on orchestra** (if enabled):
+- Verify Kokoro models downloaded: `ls -lh models/.cache/kokoros/kokoro-v1.0.onnx`
+- Uncomment kokoro-tts node in orchestra-dataflow.yml
+- Check audio output device: `pactl list sinks`
+- Increase `TTS_VOLUME` in kokoro-tts config
 
 **Walkie-talkie audio choppy**:
 - Check network latency (ping between client and server)
@@ -527,7 +545,8 @@ pnpm check-types
 **Audio & Voice:**
 - **Audio Capture**: 16 kHz, Mono, 20 Hz chunks (50ms)
 - **Speech Recognition**: 1-2s latency (Whisper tiny on RPi5)
-- **TTS Synthesis**: 0.5-2s time-to-first-audio (Kokoro-82M)
+- **TTS Synthesis** (rover): 2-3s initialization, real-time synthesis (Sherpa-ONNX VITS)
+- **TTS Synthesis** (orchestra, optional): 0.5-2s time-to-first-audio (Kokoro-82M)
 - **Walkie-talkie Latency**: <100ms on local network
 
 **Network:**
@@ -668,7 +687,9 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [cpal](https://github.com/RustAudio/cpal) - Cross-platform audio I/O
 - [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) - Speech-to-text
 - [whisper-rs](https://github.com/tazz4843/whisper-rs) - Rust bindings for Whisper
-- [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) - Text-to-speech
+- [Sherpa-ONNX](https://github.com/k2-fsa/sherpa-onnx) - Lightweight edge TTS (rover)
+- [sherpa-rs](https://github.com/thewh1teagle/sherpa-rs) - Rust bindings for Sherpa-ONNX
+- [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) - High-quality TTS (orchestra, optional)
 - [Aho-Corasick](https://docs.rs/aho-corasick/) - Efficient pattern matching
 
 **Web & UI:**

@@ -1,6 +1,150 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PropertiesComponent">{}</component>
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="ALL" />
+  </component>
+  <component name="CargoProjects">
+    <cargoProject FILE="$PROJECT_DIR$/Cargo.toml">
+      <package file="$PROJECT_DIR$/rover-kiwi/arm_controller">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/rover-kiwi/audio_capture">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/orchestra/audio_converter">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/rover-kiwi/audio_playback">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/orchestra/command_parser">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/rover-kiwi/dispatcher_keyboard">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/orchestra/kokoro_tts">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/rover-kiwi/kornia_capture">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/rover-kiwi/object_detector">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/rover-kiwi/object_tracker">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/orchestra/zenoh_bridge">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/rover-kiwi/performance_monitor">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/robo_rover_lib">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/rover-kiwi/rover_controller">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/rover-kiwi/zenoh_bridge">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/rover-kiwi/sherpa_tts">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/orchestra/sim_interface">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/orchestra/speech_recognizer">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/orchestra/video_encoder">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/rover-kiwi/visual_servo_controller">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/orchestra/web_bridge">
+        <feature name="default" enabled="true" />
+      </package>
+    </cargoProject>
+    <cargoProject FILE="$PROJECT_DIR$/robo-control-app/src-tauri/Cargo.toml">
+      <package file="$PROJECT_DIR$/robo-control-app/src-tauri">
+        <feature name="default" enabled="true" />
+      </package>
+    </cargoProject>
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="8ae13099-c180-4a8a-a38b-82e3e6232ddd" name="Changes" comment="Update repo to robo fleet control app">
+      <change afterPath="$PROJECT_DIR$/SETUP_ENVIRONMENT.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/models/scripts/download_sherpa_vits_models.sh" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/rover-kiwi/sherpa_tts/Cargo.toml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/rover-kiwi/sherpa_tts/src/main.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/ARCHITECTURE.md" beforeDir="false" afterPath="$PROJECT_DIR$/ARCHITECTURE.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Cargo.lock" beforeDir="false" afterPath="$PROJECT_DIR$/Cargo.lock" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Cargo.toml" beforeDir="false" afterPath="$PROJECT_DIR$/Cargo.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/models/scripts/check_all_models.py" beforeDir="false" afterPath="$PROJECT_DIR$/models/scripts/check_all_models.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/models/scripts/download_kokoro_models.sh" beforeDir="false" afterPath="$PROJECT_DIR$/models/scripts/download_kokoro_models.sh" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/models/scripts/download_onnxruntime.sh" beforeDir="false" afterPath="$PROJECT_DIR$/models/scripts/download_onnxruntime.sh" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/models/scripts/export_yolo_to_onnx.py" beforeDir="false" afterPath="$PROJECT_DIR$/models/scripts/export_yolo_to_onnx.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/orchestra/orchestra-dataflow.yml" beforeDir="false" afterPath="$PROJECT_DIR$/orchestra/orchestra-dataflow.yml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/rover-kiwi/kokoro_tts/Cargo.toml" beforeDir="false" afterPath="$PROJECT_DIR$/orchestra/kokoro_tts/Cargo.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/rover-kiwi/kokoro_tts/src/main.rs" beforeDir="false" afterPath="$PROJECT_DIR$/orchestra/kokoro_tts/src/main.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/rover-kiwi/rover-kiwi-dataflow.yml" beforeDir="false" afterPath="$PROJECT_DIR$/rover-kiwi/rover-kiwi-dataflow.yml" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="ExecutionTargetManager" SELECTED_TARGET="RsBuildProfile:test" />
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="MacroExpansionManager">
+    <option name="directoryName" value="PvvIe1lA" />
+  </component>
+  <component name="ProjectColorInfo"><![CDATA[{
+  "associatedIndex": 0
+}]]></component>
+  <component name="ProjectId" id="358TyEg7FuLbqsMq8H0lUcmSzqM" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "RunOnceActivity.rust.reset.selective.auto.import": "true",
+    "git-widget-placeholder": "main",
+    "last_opened_file_path": "/home/loidinh/ws/robo-fleet-dora-rs/models/scripts",
+    "node.js.detected.package.eslint": "true",
+    "node.js.detected.package.tslint": "true",
+    "node.js.selected.package.eslint": "(autodetect)",
+    "node.js.selected.package.tslint": "(autodetect)",
+    "nodejs_package_manager_path": "pnpm",
+    "org.rust.cargo.project.model.PROJECT_DISCOVERY": "true",
+    "org.rust.cargo.project.model.impl.CargoExternalSystemProjectAware.subscribe.first.balloon": "",
+    "org.rust.first.attach.projects": "true",
+    "vue.rearranger.settings.migration": "true"
+  }
+}]]></component>
+  <component name="RecentsManager">
+    <key name="CopyFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/models/scripts" />
+      <recent name="$PROJECT_DIR$/models" />
+      <recent name="$PROJECT_DIR$" />
+    </key>
+    <key name="MoveFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/orchestra" />
+    </key>
+  </component>
   <component name="RunManager" selected="Cargo.Test robo-fleet-dora-rs">
     <configuration name="Run arm_controller" type="CargoCommandRunConfiguration" factoryName="Cargo Command">
       <option name="command" value="run --package arm_controller --bin arm_controller" />
@@ -343,5 +487,57 @@
         <option name="CARGO.BUILD_TASK_PROVIDER" enabled="true" />
       </method>
     </configuration>
+  </component>
+  <component name="RustProjectSettings">
+    <option name="toolchainHomeDirectory" value="$USER_HOME$/.cargo/bin" />
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="8ae13099-c180-4a8a-a38b-82e3e6232ddd" name="Changes" comment="" />
+      <created>1762490951418</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1762490951418</updated>
+      <workItem from="1762490952636" duration="13907000" />
+    </task>
+    <task id="LOCAL-00001" summary="Update repo to robo fleet control app">
+      <option name="closed" value="true" />
+      <created>1762491110025</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1762491110025</updated>
+    </task>
+    <task id="LOCAL-00002" summary="Update repo to robo fleet control app">
+      <option name="closed" value="true" />
+      <created>1762491209428</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1762491209428</updated>
+    </task>
+    <option name="localTasksCounter" value="3" />
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State />
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+  <component name="VcsManagerConfiguration">
+    <option name="CHECK_CODE_SMELLS_BEFORE_PROJECT_COMMIT" value="false" />
+    <option name="CHECK_NEW_TODO" value="false" />
+    <MESSAGE value="Update repo to robo fleet control app" />
+    <option name="LAST_COMMIT_MESSAGE" value="Update repo to robo fleet control app" />
+    <option name="NON_MODAL_COMMIT_POSTPONE_SLOW_CHECKS" value="false" />
   </component>
 </project>
