@@ -75,6 +75,8 @@ pub struct DetectionResult {
     pub class_name: String,
     pub confidence: f32,
     pub tracking_id: Option<u32>,  // Assigned by tracker
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reid_features: Option<Vec<f32>>,  // Re-identification feature embeddings (e.g., 128-dim from OSNet)
 }
 
 impl DetectionResult {
@@ -85,6 +87,30 @@ impl DetectionResult {
             class_name,
             confidence,
             tracking_id: None,
+            reid_features: None,
+        }
+    }
+
+    /// Add ReID features to this detection
+    pub fn with_reid_features(mut self, features: Vec<f32>) -> Self {
+        self.reid_features = Some(features);
+        self
+    }
+
+    /// Compute cosine similarity between ReID features of two detections
+    pub fn reid_similarity(&self, other: &DetectionResult) -> Option<f32> {
+        match (&self.reid_features, &other.reid_features) {
+            (Some(f1), Some(f2)) if f1.len() == f2.len() => {
+                let dot: f32 = f1.iter().zip(f2.iter()).map(|(a, b)| a * b).sum();
+                let norm1: f32 = f1.iter().map(|x| x * x).sum::<f32>().sqrt();
+                let norm2: f32 = f2.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if norm1 > 0.0 && norm2 > 0.0 {
+                    Some(dot / (norm1 * norm2))
+                } else {
+                    None
+                }
+            }
+            _ => None,
         }
     }
 }

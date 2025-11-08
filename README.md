@@ -12,9 +12,13 @@ A hybrid robotic rover control system with autonomous object tracking and visual
 
 ### 👁️ Vision Pipeline
 - **Object Detection** using YOLOv12n (80 COCO classes)
-- **Multi-Object Tracking** with SORT algorithm and Kalman filtering
+- **Multi-Object Tracking** with BoTSORT algorithm:
+  - Camera Motion Compensation (CMC) for moving rover cameras
+  - ReID-based re-identification using OSNet x0.25
+  - Two-stage matching for robust associations
+  - Track state management (New → Tracked → Lost)
 - **Real-time Video Streaming** with JPEG encoding to web clients
-- **Bounding Box Visualization** with class labels and confidence scores
+- **Bounding Box Visualization** with class labels, confidence scores, and persistent tracking IDs
 
 ### 🎯 Autonomous Control
 - **Visual Servoing** for autonomous object following
@@ -89,10 +93,19 @@ Download required models for object detection, speech recognition, and text-to-s
 
 **YOLO Model** (object detection):
 ```shell
-cd models
-# Download and convert YOLOv12n to ONNX (see models/README.md for details)
-wget https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo12n.pt
-python3 scripts/export_yolo_to_onnx.py
+cd models/scripts
+# Create virtual environment and download YOLOv12n
+python3 -m venv venv
+source venv/bin/activate
+pip install ultralytics
+python3 export_yolo_to_onnx.py
+```
+
+**OSNet Model** (ReID feature extraction):
+```shell
+cd models/scripts
+# Download OSNet x0.25 for re-identification
+./download_osnet_model.sh
 ```
 
 **Whisper Model** (speech recognition):
@@ -188,7 +201,8 @@ Check - [ARCHITECTURE](ARCHITECTURE.md)
 **Vision & Detection:**
 - **gst-camera**: GStreamer video capture (V4L2/RTSP)
 - **object-detector**: YOLOv12n inference with ONNX Runtime
-- **object-tracker**: SORT tracking with persistent IDs and Kalman filter
+- **reid-extractor**: OSNet x0.25 ReID feature extraction (512-dim appearance features)
+- **object-tracker**: BoTSORT tracking with CMC, ReID, and Kalman filter
 - **visual-servo-controller**: PID-based autonomous following with distance estimation
 
 **Audio & Voice:**
@@ -210,16 +224,20 @@ Check - [ARCHITECTURE](ARCHITECTURE.md)
 The autonomous tracking system works as follows:
 
 1. **Detection**: object-detector identifies objects using YOLOv12n
-2. **Tracking**: object-tracker assigns persistent IDs using SORT algorithm
-3. **Target Selection**: User selects target via web UI
-4. **Visual Servoing**:
+2. **ReID Feature Extraction**: reid-extractor extracts 512-dim appearance features using OSNet
+3. **Tracking**: object-tracker assigns persistent IDs using BoTSORT algorithm:
+   - Camera Motion Compensation (CMC) for moving rover
+   - Two-stage matching (high-conf: IoU+ReID, low-conf: IoU only)
+   - Track state management (only confirmed tracks output)
+4. **Target Selection**: User selects target via web UI
+5. **Visual Servoing**:
    - **Distance Estimation**: Pinhole camera model calculates distance from bounding box height
    - **PID Control**:
      - Lateral PID: Centers target horizontally (controls omega_z)
      - Longitudinal PID: Maintains target distance (controls v_x)
    - **Safety**: Enforces minimum distance, maximum velocity limits
-5. **Command Arbitration**: rover-controller prioritizes commands (Emergency > Autonomous > Manual)
-6. **Telemetry**: Servo controller sends enhanced telemetry with distance and mode to web UI
+6. **Command Arbitration**: rover-controller prioritizes commands (Emergency > Autonomous > Manual)
+7. **Telemetry**: Servo controller sends enhanced telemetry with distance and mode to web UI
 
 ### Socket.IO Events
 
@@ -255,14 +273,17 @@ object-detector:
     ORT_DYLIB_PATH: "onnxruntime-linux-x64-1.16.3/lib/libonnxruntime.so"
 ```
 
-### Object Tracking
+### Object Tracking (BoTSORT)
 
 ```yaml
 object-tracker:
   env:
-    MAX_TRACKING_AGE: "30"   # Max frames to keep lost tracks
-    MIN_HITS: "3"            # Min detections before track confirmed
-    IOU_THRESHOLD: "0.3"     # IoU threshold for matching detections
+    MAX_TRACKING_AGE: "50"    # Max frames to keep lost tracks
+    MIN_HITS: "3"             # Min detections before track confirmed
+    IOU_THRESHOLD: "0.3"      # IoU threshold for matching detections
+    REID_WEIGHT: "0.8"        # Balance between IoU and ReID (0.0-1.0)
+    REID_THRESHOLD: "0.5"     # Minimum ReID cosine similarity
+    ENABLE_CMC: "true"        # Camera motion compensation for moving rover
 ```
 
 ### Camera Source
@@ -536,11 +557,17 @@ pnpm check-types
 
 **Vision Pipeline:**
 - **Video Stream**: 30 FPS @ 640x480
-- **Object Detection**: ~20-30 FPS (YOLOv12n on CPU)
-- **Object Tracking**: Real-time with persistent IDs
+- **Object Detection**: ~20-30 FPS (YOLOv12n on Raspberry Pi 5)
+- **ReID Feature Extraction**: 5-15ms per detection (OSNet x0.25)
+- **Object Tracking**: 25-30 FPS with BoTSORT + CMC
 - **Control Loop**: 10-20 Hz (limited by tracking rate)
 - **Distance Estimation**: <1ms per frame (negligible overhead)
 - **PID Update Rate**: Matches tracking frame rate
+
+**BoTSORT Components:**
+- **Camera Motion Compensation**: ~5-12ms per frame
+- **Two-Stage Matching**: ~1-2ms overhead
+- **Track State Management**: Negligible (<1ms)
 
 **Audio & Voice:**
 - **Audio Capture**: 16 kHz, Mono, 20 Hz chunks (50ms)
@@ -679,7 +706,8 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 **Vision & Detection:**
 - [Ultralytics YOLOv12](https://github.com/ultralytics/ultralytics) - Object detection
-- SORT - Simple Online and Realtime Tracking
+- BoT-SORT ([arXiv:2206.14651](https://arxiv.org/abs/2206.14651)) - Robust multi-object tracking with CMC
+- OSNet ([arXiv:1905.00953](https://arxiv.org/abs/1905.00953)) - Re-identification features
 - [GStreamer](https://gstreamer.freedesktop.org/) via [kornia-rs](https://github.com/kornia/kornia-rs) - Video capture
 - [ONNX Runtime](https://onnxruntime.ai/) - ML inference
 

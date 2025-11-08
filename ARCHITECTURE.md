@@ -26,10 +26,11 @@ Communication between machines uses **Zenoh** (pub/sub protocol) for efficient r
 │           │                     │          │  ┌────────▼─────────┐           │
 │  ┌────────▼─────────┐           │          │  │  ML Inference    │           │
 │  │  Heavy Compute   │           │   Zenoh  │  │  - YOLO Detect   │           │
-│  │  - Whisper STT   │◄──────────┼──────────┤►│  - SORT Track    │           │
-│  │  - Video Encode  │   P2P     │          │  └────────┬─────────┘           │
-│  │  - Audio Convert │           │          │           │                     │
-│  └────────┬─────────┘           │          │  ┌────────▼─────────┐           │
+│  │  - Whisper STT   │◄──────────┼──────────┤► │  - OSNet ReID    │           │
+│  │  - Video Encode  │   P2P     │          │  │  - BoTSORT+CMC   │           │
+│  │  - Audio Convert │           │          │  └────────┬─────────┘           │
+│  └────────┬─────────┘           │          │           │                     │
+│           │                     │          │  ┌────────▼─────────┐           │
 │           │                     │          │  │ Controllers      │           │
 │  ┌────────▼─────────┐           │          │  │ - rover          │           │
 │  │  orchestra-      │           │          │  │ - arm            │           │
@@ -72,7 +73,8 @@ robo-rover-dora/
 │   ├── audio_playback/             # Speaker output
 │   ├── kornia_capture/             # Camera (GStreamer)
 │   ├── object_detector/            # YOLOv12n inference (moved from orchestra)
-│   ├── object_tracker/             # SORT tracking (moved from orchestra)
+│   ├── reid_extractor/             # OSNet ReID feature extraction (512-dim)
+│   ├── object_tracker/             # BoTSORT tracking with CMC and ReID (moved from orchestra)
 │   ├── arm_controller/             # Arm servo control
 │   ├── rover_controller/           # Motor control
 │   ├── visual_servo_controller/    # PID autonomous following
@@ -104,7 +106,7 @@ The system uses **two separate zenoh_bridge implementations** for clean separati
   - `rover/{entity_id}/telemetry/rover` - Position/velocity
   - `rover/{entity_id}/telemetry/arm` - Joint angles
   - `rover/{entity_id}/telemetry/servo` - Visual servo state
-  - `rover/{entity_id}/video/detections` - Tracked detections (YOLO + SORT)
+  - `rover/{entity_id}/video/detections` - Tracked detections (YOLO + OSNet + BoTSORT)
   - `rover/{entity_id}/telemetry/tracking` - Tracking state and target info
   - `rover/{entity_id}/metrics` - System performance
 
@@ -152,12 +154,15 @@ ZENOH_MODE=peer
 ### Rover → Orchestra (Sensor Data & Processed Detections)
 
 1. **Hardware capture** (gst-camera, audio-capture)
-2. **Local ML processing** (object-detector → object-tracker)
+2. **Local ML processing** (object-detector → reid-extractor → object-tracker)
+   - YOLOv12n detection
+   - OSNet ReID feature extraction (512-dim appearance features)
+   - BoTSORT tracking with CMC (Camera Motion Compensation)
 3. **Raw data & detections** → `rover/{entity_id}/*` topics via Zenoh
 4. **Orchestra receives** and forwards:
    - RGB8 → video-encoder (JPEG for web UI)
    - Float32 audio → speech-recognizer → command-parser
-   - Tracked detections → web-bridge (for web UI display)
+   - Tracked detections with ReID features → web-bridge (for web UI display)
 
 ### Orchestra → Rover (Commands)
 
@@ -190,8 +195,9 @@ cargo install dora-cli
 **On Rover-Kiwi**:
 - GStreamer for camera
 - cpal for audio
-- ONNX Runtime for YOLO and TTS
-- YOLO model (yolo12n.onnx)
+- ONNX Runtime for YOLO, ReID, and TTS
+- YOLO model (yolo12n.onnx, ~6MB)
+- OSNet model (osnet_x0_25.onnx, ~0.85MB)
 - Sherpa-ONNX VITS-Piper model for lightweight edge TTS (~61MB)
 
 ### Build and Deploy
@@ -288,17 +294,24 @@ Future: Orchestra processes MULTIPLE rovers in parallel with:
 
 ### Why Object Detection & Tracking on Rover?
 
-**Decision**: YOLO + SORT run on rover, not orchestra
+**Decision**: YOLO + OSNet + BoTSORT run on rover, not orchestra
 
 **Rationale**:
 - Low-latency visual servoing requires local tracking data (<5ms)
 - Network round-trip (rover → orchestra → rover) adds 10-20ms latency
-- Raspberry Pi 5 has sufficient CPU for YOLOv12n (nano variant)
+- Raspberry Pi 5 has sufficient CPU for YOLOv12n + OSNet x0.25
 - Better autonomy: rover can track and follow even if network drops
+- Camera Motion Compensation (CMC) critical for moving rover - must be local
 
-**Tradeoff**: Increases rover CPU usage from ~35% to ~60%
+**Tradeoff**: Increases rover CPU usage from ~35% to ~65%
 
-**Implementation**: Full detection/tracking/servo pipeline runs locally on rover
+**Implementation**: Full detection/ReID/tracking/servo pipeline runs locally on rover
+
+**Benefits over SORT**:
+- BoTSORT provides robust tracking for moving cameras via CMC
+- ReID features enable re-identification after occlusions
+- Two-stage matching reduces ID switches by ~50%
+- Track state management filters noisy detections
 
 ## References
 

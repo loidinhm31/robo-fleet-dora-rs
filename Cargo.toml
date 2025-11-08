@@ -27,6 +27,7 @@ members = [
     "rover-kiwi/performance_monitor",
     "rover-kiwi/zenoh_bridge",
     "rover-kiwi/dispatcher_keyboard",
+    "rover-kiwi/reid_extractor",
 ]
 
 [workspace.dependencies]

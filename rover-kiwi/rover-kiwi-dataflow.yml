@@ -83,21 +83,39 @@ nodes:
       TARGET_CLASSES: ""
       ORT_DYLIB_PATH: "/usr/local/lib/libonnxruntime.so"
 
-  # Object tracker - SORT algorithm (moved from orchestra)
+#  # ReID feature extractor - Extract appearance features using OSNet
+  - id: reid-extractor
+    build: cargo build --release -p reid_extractor
+    path: target/release/reid_extractor
+    inputs:
+      frame: gst-camera/frame  # RGB8 frame for cropping
+      detections: object-detector/detections  # Detections to extract features from
+    outputs:
+      - detections_with_reid  # DetectionFrame with ReID features added
+    env:
+      RUST_LOG: info
+      REID_MODEL_PATH: "${HOME}/.cache/reid/osnet_x0_25.onnx"
+      MIN_BBOX_SIZE: "32"  # Minimum bbox width/height for ReID extraction
+
+  # Object tracker - BoTSORT algorithm with ReID and CMC (moved from orchestra)
   - id: object-tracker
     build: cargo build --release -p object_tracker
     path: target/release/object_tracker
     inputs:
-      detections: object-detector/detections
+      frame: gst-camera/frame  # RGB8 frame for camera motion compensation
+      detections: reid-extractor/detections_with_reid  # Detections with ReID features
       tracking_command: zenoh-bridge/tracking_command  # From Orchestra
     outputs:
       - tracked_detections  # DetectionFrame with tracking IDs
       - tracking_telemetry  # Tracking state and target info
     env:
       RUST_LOG: info
-      MAX_TRACKING_AGE: "30"
+      MAX_TRACKING_AGE: "50"
       MIN_HITS: "3"
       IOU_THRESHOLD: "0.3"
+      REID_WEIGHT: "0.8"  # 0.0=IoU only, 1.0=ReID only, 0.5=balanced
+      REID_THRESHOLD: "0.5"  # Minimum ReID similarity for matching
+      ENABLE_CMC: "true"  # Enable camera motion compensation (BoTSORT)
 
   - id: visual-servo-controller
     build: cargo build --release -p visual_servo_controller

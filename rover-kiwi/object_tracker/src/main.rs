@@ -1,8 +1,11 @@
+mod cmc;
+
+use cmc::CameraMotionCompensator;
 use dora_node_api::{
     dora_core::config::DataId,
     DoraNode,
     Event,
-    arrow::array::BinaryArray,
+    arrow::array::{BinaryArray, UInt8Array},
 };
 use eyre::{Context, Result};
 use nalgebra as na;
@@ -13,6 +16,20 @@ use robo_rover_lib::{init_tracing, types::{
 use std::collections::HashMap;
 use std::env;
 use tracing::{debug, error, info, warn};
+
+/// Internal track state for lifecycle management (BoTSORT)
+#[derive(Debug, Clone, PartialEq)]
+enum InternalTrackState {
+    New,        // Just created, not yet confirmed
+    Tracked,    // Active and confirmed
+    Lost,       // Lost but still searchable
+}
+
+impl InternalTrackState {
+    fn is_active(&self) -> bool {
+        matches!(self, InternalTrackState::Tracked)
+    }
+}
 
 /// Kalman filter for tracking bounding box center (x, y) and velocity (vx, vy)
 struct KalmanFilter {
@@ -119,6 +136,9 @@ struct TrackedObject {
     frames_since_update: u32,
     total_frames: u32,
     last_seen: u64,
+    reid_features: Option<Vec<f32>>,  // Last known ReID features for re-identification
+    state: InternalTrackState,  // Track lifecycle state (BoTSORT)
+    hits: u32,  // Number of consecutive hits for confirming track
 }
 
 impl TrackedObject {
@@ -138,15 +158,23 @@ impl TrackedObject {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_millis() as u64,
+            reid_features: detection.reid_features.clone(),
+            state: InternalTrackState::New,
+            hits: 1,
         }
     }
 
     fn predict(&mut self) {
         self.kalman.predict();
         self.frames_since_update += 1;
+
+        // Update state based on frames since last update
+        if self.frames_since_update > 1 {
+            self.state = InternalTrackState::Lost;
+        }
     }
 
-    fn update(&mut self, detection: &DetectionResult) {
+    fn update(&mut self, detection: &DetectionResult, min_hits: u32) {
         let (cx, cy) = detection.bbox.center();
         self.kalman.update(cx, cy);
 
@@ -154,10 +182,64 @@ impl TrackedObject {
         self.confidence = detection.confidence;
         self.frames_since_update = 0;
         self.total_frames += 1;
+        self.hits += 1;
         self.last_seen = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
+
+        // Update ReID features if available
+        if let Some(ref features) = detection.reid_features {
+            self.reid_features = Some(features.clone());
+        }
+
+        // Update state: track is active if it has enough hits
+        if self.hits >= min_hits {
+            self.state = InternalTrackState::Tracked;
+        }
+    }
+
+    /// Apply camera motion compensation to predicted bbox
+    fn apply_camera_motion(&mut self, transform: &na::Matrix3<f32>) {
+        let (cx, cy) = self.kalman.get_position();
+
+        // Transform center point
+        let p = na::Vector3::new(cx, cy, 1.0);
+        let p_transformed = transform * p;
+
+        // Update Kalman state with compensated position
+        self.kalman.state[0] = p_transformed[0];
+        self.kalman.state[1] = p_transformed[1];
+
+        // Also transform bbox for visualization
+        let w = self.bbox.width();
+        let h = self.bbox.height();
+        let new_cx = p_transformed[0];
+        let new_cy = p_transformed[1];
+
+        self.bbox = BoundingBox::new(
+            (new_cx - w / 2.0).clamp(0.0, 1.0),
+            (new_cy - h / 2.0).clamp(0.0, 1.0),
+            (new_cx + w / 2.0).clamp(0.0, 1.0),
+            (new_cy + h / 2.0).clamp(0.0, 1.0),
+        );
+    }
+
+    /// Compute ReID similarity with a detection (cosine similarity)
+    fn reid_similarity(&self, detection: &DetectionResult) -> Option<f32> {
+        match (&self.reid_features, &detection.reid_features) {
+            (Some(f1), Some(f2)) if f1.len() == f2.len() => {
+                let dot: f32 = f1.iter().zip(f2.iter()).map(|(a, b)| a * b).sum();
+                let norm1: f32 = f1.iter().map(|x| x * x).sum::<f32>().sqrt();
+                let norm2: f32 = f2.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if norm1 > 0.0 && norm2 > 0.0 {
+                    Some(dot / (norm1 * norm2))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
     }
 
     fn get_predicted_bbox(&self) -> BoundingBox {
@@ -185,27 +267,63 @@ impl TrackedObject {
     }
 }
 
-/// SORT-based object tracker
+/// BoTSORT object tracker with ReID and Camera Motion Compensation
 struct ObjectTracker {
     tracks: HashMap<u32, TrackedObject>,
     next_id: u32,
     max_age: u32,
     min_hits: u32,
     iou_threshold: f32,
+    reid_weight: f32,  // Weight for ReID similarity in matching (0.0 = IoU only, 1.0 = ReID only)
+    reid_threshold: f32,  // Minimum ReID similarity for matching
     selected_target_id: Option<u32>,
     tracking_enabled: bool,
+    cmc: Option<CameraMotionCompensator>,  // Camera motion compensator (BoTSORT)
+    high_conf_threshold: f32,  // Threshold for high-confidence detections (two-stage matching)
 }
 
 impl ObjectTracker {
-    fn new(max_age: u32, min_hits: u32, iou_threshold: f32) -> Self {
+    fn new(
+        max_age: u32,
+        min_hits: u32,
+        iou_threshold: f32,
+        reid_weight: f32,
+        reid_threshold: f32,
+        enable_cmc: bool,
+    ) -> Self {
         Self {
             tracks: HashMap::new(),
             next_id: 1,
             max_age,
             min_hits,
             iou_threshold,
+            reid_weight,
+            reid_threshold,
             selected_target_id: None,
             tracking_enabled: false,
+            cmc: if enable_cmc {
+                Some(CameraMotionCompensator::new())
+            } else {
+                None
+            },
+            high_conf_threshold: 0.6,  // Detections above this are "high confidence"
+        }
+    }
+
+    /// Process camera frame for motion compensation
+    fn process_frame(&mut self, frame_data: &[u8], width: u32, height: u32) {
+        if let Some(ref mut cmc) = self.cmc {
+            // Convert to grayscale
+            let gray_frame = CameraMotionCompensator::rgb_to_gray(frame_data, width, height);
+
+            // Estimate camera motion
+            if let Some(transform) = cmc.estimate_motion(&gray_frame) {
+                // Apply motion compensation to all tracks
+                for track in self.tracks.values_mut() {
+                    track.apply_camera_motion(&transform);
+                }
+                debug!("CMC: Applied camera motion compensation");
+            }
         }
     }
 
@@ -215,26 +333,80 @@ impl ObjectTracker {
             track.predict();
         }
 
-        // Match detections to tracks using Hungarian algorithm (simplified with greedy matching)
-        let matched_pairs = self.associate_detections_to_tracks(&detections);
+        // Two-stage matching (BoTSORT)
+        // Stage 1: Match high-confidence detections with active tracks
+        // Stage 2: Match remaining low-confidence detections
 
-        // Update matched tracks
-        let mut unmatched_detections: Vec<usize> = (0..detections.len()).collect();
+        let (high_conf_dets, low_conf_dets): (Vec<_>, Vec<_>) = detections
+            .iter()
+            .enumerate()
+            .partition(|(_, d)| d.confidence >= self.high_conf_threshold);
+
+        debug!("Two-stage matching: {} high-conf, {} low-conf detections",
+               high_conf_dets.len(), low_conf_dets.len());
+
+        // Stage 1: High-confidence detections with IoU + ReID
         let mut matched_tracks = std::collections::HashSet::new();
+        let mut matched_detections = std::collections::HashSet::new();
 
-        for (detection_idx, track_id) in matched_pairs {
-            if let Some(track) = self.tracks.get_mut(&track_id) {
-                track.update(&detections[detection_idx]);
-                matched_tracks.insert(track_id);
-                unmatched_detections.retain(|&idx| idx != detection_idx);
+        if !high_conf_dets.is_empty() {
+            let high_conf_indices: Vec<usize> = high_conf_dets.iter().map(|(idx, _)| *idx).collect();
+            let high_conf_subset: Vec<DetectionResult> = high_conf_indices
+                .iter()
+                .map(|&idx| detections[idx].clone())
+                .collect();
+
+            let matches_stage1 = self.associate_detections_to_tracks(&high_conf_subset, true);
+
+            for (subset_idx, track_id) in matches_stage1 {
+                let detection_idx = high_conf_indices[subset_idx];
+                if let Some(track) = self.tracks.get_mut(&track_id) {
+                    track.update(&detections[detection_idx], self.min_hits);
+                    matched_tracks.insert(track_id);
+                    matched_detections.insert(detection_idx);
+                }
             }
+
+            debug!("Stage 1: Matched {} high-confidence detections", matched_detections.len());
         }
 
-        // Create new tracks for unmatched detections
-        for detection_idx in unmatched_detections {
-            let new_track = TrackedObject::new(self.next_id, &detections[detection_idx]);
-            self.tracks.insert(self.next_id, new_track);
-            self.next_id += 1;
+        // Stage 2: Low-confidence detections with IoU only
+        if !low_conf_dets.is_empty() {
+            let low_conf_indices: Vec<usize> = low_conf_dets
+                .iter()
+                .map(|(idx, _)| *idx)
+                .filter(|idx| !matched_detections.contains(idx))
+                .collect();
+
+            let low_conf_subset: Vec<DetectionResult> = low_conf_indices
+                .iter()
+                .map(|&idx| detections[idx].clone())
+                .collect();
+
+            let matches_stage2 = self.associate_detections_to_tracks(&low_conf_subset, false);
+
+            for (subset_idx, track_id) in matches_stage2 {
+                let detection_idx = low_conf_indices[subset_idx];
+                if !matched_tracks.contains(&track_id) {
+                    if let Some(track) = self.tracks.get_mut(&track_id) {
+                        track.update(&detections[detection_idx], self.min_hits);
+                        matched_tracks.insert(track_id);
+                        matched_detections.insert(detection_idx);
+                    }
+                }
+            }
+
+            debug!("Stage 2: Matched {} low-confidence detections",
+                   matched_detections.len() - high_conf_dets.len());
+        }
+
+        // Create new tracks for unmatched high-confidence detections
+        for (idx, _) in high_conf_dets {
+            if !matched_detections.contains(&idx) {
+                let new_track = TrackedObject::new(self.next_id, &detections[idx]);
+                self.tracks.insert(self.next_id, new_track);
+                self.next_id += 1;
+            }
         }
 
         // Remove old tracks
@@ -244,7 +416,6 @@ impl ObjectTracker {
             .collect();
 
         for track_id in tracks_to_remove {
-            // info!("Removing track {} (lost for {} frames)", track_id, self.max_age);
             self.tracks.remove(&track_id);
 
             // Clear selected target if it was removed
@@ -254,56 +425,97 @@ impl ObjectTracker {
             }
         }
 
-        debug!("Active tracks: {}", self.tracks.len());
+        debug!("Active tracks: {} (confirmed: {})",
+               self.tracks.len(),
+               self.tracks.values().filter(|t| t.state.is_active()).count());
     }
 
-    fn associate_detections_to_tracks(&self, detections: &[DetectionResult]) -> Vec<(usize, u32)> {
+    fn associate_detections_to_tracks(&self, detections: &[DetectionResult], use_reid: bool) -> Vec<(usize, u32)> {
         let mut matches = Vec::new();
 
         if detections.is_empty() || self.tracks.is_empty() {
             return matches;
         }
 
-        // Compute IoU matrix
-        let mut iou_matrix: Vec<Vec<(f32, u32)>> = Vec::new();
+        // Compute combined similarity matrix (IoU + ReID)
+        let mut similarity_matrix: Vec<Vec<(f32, u32)>> = Vec::new();
 
         for detection in detections {
             let mut row = Vec::new();
             for (track_id, track) in &self.tracks {
+                // Check class match first
+                if detection.class_name != track.class_name {
+                    row.push((0.0, *track_id));
+                    continue;
+                }
+
+                // Compute IoU
                 let predicted_bbox = track.get_predicted_bbox();
                 let iou = detection.bbox.iou(&predicted_bbox);
 
-                // Also check class match
-                if detection.class_name == track.class_name {
-                    row.push((iou, *track_id));
+                // Compute combined similarity based on matching stage
+                let similarity = if use_reid && self.reid_weight > 0.0 {
+                    // High-confidence stage: use IoU + ReID
+                    if let Some(reid_sim) = track.reid_similarity(detection) {
+                        // Use weighted combination of IoU and ReID similarity
+                        let combined = (1.0 - self.reid_weight) * iou + self.reid_weight * reid_sim;
+
+                        debug!(
+                            "Track {} <-> Detection: IoU={:.3}, ReID={:.3}, Combined={:.3}",
+                            track_id, iou, reid_sim, combined
+                        );
+
+                        combined
+                    } else {
+                        // No ReID features, fallback to IoU
+                        iou
+                    }
                 } else {
-                    row.push((0.0, *track_id));
-                }
+                    // Low-confidence stage: use IoU only
+                    iou
+                };
+
+                row.push((similarity, *track_id));
             }
-            iou_matrix.push(row);
+            similarity_matrix.push(row);
         }
 
-        // Greedy matching: match highest IoU first
+        // Greedy matching: match highest similarity first
         let mut used_tracks = std::collections::HashSet::new();
         let mut used_detections = std::collections::HashSet::new();
 
         loop {
-            let mut best_iou = self.iou_threshold;
+            // Determine threshold based on matching stage
+            let threshold = if use_reid && self.reid_weight > 0.0 {
+                let has_reid = detections.iter().any(|d| d.reid_features.is_some());
+                if has_reid {
+                    // Use combined threshold for high-confidence + ReID
+                    (1.0 - self.reid_weight) * self.iou_threshold + self.reid_weight * self.reid_threshold
+                } else {
+                    // Fallback to IoU threshold
+                    self.iou_threshold
+                }
+            } else {
+                // Use IoU threshold only for low-confidence
+                self.iou_threshold * 0.8  // Slightly lower threshold for second stage
+            };
+
+            let mut best_similarity = threshold;
             let mut best_detection = None;
             let mut best_track = None;
 
-            for (det_idx, row) in iou_matrix.iter().enumerate() {
+            for (det_idx, row) in similarity_matrix.iter().enumerate() {
                 if used_detections.contains(&det_idx) {
                     continue;
                 }
 
-                for (iou, track_id) in row {
+                for (similarity, track_id) in row {
                     if used_tracks.contains(track_id) {
                         continue;
                     }
 
-                    if *iou > best_iou {
-                        best_iou = *iou;
+                    if *similarity > best_similarity {
+                        best_similarity = *similarity;
                         best_detection = Some(det_idx);
                         best_track = Some(*track_id);
                     }
@@ -378,7 +590,8 @@ impl ObjectTracker {
 
     fn get_all_tracks(&self) -> Vec<DetectionResult> {
         self.tracks.values()
-            .filter(|track| track.total_frames >= self.min_hits)
+            // Only return confirmed/tracked objects (BoTSORT)
+            .filter(|track| track.state.is_active())
             .map(|track| {
                 let mut detection = DetectionResult::new(
                     track.bbox.clone(),
@@ -387,6 +600,7 @@ impl ObjectTracker {
                     track.confidence,
                 );
                 detection.tracking_id = Some(track.id);
+                detection.reid_features = track.reid_features.clone();
                 detection
             })
             .collect()
@@ -396,7 +610,7 @@ impl ObjectTracker {
 fn main() -> Result<()> {
     let _guard = init_tracing();
 
-    info!("Starting object_tracker node");
+    info!("Starting BoTSORT object_tracker node (with ReID + CMC support)");
 
     // Read configuration from environment
     let max_age = env::var("MAX_TRACKING_AGE")
@@ -414,13 +628,31 @@ fn main() -> Result<()> {
         .parse::<f32>()
         .context("Invalid IOU_THRESHOLD")?;
 
+    let reid_weight = env::var("REID_WEIGHT")
+        .unwrap_or_else(|_| "0.5".to_string())
+        .parse::<f32>()
+        .context("Invalid REID_WEIGHT")?;
+
+    let reid_threshold = env::var("REID_THRESHOLD")
+        .unwrap_or_else(|_| "0.5".to_string())
+        .parse::<f32>()
+        .context("Invalid REID_THRESHOLD")?;
+
+    let enable_cmc = env::var("ENABLE_CMC")
+        .unwrap_or_else(|_| "true".to_string())
+        .parse::<bool>()
+        .unwrap_or(true);
+
     info!("Configuration:");
     info!("  Max tracking age: {} frames", max_age);
     info!("  Min hits: {} frames", min_hits);
     info!("  IoU threshold: {}", iou_threshold);
+    info!("  ReID weight: {} (0.0=IoU only, 1.0=ReID only)", reid_weight);
+    info!("  ReID threshold: {}", reid_threshold);
+    info!("  Camera Motion Compensation: {}", if enable_cmc { "enabled" } else { "disabled" });
 
     // Initialize tracker
-    let mut tracker = ObjectTracker::new(max_age, min_hits, iou_threshold);
+    let mut tracker = ObjectTracker::new(max_age, min_hits, iou_threshold, reid_weight, reid_threshold, enable_cmc);
 
     // Initialize Dora node
     let (mut node, mut events) = DoraNode::init_from_env()?;
@@ -429,8 +661,35 @@ fn main() -> Result<()> {
     // Main event loop
     while let Some(event) = events.recv() {
         match event {
-            Event::Input { id, data, .. } => {
+            Event::Input { id, data, metadata, .. } => {
                 match id.as_str() {
+                    "frame" => {
+                        // Process frame for camera motion compensation
+                        if enable_cmc {
+                            let width = metadata.parameters.get("width")
+                                .and_then(|v| match v {
+                                    dora_node_api::Parameter::Integer(i) => Some(*i as u32),
+                                    _ => None,
+                                })
+                                .unwrap_or(640);
+
+                            let height = metadata.parameters.get("height")
+                                .and_then(|v| match v {
+                                    dora_node_api::Parameter::Integer(i) => Some(*i as u32),
+                                    _ => None,
+                                })
+                                .unwrap_or(480);
+
+                            let frame_data = if let Some(array) = data.as_any().downcast_ref::<UInt8Array>() {
+                                array.values().as_ref()
+                            } else {
+                                error!("Failed to cast frame data to UInt8Array");
+                                continue;
+                            };
+
+                            tracker.process_frame(frame_data, width, height);
+                        }
+                    }
                     "detections" => {
                         // Deserialize detection frame
                         let binary_data = if let Some(array) = data.as_any().downcast_ref::<BinaryArray>() {
