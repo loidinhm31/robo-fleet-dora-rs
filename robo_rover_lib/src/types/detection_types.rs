@@ -77,6 +77,8 @@ pub struct DetectionResult {
     pub tracking_id: Option<u32>,  // Assigned by tracker
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reid_features: Option<Vec<f32>>,  // Re-identification feature embeddings (e.g., 128-dim from OSNet)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub predicted_trajectory: Option<Vec<BoundingBox>>,  // Future predicted positions
 }
 
 impl DetectionResult {
@@ -88,6 +90,7 @@ impl DetectionResult {
             confidence,
             tracking_id: None,
             reid_features: None,
+            predicted_trajectory: None,
         }
     }
 

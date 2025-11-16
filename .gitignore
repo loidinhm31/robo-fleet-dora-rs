@@ -4,3 +4,4 @@ onnxruntime-*.tgz
 /venv
 /models/.cache/*
 /models/scripts/venv
+/memory

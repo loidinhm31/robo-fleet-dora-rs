@@ -6,7 +6,7 @@ use dora_node_api::{
 };
 use eyre::{Context, Result};
 use image::{DynamicImage, ImageBuffer, Rgb};
-use ndarray::{Array, IxDyn};
+use ndarray::{Array, CowArray, IxDyn};
 use ort::{
     Environment, ExecutionProvider, GraphOptimizationLevel, SessionBuilder, Value,
 };
@@ -41,10 +41,14 @@ impl YoloDetector {
     fn new(model_path: &str, confidence_threshold: f32, nms_threshold: f32, target_classes: Vec<String>) -> Result<Self> {
         info!("Loading YOLO model from: {}", model_path);
 
-        // Create ONNX Runtime environment
+        // Create ONNX Runtime environment with GPU support (fallback to CPU)
         let environment = Environment::builder()
             .with_name("yolo")
-            .with_execution_providers([ExecutionProvider::CPU(Default::default())])
+            .with_execution_providers([
+                ExecutionProvider::CUDA(Default::default()),
+                ExecutionProvider::TensorRT(Default::default()),
+                ExecutionProvider::CPU(Default::default()),
+            ])
             .build()?
             .into_arc();
 
@@ -58,7 +62,15 @@ impl YoloDetector {
 
         // YOLOv12 typically uses 640x640 input
         let input_size = (640, 640);
-        
+
+        // Warmup inference to initialize GPU/runtime
+        info!("Warming up model...");
+        let dummy_input: Array<f32, IxDyn> = Array::zeros(IxDyn(&[1, 3, input_size.1 as usize, input_size.0 as usize]));
+        let input_cow = CowArray::from(&dummy_input);
+        let input_tensor = Value::from_array(session.allocator(), &input_cow)?;
+        let _ = session.run(vec![input_tensor])?;
+        info!("Warmup complete - model ready");
+
         Ok(Self {
             session,
             confidence_threshold,
@@ -252,7 +264,7 @@ impl YoloDetector {
 fn main() -> Result<()> {
     let _guard = init_tracing();
 
-    info!("Starting object_detector node");
+    info!("Starting Object Detector node");
     
     // Read configuration from environment
     let model_path = env::var("MODEL_PATH")

@@ -1,6 +1,8 @@
 use image::{GrayImage, Luma};
 use imageproc::corners::{corners_fast9, Corner};
 use nalgebra as na;
+use rand::seq::SliceRandom;
+use rand::thread_rng;
 use tracing::debug;
 
 /// Camera Motion Compensator using sparse optical flow
@@ -202,9 +204,8 @@ impl CameraMotionCompensator {
                 return None;
             }
 
-            let sample: Vec<_> = (0..3)
-                .map(|i| matches[i % matches.len()])
-                .collect();
+            let mut rng = thread_rng();
+            let sample: Vec<_> = matches.choose_multiple(&mut rng, 3).copied().collect();
 
             // Estimate affine transform from 3 points
             if let Some(transform) = self.estimate_affine_from_points(&sample) {
