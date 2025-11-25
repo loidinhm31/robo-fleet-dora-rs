@@ -1,9 +1,48 @@
 nodes:
+  # ============================================================================
+  # PyBullet Simulation - Local virtual rover for testing without real hardware
+  # ============================================================================
+  - id: pybullet-sim
+    build: pip install -e pybullet_sim
+    path: pybullet_sim/pybullet_sim/main.py
+    inputs:
+      # Commands from web UI
+      rover_command: web-bridge/rover_command
+      arm_command: web-bridge/arm_command
+    outputs:
+      # Telemetry to web UI
+      - rover_telemetry
+      - arm_telemetry
+    env:
+      # Required
+      URDF_PATH: "../model/LeKiwi.urdf"
+
+      # Robot parameters (ST3215/STS3215 servo specs)
+      WHEEL_RADIUS: "0.05"          # 50mm wheels
+      CHASSIS_RADIUS: "0.15"        # 150mm from center to wheel
+      MAX_WHEEL_TORQUE: "2.94"      # 30 kg·cm = 2.94 N·m
+      MAX_WHEEL_VELOCITY: "6.47"    # ~62 RPM
+      CHASSIS_MASS: "2.0"           # 2kg robot
+
+      # Display
+      GUI_ENABLED: "true"            # Set to "false" for headless mode
+
+      # Physics simulation
+      PHYSICS_TIME_STEP: "0.004166"  # 240 Hz
+      GRAVITY: "-9.81"               # m/s²
+      FRICTION_COEFFICIENT: "0.7"    # Surface friction
+      LATERAL_FRICTION: "0.9"        # Mecanum wheel side friction
+      REAL_TIME: "false"             # Set to "true" for real-time simulation
+
+      # Logging
+      RUST_LOG: "info"
+
+  # ============================================================================
   # Orchestra Zenoh Bridge - Connects orchestra dataflow to Zenoh network
   # Subscribes to selected rover's telemetry, publishes commands back
   - id: orchestra-bridge
     build: cargo build --release -p orchestra_zenoh_bridge
-    path: target/release/orchestra_zenoh_bridge
+    path: ../target/release/orchestra_zenoh_bridge
     inputs:
       # Processed data TO send to selected rover via Zenoh
       tracking_command_parser: command-parser/tracking_command
@@ -44,7 +83,7 @@ nodes:
   # Speech recognizer - Whisper.cpp STT
   - id: speech-recognizer
     build: cargo build --release -p speech_recognizer
-    path: target/release/speech_recognizer
+    path: ../target/release/speech_recognizer
     inputs:
       audio_rover: orchestra-bridge/audio_frame     # From rover microphone
       audio_web: web-bridge/voice_command_audio      # From web UI microphone
@@ -61,7 +100,7 @@ nodes:
   # Command parser - NLU with pattern matching
   - id: command-parser
     build: cargo build --release -p command_parser
-    path: target/release/command_parser
+    path: ../target/release/command_parser
     inputs:
       text: speech-recognizer/transcription
     outputs:
@@ -77,7 +116,7 @@ nodes:
   # Kokoro TTS - High-quality neural TTS for workstation audio
 #  - id: kokoro-tts
 #    build: cargo build --release -p kokoro_tts
-#    path: target/release/kokoro_tts
+#    path: ../target/release/kokoro_tts
 #    inputs:
 #      tts_command_parser: command-parser/tts_command
 #      tts_command_web: web-bridge/tts_command
@@ -89,7 +128,7 @@ nodes:
   # Audio converter - Float32 to Int16LE (for web streaming)
   - id: audio-converter
     build: cargo build --release -p audio_converter
-    path: target/release/audio_converter
+    path: ../target/release/audio_converter
     inputs:
       audio_input: orchestra-bridge/audio_frame  # Float32 audio from rover
     outputs:
@@ -103,7 +142,7 @@ nodes:
   # Video encoder - RGB8 to JPEG (for web streaming)
   - id: video-encoder
     build: cargo build --release -p video_encoder
-    path: target/release/video_encoder
+    path: ../target/release/video_encoder
     inputs:
       video_frame: orchestra-bridge/video_frame  # RGB8 from rover
     outputs:
@@ -117,15 +156,23 @@ nodes:
   # Web bridge - Fleet control with entity selection
   - id: web-bridge
     build: cargo build --release -p web_bridge
-    path: target/release/web_bridge
+    path: ../target/release/web_bridge
     inputs:
       # Media streams (encoded data for web clients)
       video_frame: video-encoder/encoded_frame     # JPEG from video-encoder
       audio_frame: audio-converter/audio_output    # Int16LE PCM from audio-converter
 
-      # Telemetry from selected rover (via orchestra-bridge)
-      rover_telemetry: orchestra-bridge/rover_telemetry
-      arm_telemetry: orchestra-bridge/arm_telemetry
+      # ========================================================================
+      # Telemetry from LOCAL SIMULATION (for testing without real hardware)
+      # ========================================================================
+      rover_telemetry: pybullet-sim/rover_telemetry
+      arm_telemetry: pybullet-sim/arm_telemetry
+
+      # ========================================================================
+      # Telemetry from REMOTE ROVERS (via orchestra-bridge)
+      # ========================================================================
+      # rover_telemetry: orchestra-bridge/rover_telemetry
+      # arm_telemetry: orchestra-bridge/arm_telemetry
       servo_telemetry: orchestra-bridge/servo_telemetry
       performance_metrics: orchestra-bridge/performance_metrics
 

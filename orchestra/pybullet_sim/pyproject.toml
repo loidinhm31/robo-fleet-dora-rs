@@ -1,0 +1,23 @@
+[project]
+name = "pybullet-sim"
+version = "0.1.0"
+description = "PyBullet simulation for LeKiwi robot"
+requires-python = ">=3.8"
+dependencies = [
+    "pybullet>=3.2.5",
+    "numpy>=1.21.0",
+    "dora-rs>=0.3.0",
+]
+
+
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[project.scripts]
+pybullet-sim = "pybullet_sim.main:main"
+
+[tool.ruff.lint]
+extend-select = [
+    "D",   # pydocstyle
+    "UP"
+]

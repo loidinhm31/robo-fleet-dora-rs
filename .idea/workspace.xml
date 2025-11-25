@@ -56,9 +56,6 @@
       <package file="$PROJECT_DIR$/rover-kiwi/sherpa_tts">
         <feature name="default" enabled="true" />
       </package>
-      <package file="$PROJECT_DIR$/orchestra/sim_interface">
-        <feature name="default" enabled="true" />
-      </package>
       <package file="$PROJECT_DIR$/orchestra/speech_recognizer">
         <feature name="default" enabled="true" />
       </package>
@@ -80,17 +77,24 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="8ae13099-c180-4a8a-a38b-82e3e6232ddd" name="Changes" comment="Update battery information and correct nodes on rover-kiwi">
-      <change afterPath="$PROJECT_DIR$/rover-kiwi/object_tracker/src/cmc.rs" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/rover-kiwi/reid_extractor/Cargo.toml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/rover-kiwi/reid_extractor/src/main.rs" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/orchestra/pybullet_sim/README.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/orchestra/pybullet_sim/pybullet_sim/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/orchestra/pybullet_sim/pybullet_sim/__main__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/orchestra/pybullet_sim/pybullet_sim/main.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/orchestra/pybullet_sim/pybullet_sim/pybullet_config.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/orchestra/pybullet_sim/pybullet_sim/pybullet_robot_controller.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/orchestra/pybullet_sim/pyproject.toml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/orchestra/pybullet_sim/quickstart.sh" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/orchestra/pybullet_sim/requirements.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/orchestra/pybullet_sim/test_joints.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/orchestra/pybullet_sim/test_standalone.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/ARCHITECTURE.md" beforeDir="false" afterPath="$PROJECT_DIR$/ARCHITECTURE.md" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Cargo.lock" beforeDir="false" afterPath="$PROJECT_DIR$/Cargo.lock" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Cargo.toml" beforeDir="false" afterPath="$PROJECT_DIR$/Cargo.toml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/robo_rover_lib/src/types/detection_types.rs" beforeDir="false" afterPath="$PROJECT_DIR$/robo_rover_lib/src/types/detection_types.rs" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/rover-kiwi/object_tracker/Cargo.toml" beforeDir="false" afterPath="$PROJECT_DIR$/rover-kiwi/object_tracker/Cargo.toml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/rover-kiwi/object_tracker/src/main.rs" beforeDir="false" afterPath="$PROJECT_DIR$/rover-kiwi/object_tracker/src/main.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/debug_test.yml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/orchestra/orchestra-dataflow.yml" beforeDir="false" afterPath="$PROJECT_DIR$/orchestra/orchestra-dataflow.yml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/orchestra/sim_interface/Cargo.toml" beforeDir="false" afterPath="$PROJECT_DIR$/rover-kiwi/sim_interface/Cargo.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/orchestra/sim_interface/src/main.rs" beforeDir="false" afterPath="$PROJECT_DIR$/rover-kiwi/sim_interface/src/main.rs" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/rover-kiwi/rover-kiwi-dataflow.yml" beforeDir="false" afterPath="$PROJECT_DIR$/rover-kiwi/rover-kiwi-dataflow.yml" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -101,6 +105,7 @@
   <component name="ExecutionTargetManager" SELECTED_TARGET="RsBuildProfile:test" />
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+    <option name="RESET_MODE" value="SOFT" />
   </component>
   <component name="MacroExpansionManager">
     <option name="directoryName" value="PvvIe1lA" />
@@ -121,7 +126,7 @@
     &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
     &quot;RunOnceActivity.rust.reset.selective.auto.import&quot;: &quot;true&quot;,
     &quot;git-widget-placeholder&quot;: &quot;main&quot;,
-    &quot;last_opened_file_path&quot;: &quot;/home/loidinh/ws/robo-fleet-dora-rs/models/scripts&quot;,
+    &quot;last_opened_file_path&quot;: &quot;/home/loidinh/ws/robo-fleet-dora-rs/orchestra/pybullet_sim/pybullet_sim&quot;,
     &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
     &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
     &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
@@ -136,11 +141,14 @@
 }</component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/orchestra/pybullet_sim/pybullet_sim" />
       <recent name="$PROJECT_DIR$/models/scripts" />
       <recent name="$PROJECT_DIR$/models" />
       <recent name="$PROJECT_DIR$" />
     </key>
     <key name="MoveFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/rover-kiwi" />
+      <recent name="$PROJECT_DIR$/orchestra/pybullet_sim/pybullet_sim" />
       <recent name="$PROJECT_DIR$/orchestra" />
     </key>
   </component>

@@ -2,7 +2,7 @@ nodes:
   # Audio capture - microphone input
   - id: audio-capture
     build: cargo build --release -p audio_capture
-    path: target/release/audio_capture
+    path: ../target/release/audio_capture
     inputs:
       tick: dora/timer/millis/50  # 20 Hz
       audio_control: zenoh-bridge/audio_command
@@ -16,7 +16,7 @@ nodes:
   # TTS - Sherpa-ONNX lightweight neural TTS for edge device
   - id: sherpa-tts
     build: cargo build --release -p sherpa_tts
-    path: target/release/sherpa_tts
+    path: ../target/release/sherpa_tts
     inputs:
       tts_command: zenoh-bridge/tts_command  # From Orchestra
     env:
@@ -31,7 +31,7 @@ nodes:
   # Audio playback - Speaker output (walkie-talkie)
   - id: audio-playback
     build: cargo build --release -p audio_playback
-    path: target/release/audio_playback
+    path: ../target/release/audio_playback
     inputs:
       audio: zenoh-bridge/audio_stream  # From Orchestra (Web UI mic)
     env:
@@ -42,7 +42,7 @@ nodes:
   # Performance monitor - Local system metrics
   - id: performance-monitor
     build: cargo build --release -p performance_monitor
-    path: target/release/performance_monitor
+    path: ../target/release/performance_monitor
     inputs:
       tick: dora/timer/millis/5000
     outputs:
@@ -54,7 +54,7 @@ nodes:
   # GStreamer camera capture
   - id: gst-camera
     build: cargo build -p kornia_capture --release
-    path: target/release/kornia_capture
+    path: ../target/release/kornia_capture
     inputs:
       tick: dora/timer/millis/33  # ~30 FPS
       camera_control: zenoh-bridge/camera_command  # From Orchestra
@@ -70,7 +70,7 @@ nodes:
   # Object detector - YOLOv12n inference
   - id: object-detector
     build: cargo build --release -p object_detector
-    path: target/release/object_detector
+    path: ../target/release/object_detector
     inputs:
       frame: gst-camera/frame  # RGB8 from local camera
     outputs:
@@ -86,7 +86,7 @@ nodes:
 #  # ReID feature extractor - Extract appearance features using OSNet
   - id: reid-extractor
     build: cargo build --release -p reid_extractor
-    path: target/release/reid_extractor
+    path: ../target/release/reid_extractor
     inputs:
       frame: gst-camera/frame  # RGB8 frame for cropping
       detections: object-detector/detections  # Detections to extract features from
@@ -100,14 +100,14 @@ nodes:
   # Object tracker - BoTSORT algorithm with ReID and CMC (moved from orchestra)
   - id: object-tracker
     build: cargo build --release -p object_tracker
-    path: target/release/object_tracker
+    path: ../target/release/object_tracker
     inputs:
       frame: gst-camera/frame  # RGB8 frame for camera motion compensation
       detections: reid-extractor/detections_with_reid  # Detections with ReID features
       tracking_command: zenoh-bridge/tracking_command  # From Orchestra
     outputs:
       - tracked_detections  # DetectionFrame with tracking IDs
-      - tracking_telemetry  # Tracking state and target info
+      - tracking_telemetry  # Tracking state and ../target info
     env:
       RUST_LOG: info
       MAX_TRACKING_AGE: "50"
@@ -119,7 +119,7 @@ nodes:
 
   - id: visual-servo-controller
     build: cargo build --release -p visual_servo_controller
-    path: target/release/visual_servo_controller
+    path: ../target/release/visual_servo_controller
     inputs:
       tracking_telemetry: object-tracker/tracking_telemetry
     outputs:
@@ -142,7 +142,7 @@ nodes:
   # Arm controller
   - id: arm-controller
     build: cargo build --release -p arm_controller
-    path: target/release/arm_controller
+    path: ../target/release/arm_controller
     inputs:
       arm_command: zenoh-bridge/arm_command  # From Orchestra via Zenoh
       arm_telemetry: sim-interface/arm_telemetry
@@ -155,7 +155,7 @@ nodes:
   # Rover controller
   - id: rover-controller
     build: cargo build --release -p rover_controller
-    path: target/release/rover_controller
+    path: ../target/release/rover_controller
     inputs:
       rover_command: zenoh-bridge/rover_command  # From Orchestra via Zenoh
       servo_command: visual-servo-controller/servo_command
@@ -165,23 +165,23 @@ nodes:
     env:
       RUST_LOG: info
 
-  # Simulation interface
-  - id: sim-interface
-    build: cargo build --release -p sim_interface
-    path: target/release/sim_interface
-    inputs:
-      arm_command: arm-controller/processed_arm_command
-      rover_command: rover-controller/processed_rover_command
-    outputs:
-      - rover_telemetry
-      - arm_telemetry
-    env:
-      RUST_LOG: info
+#  # Simulation interface
+#  - id: sim-interface
+#    build: cargo build --release -p sim_interface
+#    path: target/release/sim_interface
+#    inputs:
+#      arm_command: arm-controller/processed_arm_command
+#      rover_command: rover-controller/processed_rover_command
+#    outputs:
+#      - rover_telemetry
+#      - arm_telemetry
+#    env:
+#      RUST_LOG: info
 
   # Zenoh bridge - On-rover bridge
   - id: zenoh-bridge
     build: cargo build --release -p rover_zenoh_bridge
-    path: target/release/rover_zenoh_bridge
+    path: ../target/release/rover_zenoh_bridge
     inputs:
       # RAW data TO publish to Orchestra (telemetry OUT)
       video_frame: gst-camera/frame              # RGB8

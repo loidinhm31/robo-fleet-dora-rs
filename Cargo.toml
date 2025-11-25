@@ -12,7 +12,6 @@ members = [
     "orchestra/command_parser",
     "orchestra/audio_converter",
     "orchestra/video_encoder",
-    "orchestra/sim_interface",
     "orchestra/zenoh_bridge",
     "orchestra/kokoro_tts",
 
@@ -28,6 +27,7 @@ members = [
     "rover-kiwi/zenoh_bridge",
     "rover-kiwi/dispatcher_keyboard",
     "rover-kiwi/reid_extractor",
+    "rover-kiwi/sim_interface",
 ]
 
 [workspace.dependencies]
@@ -36,7 +36,7 @@ dora-node-api = "0.3.13"
 dora-core = "0.3.13"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-toml = "0.8"
+toml = "0.9.8"
 nalgebra = "0.33"
 eyre = "0.6.8"
 tracing = "0.1"
