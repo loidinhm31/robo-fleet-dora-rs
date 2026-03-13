@@ -136,17 +136,28 @@ services:
 
       # Dataflow override (optional - for development)
       - ../rover-kiwi/rover-kiwi-dataflow.yml:/app/dataflow/rover-kiwi-dataflow.yml:ro
+      - ../rover-kiwi/rover-kiwi-direct-dataflow.yml:/app/dataflow/rover-kiwi-direct-dataflow.yml:ro
 
     environment:
       # Rust logging
       RUST_LOG: info
 
+      # Rover operation mode:
+      #   zenoh  (default): connect to orchestra via Zenoh bridge
+      #   direct          : run web_bridge locally, no Zenoh required
+      ROVER_MODE: ${ROVER_MODE:-zenoh}
+
       # Entity identity
       ENTITY_ID: ${ENTITY_ID:-rover-kiwi}
 
-      # Zenoh configuration
+      # Zenoh configuration (used when ROVER_MODE=zenoh)
       ZENOH_MODE: peer
       ZENOH_CONFIG: /app/config/zenoh_config.json5
+
+      # Web bridge settings (used when ROVER_MODE=direct)
+      SOCKET_IO_PORT: "3030"
+      AUTH_USERNAME: ${AUTH_USERNAME:-admin}
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-password}
 
       # Camera (GStreamer)
       SOURCE_TYPE: ${SOURCE_TYPE:-webcam}

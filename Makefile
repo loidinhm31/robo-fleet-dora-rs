@@ -5,8 +5,8 @@
 # in Docker containers with two profiles: orchestra (workstation) and rover-kiwi
 
 .PHONY: help models build-orchestra build-rover build-all up-orchestra up-rover \
-        down logs-orchestra logs-rover shell-orchestra shell-rover status clean \
-        build-rover-cross
+        up-rover-direct down logs-orchestra logs-rover shell-orchestra shell-rover \
+        status clean build-rover-cross
 
 # Default target
 .DEFAULT_GOAL := help
@@ -33,7 +33,8 @@ help:
 	@echo ""
 	@echo "Run Containers:"
 	@echo "  make up-orchestra    - Start orchestra container (workstation)"
-	@echo "  make up-rover        - Start rover container (Raspberry Pi)"
+	@echo "  make up-rover        - Start rover container (Raspberry Pi, zenoh mode)"
+	@echo "  make up-rover-direct - Start rover in direct mode (web UI on rover, no Zenoh)"
 	@echo "  make down            - Stop all containers"
 	@echo ""
 	@echo "Logs & Monitoring:"
@@ -52,6 +53,7 @@ help:
 	@echo "  AUTH_USERNAME        - Web UI username (default: admin)"
 	@echo "  AUTH_PASSWORD        - Web UI password (default: password)"
 	@echo "  ENTITY_ID            - Rover entity ID (default: rover-kiwi)"
+	@echo "  ROVER_MODE           - Rover mode: zenoh (default) or direct"
 	@echo "  SOURCE_URI           - Camera device (default: /dev/video0)"
 	@echo "  AUDIO_GID            - Host audio group GID for /dev/snd access"
 	@echo "                         (default: 29 for Debian/Ubuntu;"
@@ -106,10 +108,18 @@ up-orchestra:
 	@echo "View logs with: make logs-orchestra"
 
 up-rover:
-	@echo "Starting rover container..."
+	@echo "Starting rover container (zenoh mode)..."
 	$(COMPOSE) --profile rover-kiwi up -d
 	@echo ""
 	@echo "Rover-Kiwi started!"
+	@echo "View logs with: make logs-rover"
+
+up-rover-direct:  ## Start rover in direct-connect mode (web UI on rover, no Zenoh)
+	@echo "Starting rover container (direct mode)..."
+	ROVER_MODE=direct $(COMPOSE) --profile rover-kiwi up -d
+	@echo ""
+	@echo "Rover-Kiwi started in direct mode!"
+	@echo "Web UI: http://<rover-ip>:3030"
 	@echo "View logs with: make logs-rover"
 
 down:

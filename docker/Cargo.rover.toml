@@ -19,6 +19,11 @@ members = [
     "rover-kiwi/zenoh_bridge",
     "rover-kiwi/dispatcher_keyboard",
     "rover-kiwi/sim_interface",
+
+    # Direct-connect mode additions
+    "common/web_bridge",
+    "orchestra/video_encoder",
+    "orchestra/audio_converter",
 ]
 
 [workspace.dependencies]

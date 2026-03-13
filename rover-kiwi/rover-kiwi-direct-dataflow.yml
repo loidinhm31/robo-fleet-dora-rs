@@ -1,0 +1,226 @@
+nodes:
+  # Audio capture - microphone input
+  - id: audio-capture
+    build: cargo build --release -p audio_capture
+    path: ../target/release/audio_capture
+    inputs:
+      tick: dora/timer/millis/50  # 20 Hz
+      audio_control: web-bridge/audio_command
+    outputs:
+      - audio  # Float32 audio data
+    env:
+      SAMPLE_RATE: "16000"
+      CHANNELS: "1"
+      CHUNK_SIZE: "800"
+
+  # TTS - Sherpa-ONNX lightweight neural TTS for edge device
+  - id: sherpa-tts
+    build: cargo build --release -p sherpa_tts
+    path: ../target/release/sherpa_tts
+    inputs:
+      tts_command: web-bridge/tts_command
+    env:
+      RUST_LOG: info
+      TTS_MODEL_DIR: "${HOME}/.cache/sherpa-onnx/vits-piper-en_US-lessac-medium"
+      TTS_VOLUME: "0.8"
+      TTS_SPEED: "1.0"
+      TTS_NUM_THREADS: "2"
+      TTS_PROVIDER: "cpu"
+      LD_LIBRARY_PATH: "${HOME}/ws/robo-fleet-dora-rs/target/release"
+
+  # Audio playback - Speaker output (walkie-talkie)
+  - id: audio-playback
+    build: cargo build --release -p audio_playback
+    path: ../target/release/audio_playback
+    inputs:
+      audio: web-bridge/audio_stream
+    env:
+      RUST_LOG: info
+      SAMPLE_RATE: "16000"
+      CHANNELS: "1"
+
+  # Performance monitor - Local system metrics
+  - id: performance-monitor
+    build: cargo build --release -p performance_monitor
+    path: ../target/release/performance_monitor
+    inputs:
+      tick: dora/timer/millis/5000
+    outputs:
+      - metrics  # SystemMetrics
+    env:
+      RUST_LOG: info
+      ENTITY_ID: "rover-kiwi"  # Rover identity for fleet tracking
+
+  # GStreamer camera capture
+  - id: gst-camera
+    build: cargo build -p kornia_capture --release
+    path: ../target/release/kornia_capture
+    inputs:
+      tick: dora/timer/millis/33  # ~30 FPS
+      camera_control: web-bridge/camera_command
+    outputs:
+      - frame  # Raw RGB8 frames
+    env:
+      SOURCE_TYPE: "webcam"
+      SOURCE_URI: "/dev/video0"
+      IMAGE_COLS: "640"
+      IMAGE_ROWS: "480"
+      SOURCE_FPS: "30"
+
+  # Object detector - YOLOv12n inference
+  - id: object-detector
+    build: cargo build --release -p object_detector
+    path: ../target/release/object_detector
+    inputs:
+      frame: gst-camera/frame  # RGB8 from local camera
+    outputs:
+      - detections  # DetectionFrame with bounding boxes
+    env:
+      RUST_LOG: info
+      MODEL_PATH: "${HOME}/.cache/yolo/yolo12n.onnx"
+      CONFIDENCE_THRESHOLD: "0.5"
+      NMS_THRESHOLD: "0.4"
+      TARGET_CLASSES: ""
+      ORT_DYLIB_PATH: "/usr/local/lib/libonnxruntime.so"
+
+  # ReID feature extractor - Extract appearance features using OSNet
+  - id: reid-extractor
+    build: cargo build --release -p reid_extractor
+    path: ../target/release/reid_extractor
+    inputs:
+      frame: gst-camera/frame  # RGB8 frame for cropping
+      detections: object-detector/detections  # Detections to extract features from
+    outputs:
+      - detections_with_reid  # DetectionFrame with ReID features added
+    env:
+      RUST_LOG: info
+      REID_MODEL_PATH: "${HOME}/.cache/reid/osnet_x0_25.onnx"
+      MIN_BBOX_SIZE: "32"  # Minimum bbox width/height for ReID extraction
+
+  # Object tracker - BoTSORT algorithm with ReID and CMC
+  - id: object-tracker
+    build: cargo build --release -p object_tracker
+    path: ../target/release/object_tracker
+    inputs:
+      frame: gst-camera/frame  # RGB8 frame for camera motion compensation
+      detections: reid-extractor/detections_with_reid  # Detections with ReID features
+      tracking_command: web-bridge/tracking_command
+    outputs:
+      - tracked_detections  # DetectionFrame with tracking IDs
+      - tracking_telemetry  # Tracking state info
+    env:
+      RUST_LOG: info
+      MAX_TRACKING_AGE: "50"
+      MIN_HITS: "3"
+      IOU_THRESHOLD: "0.3"
+      REID_WEIGHT: "0.8"  # 0.0=IoU only, 1.0=ReID only, 0.5=balanced
+      REID_THRESHOLD: "0.5"  # Minimum ReID similarity for matching
+      ENABLE_CMC: "true"  # Enable camera motion compensation (BoTSORT)
+
+  - id: visual-servo-controller
+    build: cargo build --release -p visual_servo_controller
+    path: ../target/release/visual_servo_controller
+    inputs:
+      tracking_telemetry: object-tracker/tracking_telemetry
+    outputs:
+      - servo_command
+      - servo_telemetry
+    env:
+      RUST_LOG: info
+      LATERAL_PID_KP: "1.5"
+      LATERAL_PID_KI: "0.0"
+      LATERAL_PID_KD: "0.2"
+      LONGITUDINAL_PID_KP: "0.8"
+      LONGITUDINAL_PID_KI: "0.0"
+      LONGITUDINAL_PID_KD: "0.15"
+      MIN_DISTANCE: "1.0"
+      MAX_VELOCITY: "0.5"
+      MAX_ANGULAR_VELOCITY: "1.0"
+      TARGET_BBOX_HEIGHT: "0.3"
+      DEAD_ZONE: "0.05"
+
+  # Arm controller
+  - id: arm-controller
+    build: cargo build --release -p arm_controller
+    path: ../target/release/arm_controller
+    inputs:
+      arm_command: web-bridge/arm_command
+    outputs:
+      - processed_arm_command
+    env:
+      RUST_LOG: info
+      ARM_CONFIG: config/arm_6dof.toml
+
+  # Rover controller
+  - id: rover-controller
+    build: cargo build --release -p rover_controller
+    path: ../target/release/rover_controller
+    inputs:
+      rover_command: web-bridge/rover_command
+      servo_command: visual-servo-controller/servo_command
+    outputs:
+      - processed_rover_command
+    env:
+      RUST_LOG: info
+
+  # Video encoder - JPEG compression for web streaming
+  - id: video-encoder
+    build: cargo build --release -p video_encoder
+    path: ../target/release/video_encoder
+    inputs:
+      video_frame: gst-camera/frame
+    outputs:
+      - encoded_frame
+    env:
+      JPEG_QUALITY: "80"
+      IMAGE_WIDTH: "640"
+      IMAGE_HEIGHT: "480"
+
+  # Audio converter - PCM format conversion for web streaming
+  - id: audio-converter
+    build: cargo build --release -p audio_converter
+    path: ../target/release/audio_converter
+    inputs:
+      audio_input: audio-capture/audio
+    outputs:
+      - audio_output
+    env:
+      OUTPUT_FORMAT: "int16"
+      SAMPLE_RATE: "16000"
+      CHANNELS: "1"
+
+  # Web bridge - Direct browser access (no Zenoh required)
+  - id: web-bridge
+    build: cargo build --release -p web_bridge
+    path: ../target/release/web_bridge
+    inputs:
+      video_frame: video-encoder/encoded_frame
+      audio_frame: audio-converter/audio_output
+      servo_telemetry: visual-servo-controller/servo_telemetry
+      tracked_detections: object-tracker/tracked_detections
+      tracking_telemetry: object-tracker/tracking_telemetry
+      performance_metrics: performance-monitor/metrics
+    outputs:
+      - rover_command
+      - arm_command
+      - camera_command
+      - audio_command
+      - tracking_command
+      - tts_command
+      - audio_stream
+      - voice_command_audio
+    env:
+      RUST_LOG: info
+      BIND_ADDRESS: "0.0.0.0"
+      SOCKET_IO_PORT: "3030"
+      MODE: "standalone"
+      AUTH_USERNAME: "admin"
+      AUTH_PASSWORD: "password"
+      ALLOWED_ORIGINS: "*"
+      SELECTED_ENTITY_ID: "rover-kiwi"
+      FLEET_ROSTER: "rover-kiwi"
+      RATE_LIMIT_AUTH_PER_MINUTE: "5"
+      RATE_LIMIT_COMMANDS_PER_SECOND: "100"
+      MAX_TTS_TEXT_LENGTH: "1000"
+      MAX_AUDIO_SAMPLES_PER_MESSAGE: "16000"
+      MAX_WHEEL_VELOCITY: "2.0"

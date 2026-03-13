@@ -43,6 +43,11 @@ COPY rover-kiwi/zenoh_bridge/Cargo.toml rover-kiwi/zenoh_bridge/
 COPY rover-kiwi/sim_interface/Cargo.toml rover-kiwi/sim_interface/
 COPY rover-kiwi/dispatcher_keyboard/Cargo.toml rover-kiwi/dispatcher_keyboard/
 
+# Direct-connect mode additions
+COPY common/web_bridge/Cargo.toml common/web_bridge/
+COPY orchestra/video_encoder/Cargo.toml orchestra/video_encoder/
+COPY orchestra/audio_converter/Cargo.toml orchestra/audio_converter/
+
 # Create dummy source files for dependency pre-compilation
 RUN mkdir -p robo_rover_lib/src && \
     echo "pub fn dummy() {}" > robo_rover_lib/src/lib.rs
@@ -74,7 +79,13 @@ RUN mkdir -p rover-kiwi/kornia_capture/src && \
     mkdir -p rover-kiwi/sim_interface/src && \
     echo "fn main() {}" > rover-kiwi/sim_interface/src/main.rs && \
     mkdir -p rover-kiwi/dispatcher_keyboard/src && \
-    echo "fn main() {}" > rover-kiwi/dispatcher_keyboard/src/main.rs
+    echo "fn main() {}" > rover-kiwi/dispatcher_keyboard/src/main.rs && \
+    mkdir -p common/web_bridge/src && \
+    echo "fn main() {}" > common/web_bridge/src/main.rs && \
+    mkdir -p orchestra/video_encoder/src && \
+    echo "fn main() {}" > orchestra/video_encoder/src/main.rs && \
+    mkdir -p orchestra/audio_converter/src && \
+    echo "fn main() {}" > orchestra/audio_converter/src/main.rs
 
 # Pre-build dependencies (this layer will be cached)
 RUN cargo build --release \
@@ -85,6 +96,9 @@ RUN cargo build --release \
 
 # Copy actual source code
 COPY robo_rover_lib robo_rover_lib/
+COPY common common/
+COPY orchestra/video_encoder orchestra/video_encoder/
+COPY orchestra/audio_converter orchestra/audio_converter/
 COPY rover-kiwi rover-kiwi/
 
 # Build all rover nodes
@@ -101,7 +115,10 @@ RUN cargo build --release \
     -p rover_controller \
     -p performance_monitor \
     -p rover_zenoh_bridge \
-    -p sim_interface
+    -p sim_interface \
+    -p web_bridge \
+    -p video_encoder \
+    -p audio_converter
 
 # =============================================================================
 # Stage 2: ONNX Runtime Downloader
@@ -170,6 +187,9 @@ COPY --from=builder /build/target/release/rover_controller ./bin/
 COPY --from=builder /build/target/release/performance_monitor ./bin/
 COPY --from=builder /build/target/release/rover_zenoh_bridge ./bin/
 COPY --from=builder /build/target/release/sim_interface ./bin/
+COPY --from=builder /build/target/release/web_bridge ./bin/
+COPY --from=builder /build/target/release/video_encoder ./bin/
+COPY --from=builder /build/target/release/audio_converter ./bin/
 COPY --from=builder /usr/local/cargo/bin/dora ./bin/
 
 # Copy ONNX Runtime libraries
@@ -178,6 +198,7 @@ RUN ldconfig
 
 # Copy dataflow and config templates
 COPY rover-kiwi/rover-kiwi-dataflow.yml ./dataflow/rover-kiwi-dataflow.yml
+COPY rover-kiwi/rover-kiwi-direct-dataflow.yml ./dataflow/rover-kiwi-direct-dataflow.yml
 COPY rover-kiwi/zenoh_bridge/zenoh_config.json5 ./config/zenoh_config.json5
 COPY rover-kiwi/config ./config/rover/
 
@@ -194,8 +215,8 @@ ENV PATH="/app/bin:${PATH}"
 ENV ORT_DYLIB_PATH="/usr/local/lib/libonnxruntime.so"
 ENV LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH}"
 
-# Expose Zenoh port (though we use host networking)
-EXPOSE 7447
+# Expose ports (Zenoh: 7447, web-bridge direct mode: 3030)
+EXPOSE 7447 3030
 
 # Note: Running as root for hardware access (camera, audio)
 # USER dora

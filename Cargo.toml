@@ -4,8 +4,10 @@ members = [
     # Shared library
     "robo_rover_lib",
 
+    # Common - Multi-target nodes (orchestra + rover)
+    "common/web_bridge",
+
     # Orchestra (Workstation) - Fleet control hub
-    "orchestra/web_bridge",
     "rover-kiwi/object_detector",
     "rover-kiwi/object_tracker",
     "orchestra/speech_recognizer",

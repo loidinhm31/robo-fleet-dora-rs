@@ -25,7 +25,7 @@ COPY Cargo.lock ./
 COPY robo_rover_lib/Cargo.toml robo_rover_lib/
 
 # Copy orchestra node Cargo.toml files
-COPY orchestra/web_bridge/Cargo.toml orchestra/web_bridge/
+COPY common/web_bridge/Cargo.toml common/web_bridge/
 COPY orchestra/speech_recognizer/Cargo.toml orchestra/speech_recognizer/
 COPY orchestra/command_parser/Cargo.toml orchestra/command_parser/
 COPY orchestra/audio_converter/Cargo.toml orchestra/audio_converter/
@@ -37,8 +37,8 @@ COPY orchestra/kokoro_tts/Cargo.toml orchestra/kokoro_tts/
 RUN mkdir -p robo_rover_lib/src && \
     echo "pub fn dummy() {}" > robo_rover_lib/src/lib.rs
 
-RUN mkdir -p orchestra/web_bridge/src && \
-    echo "fn main() {}" > orchestra/web_bridge/src/main.rs && \
+RUN mkdir -p common/web_bridge/src && \
+    echo "fn main() {}" > common/web_bridge/src/main.rs && \
     mkdir -p orchestra/speech_recognizer/src && \
     echo "fn main() {}" > orchestra/speech_recognizer/src/main.rs && \
     mkdir -p orchestra/command_parser/src && \
@@ -64,6 +64,7 @@ RUN cargo build --release \
 
 # Copy actual source code
 COPY robo_rover_lib robo_rover_lib/
+COPY common common/
 COPY orchestra orchestra/
 
 # Build all orchestra nodes

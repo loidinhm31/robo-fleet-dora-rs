@@ -126,39 +126,54 @@ if [ ! -f "$ORT_DYLIB_PATH" ]; then
 fi
 echo "✓ ONNX Runtime library found"
 
+# Select dataflow based on ROVER_MODE
+ROVER_MODE="${ROVER_MODE:-zenoh}"
+
+if [ "$ROVER_MODE" = "direct" ]; then
+    echo "Mode: DIRECT (web_bridge on :${SOCKET_IO_PORT:-3030}, no Zenoh)"
+    DATAFLOW_SRC="/app/dataflow/rover-kiwi-direct-dataflow.yml"
+    DATAFLOW_TMP="/tmp/rover-kiwi-direct-dataflow.yml"
+else
+    echo "Mode: ZENOH (zenoh-bridge, orchestra connection)"
+    DATAFLOW_SRC="/app/dataflow/rover-kiwi-dataflow.yml"
+    DATAFLOW_TMP="/tmp/rover-kiwi-dataflow.yml"
+fi
+
 # Create a modified dataflow YAML with updated paths
 echo ""
 echo "Updating dataflow YAML paths for container environment..."
-cp /app/dataflow/rover-kiwi-dataflow.yml /tmp/rover-kiwi-dataflow.yml
+cp "$DATAFLOW_SRC" "$DATAFLOW_TMP"
 
 # Update binary paths from ../target/release/ to /app/bin/
-sed -i 's|path: ../target/release/|path: /app/bin/|g' /tmp/rover-kiwi-dataflow.yml
-sed -i 's|path: target/release/|path: /app/bin/|g' /tmp/rover-kiwi-dataflow.yml
+sed -i 's|path: ../target/release/|path: /app/bin/|g' "$DATAFLOW_TMP"
+sed -i 's|path: target/release/|path: /app/bin/|g' "$DATAFLOW_TMP"
 
 # Update model paths from ${HOME}/.cache/ to /models/
-sed -i 's|MODEL_PATH: "${HOME}/.cache/yolo/yolo12n.onnx"|MODEL_PATH: "/models/yolo/yolo12n.onnx"|g' /tmp/rover-kiwi-dataflow.yml
-sed -i 's|REID_MODEL_PATH: "${HOME}/.cache/reid/osnet_x0_25.onnx"|REID_MODEL_PATH: "/models/reid/osnet_x0_25.onnx"|g' /tmp/rover-kiwi-dataflow.yml
-sed -i 's|TTS_MODEL_DIR: "${HOME}/.cache/sherpa-onnx/vits-piper-en_US-lessac-medium"|TTS_MODEL_DIR: "/models/sherpa-onnx/vits-piper-en_US-lessac-medium"|g' /tmp/rover-kiwi-dataflow.yml
+sed -i 's|MODEL_PATH: "${HOME}/.cache/yolo/yolo12n.onnx"|MODEL_PATH: "/models/yolo/yolo12n.onnx"|g' "$DATAFLOW_TMP"
+sed -i 's|REID_MODEL_PATH: "${HOME}/.cache/reid/osnet_x0_25.onnx"|REID_MODEL_PATH: "/models/reid/osnet_x0_25.onnx"|g' "$DATAFLOW_TMP"
+sed -i 's|TTS_MODEL_DIR: "${HOME}/.cache/sherpa-onnx/vits-piper-en_US-lessac-medium"|TTS_MODEL_DIR: "/models/sherpa-onnx/vits-piper-en_US-lessac-medium"|g' "$DATAFLOW_TMP"
 
 # Update Zenoh config path
-sed -i 's|ZENOH_CONFIG: "${HOME}/ws/robo-fleet-dora-rs/rover-kiwi/zenoh_bridge/zenoh_config.json5"|ZENOH_CONFIG: "/app/config/zenoh_config.json5"|g' /tmp/rover-kiwi-dataflow.yml
+sed -i 's|ZENOH_CONFIG: "${HOME}/ws/robo-fleet-dora-rs/rover-kiwi/zenoh_bridge/zenoh_config.json5"|ZENOH_CONFIG: "/app/config/zenoh_config.json5"|g' "$DATAFLOW_TMP"
 
 # Update LD_LIBRARY_PATH
-sed -i 's|LD_LIBRARY_PATH: "${HOME}/ws/robo-fleet-dora-rs/target/release"|LD_LIBRARY_PATH: "/usr/local/lib:/app/bin"|g' /tmp/rover-kiwi-dataflow.yml
-
-# Update ORT_DYLIB_PATH
-sed -i 's|ORT_DYLIB_PATH: "/usr/local/lib/libonnxruntime.so"|ORT_DYLIB_PATH: "/usr/local/lib/libonnxruntime.so"|g' /tmp/rover-kiwi-dataflow.yml
+sed -i 's|LD_LIBRARY_PATH: "${HOME}/ws/robo-fleet-dora-rs/target/release"|LD_LIBRARY_PATH: "/usr/local/lib:/app/bin"|g' "$DATAFLOW_TMP"
 
 # Update ARM_CONFIG path
-sed -i 's|ARM_CONFIG: config/arm_6dof.toml|ARM_CONFIG: /app/config/rover/arm_6dof.toml|g' /tmp/rover-kiwi-dataflow.yml
+sed -i 's|ARM_CONFIG: config/arm_6dof.toml|ARM_CONFIG: /app/config/rover/arm_6dof.toml|g' "$DATAFLOW_TMP"
 
 echo "✓ Dataflow YAML updated"
 
 # Display configuration
 echo ""
 echo "Configuration:"
+echo "  - Mode: ${ROVER_MODE}"
 echo "  - Entity ID: ${ENTITY_ID:-rover-kiwi}"
-echo "  - Zenoh Mode: ${ZENOH_MODE:-peer}"
+if [ "$ROVER_MODE" = "zenoh" ]; then
+    echo "  - Zenoh Mode: ${ZENOH_MODE:-peer}"
+else
+    echo "  - Web UI Port: ${SOCKET_IO_PORT:-3030}"
+fi
 echo "  - Camera: ${SOURCE_TYPE:-webcam} (${SOURCE_URI:-/dev/video0})"
 echo "  - YOLO Model: /models/yolo/yolo12n.onnx"
 echo "  - ReID Model: /models/reid/osnet_x0_25.onnx"
@@ -166,8 +181,7 @@ echo "  - ONNX Runtime: $ORT_DYLIB_PATH"
 echo ""
 
 echo ""
-echo "Starting Rover-Kiwi dataflow..."
+echo "Starting Rover-Kiwi dataflow (mode: $ROVER_MODE)..."
 echo "==================================================================="
 
-# Start the dataflow locally as dora-rs best practice in docker
-exec dora run /tmp/rover-kiwi-dataflow.yml
+exec dora run "$DATAFLOW_TMP"
