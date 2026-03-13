@@ -7,7 +7,7 @@ The robo-rover system uses a **distributed architecture** with two deployment ta
 - **Orchestra (Workstation)**: Heavy AI/ML processing, web interface, fleet control
 - **Rover-Kiwi (Raspberry Pi 5)**: Hardware I/O, motor control, low-latency control loops
 
-Communication between machines uses **Zenoh** (pub/sub protocol) for efficient real-time data exchange.
+Communication between machines uses **Zenoh** (pub/sub protocol) for efficient real-time data exchange. Alternatively, the rover can run in **direct mode** (`ROVER_MODE=direct`) with `web_bridge` on the rover itself — no Zenoh or orchestra required.
 
 ## Architecture Diagram
 
@@ -57,13 +57,14 @@ Communication between machines uses **Zenoh** (pub/sub protocol) for efficient r
 
 ```
 robo-rover-dora/
-├── orchestra/                      # Workstation nodes (heavy compute)
+├── common/                         # Multi-target nodes (orchestra + rover)
+│   └── web_bridge/                 # Socket.IO server (runs on orchestra OR rover)
+│
+├── orchestra/                      # Workstation-only nodes (heavy compute)
 │   ├── speech_recognizer/          # Whisper.cpp STT
 │   ├── command_parser/             # NLU pattern matching
 │   ├── audio_converter/            # Float32 → Int16LE
 │   ├── video_encoder/              # RGB8 → JPEG
-│   ├── web_bridge/                 # Socket.IO server
-│   ├── sim_interface/              # Unity simulation (can run on either side)
 │   ├── kokoro_tts/                 # High-quality TTS (Kokoro-82M, workstation audio, optional)
 │   ├── zenoh_bridge/               # Orchestra Zenoh bridge (orchestra-only)
 │   └── orchestra-dataflow.yml      # Orchestra Dora dataflow
@@ -72,9 +73,9 @@ robo-rover-dora/
 │   ├── audio_capture/              # Microphone (cpal)
 │   ├── audio_playback/             # Speaker output
 │   ├── kornia_capture/             # Camera (GStreamer)
-│   ├── object_detector/            # YOLOv12n inference (moved from orchestra)
+│   ├── object_detector/            # YOLOv12n inference
 │   ├── reid_extractor/             # OSNet ReID feature extraction (512-dim)
-│   ├── object_tracker/             # BoTSORT tracking with CMC and ReID (moved from orchestra)
+│   ├── object_tracker/             # BoTSORT tracking with CMC and ReID
 │   ├── arm_controller/             # Arm servo control
 │   ├── rover_controller/           # Motor control
 │   ├── visual_servo_controller/    # PID autonomous following
@@ -82,12 +83,15 @@ robo-rover-dora/
 │   ├── performance_monitor/        # System metrics
 │   ├── dispatcher_keyboard/        # Keyboard control (dev)
 │   ├── zenoh_bridge/               # Rover Zenoh bridge (rover-only)
-│   └── rover-kiwi-dataflow.yml     # Rover Dora dataflow
+│   ├── rover-kiwi-dataflow.yml     # Rover Dora dataflow (zenoh mode, default)
+│   └── rover-kiwi-direct-dataflow.yml  # Rover Dora dataflow (direct mode, web_bridge on rover)
 │
 ├── robo_rover_lib/                 # Shared types and utilities
 │
 └──
 ```
+
+**Directory convention**: `common/` = multi-target nodes designed to run on any deployment target. `orchestra/` = workstation-only. `rover-kiwi/` = rover-only.
 
 ## Zenoh Bridge - Split Implementation
 
@@ -185,7 +189,7 @@ ZENOH_MODE=peer
 **On both machines**:
 ```bash
 # Install Dora
-cargo install dora-cli
+cargo install dora-cli --locked
 ```
 
 **On Orchestra**:
