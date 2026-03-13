@@ -1,0 +1,203 @@
+# =============================================================================
+# Stage 1: Builder - Compile all Rover-Kiwi Rust binaries
+# =============================================================================
+FROM rust:1.88-bookworm AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    cmake \
+    pkg-config \
+    libssl-dev \
+    libclang-dev \
+    clang \
+    libasound2-dev \
+    libgstreamer1.0-dev \
+    libgstreamer-plugins-base1.0-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Dora CLI
+RUN cargo install dora-cli --version 0.3.13 --locked
+
+WORKDIR /build
+
+# Copy platform-specific workspace Cargo.toml (rover-kiwi members only)
+COPY docker/Cargo.rover.toml Cargo.toml
+COPY Cargo.lock ./
+
+# Copy shared library Cargo.toml
+COPY robo_rover_lib/Cargo.toml robo_rover_lib/
+
+# Copy rover-kiwi node Cargo.toml files
+COPY rover-kiwi/kornia_capture/Cargo.toml rover-kiwi/kornia_capture/
+COPY rover-kiwi/object_detector/Cargo.toml rover-kiwi/object_detector/
+COPY rover-kiwi/reid_extractor/Cargo.toml rover-kiwi/reid_extractor/
+COPY rover-kiwi/object_tracker/Cargo.toml rover-kiwi/object_tracker/
+COPY rover-kiwi/visual_servo_controller/Cargo.toml rover-kiwi/visual_servo_controller/
+COPY rover-kiwi/audio_capture/Cargo.toml rover-kiwi/audio_capture/
+COPY rover-kiwi/audio_playback/Cargo.toml rover-kiwi/audio_playback/
+COPY rover-kiwi/sherpa_tts/Cargo.toml rover-kiwi/sherpa_tts/
+COPY rover-kiwi/arm_controller/Cargo.toml rover-kiwi/arm_controller/
+COPY rover-kiwi/rover_controller/Cargo.toml rover-kiwi/rover_controller/
+COPY rover-kiwi/performance_monitor/Cargo.toml rover-kiwi/performance_monitor/
+COPY rover-kiwi/zenoh_bridge/Cargo.toml rover-kiwi/zenoh_bridge/
+COPY rover-kiwi/sim_interface/Cargo.toml rover-kiwi/sim_interface/
+COPY rover-kiwi/dispatcher_keyboard/Cargo.toml rover-kiwi/dispatcher_keyboard/
+
+# Create dummy source files for dependency pre-compilation
+RUN mkdir -p robo_rover_lib/src && \
+    echo "pub fn dummy() {}" > robo_rover_lib/src/lib.rs
+
+RUN mkdir -p rover-kiwi/kornia_capture/src && \
+    echo "fn main() {}" > rover-kiwi/kornia_capture/src/main.rs && \
+    mkdir -p rover-kiwi/object_detector/src && \
+    echo "fn main() {}" > rover-kiwi/object_detector/src/main.rs && \
+    mkdir -p rover-kiwi/reid_extractor/src && \
+    echo "fn main() {}" > rover-kiwi/reid_extractor/src/main.rs && \
+    mkdir -p rover-kiwi/object_tracker/src && \
+    echo "fn main() {}" > rover-kiwi/object_tracker/src/main.rs && \
+    mkdir -p rover-kiwi/visual_servo_controller/src && \
+    echo "fn main() {}" > rover-kiwi/visual_servo_controller/src/main.rs && \
+    mkdir -p rover-kiwi/audio_capture/src && \
+    echo "fn main() {}" > rover-kiwi/audio_capture/src/main.rs && \
+    mkdir -p rover-kiwi/audio_playback/src && \
+    echo "fn main() {}" > rover-kiwi/audio_playback/src/main.rs && \
+    mkdir -p rover-kiwi/sherpa_tts/src && \
+    echo "fn main() {}" > rover-kiwi/sherpa_tts/src/main.rs && \
+    mkdir -p rover-kiwi/arm_controller/src && \
+    echo "fn main() {}" > rover-kiwi/arm_controller/src/main.rs && \
+    mkdir -p rover-kiwi/rover_controller/src && \
+    echo "fn main() {}" > rover-kiwi/rover_controller/src/main.rs && \
+    mkdir -p rover-kiwi/performance_monitor/src && \
+    echo "fn main() {}" > rover-kiwi/performance_monitor/src/main.rs && \
+    mkdir -p rover-kiwi/zenoh_bridge/src && \
+    echo "fn main() {}" > rover-kiwi/zenoh_bridge/src/main.rs && \
+    mkdir -p rover-kiwi/sim_interface/src && \
+    echo "fn main() {}" > rover-kiwi/sim_interface/src/main.rs && \
+    mkdir -p rover-kiwi/dispatcher_keyboard/src && \
+    echo "fn main() {}" > rover-kiwi/dispatcher_keyboard/src/main.rs
+
+# Pre-build dependencies (this layer will be cached)
+RUN cargo build --release \
+    -p kornia_capture \
+    -p object_detector \
+    -p reid_extractor \
+    || true
+
+# Copy actual source code
+COPY robo_rover_lib robo_rover_lib/
+COPY rover-kiwi rover-kiwi/
+
+# Build all rover nodes
+RUN cargo build --release \
+    -p kornia_capture \
+    -p object_detector \
+    -p reid_extractor \
+    -p object_tracker \
+    -p visual_servo_controller \
+    -p audio_capture \
+    -p audio_playback \
+    -p sherpa_tts \
+    -p arm_controller \
+    -p rover_controller \
+    -p performance_monitor \
+    -p rover_zenoh_bridge \
+    -p sim_interface
+
+# =============================================================================
+# Stage 2: ONNX Runtime Downloader
+# =============================================================================
+FROM debian:bookworm-slim AS onnxruntime-downloader
+
+RUN apt-get update && apt-get install -y wget && rm -rf /var/lib/apt/lists/*
+
+ARG TARGETARCH
+ARG ORT_VERSION=1.20.1
+
+RUN if [ "$TARGETARCH" = "amd64" ]; then \
+        ORT_ARCH="x64"; \
+    elif [ "$TARGETARCH" = "arm64" ]; then \
+        ORT_ARCH="aarch64"; \
+    else \
+        ORT_ARCH="aarch64"; \
+    fi && \
+    wget -q https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}.tgz -O /tmp/onnxruntime.tgz && \
+    tar -xzf /tmp/onnxruntime.tgz -C /tmp && \
+    mv /tmp/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION} /onnxruntime && \
+    rm /tmp/onnxruntime.tgz
+
+# =============================================================================
+# Stage 3: Runtime - Minimal image with binaries and dependencies
+# =============================================================================
+FROM debian:bookworm-slim AS runtime
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    libasound2 \
+    libasound2-plugins \
+    gstreamer1.0-tools \
+    gstreamer1.0-plugins-base \
+    gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-bad \
+    gstreamer1.0-libav \
+    gstreamer1.0-plugins-ugly \
+    libgstreamer1.0-0 \
+    libgstreamer-plugins-base1.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Route ALSA through PulseAudio/PipeWire by default.
+# CPAL uses the ALSA backend on Linux; this config makes the default PCM/CTL
+# device the PulseAudio plugin so audio works via the forwarded PipeWire socket.
+RUN printf 'pcm.!default { type pulse }\nctl.!default { type pulse }\n' > /etc/asound.conf
+
+# Create non-root user
+RUN useradd -m -s /bin/bash dora
+
+WORKDIR /app
+
+# Copy binaries from builder
+COPY --from=builder /build/target/release/kornia_capture ./bin/
+COPY --from=builder /build/target/release/object_detector ./bin/
+COPY --from=builder /build/target/release/reid_extractor ./bin/
+COPY --from=builder /build/target/release/object_tracker ./bin/
+COPY --from=builder /build/target/release/visual_servo_controller ./bin/
+COPY --from=builder /build/target/release/audio_capture ./bin/
+COPY --from=builder /build/target/release/audio_playback ./bin/
+COPY --from=builder /build/target/release/sherpa_tts ./bin/
+COPY --from=builder /build/target/release/arm_controller ./bin/
+COPY --from=builder /build/target/release/rover_controller ./bin/
+COPY --from=builder /build/target/release/performance_monitor ./bin/
+COPY --from=builder /build/target/release/rover_zenoh_bridge ./bin/
+COPY --from=builder /build/target/release/sim_interface ./bin/
+COPY --from=builder /usr/local/cargo/bin/dora ./bin/
+
+# Copy ONNX Runtime libraries
+COPY --from=onnxruntime-downloader /onnxruntime/lib/libonnxruntime.so* /usr/local/lib/
+RUN ldconfig
+
+# Copy dataflow and config templates
+COPY rover-kiwi/rover-kiwi-dataflow.yml ./dataflow/rover-kiwi-dataflow.yml
+COPY rover-kiwi/zenoh_bridge/zenoh_config.json5 ./config/zenoh_config.json5
+COPY rover-kiwi/config ./config/rover/
+
+# Create model directories
+RUN mkdir -p /models/yolo /models/reid /models/sherpa-onnx && \
+    chown -R dora:dora /app /models
+
+# Add entrypoint script
+COPY docker/scripts/entrypoint-rover.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Set environment variables
+ENV PATH="/app/bin:${PATH}"
+ENV ORT_DYLIB_PATH="/usr/local/lib/libonnxruntime.so"
+ENV LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH}"
+
+# Expose Zenoh port (though we use host networking)
+EXPOSE 7447
+
+# Note: Running as root for hardware access (camera, audio)
+# USER dora
+
+ENTRYPOINT ["/entrypoint.sh"]

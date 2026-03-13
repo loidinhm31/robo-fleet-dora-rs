@@ -1,0 +1,42 @@
+# Build artifacts
+target/
+out/
+*.log
+
+# IDE
+.idea/
+.vscode/
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+!README.md
+
+# Tests
+**/tests/
+**/*_test.rs
+
+# Development files
+Makefile
+.env*
+
+# Large model files (mount as volumes instead)
+models/.cache/
+
+# Web app build artifacts
+robo-control-app/node_modules/
+robo-control-app/dist/
+robo-control-app/.next/
+
+# Python artifacts
+**/__pycache__/
+**/*.pyc
+**/*.egg-info/
+**/venv/
+
+# Output directories
+orchestra/out/
+rover-kiwi/out/

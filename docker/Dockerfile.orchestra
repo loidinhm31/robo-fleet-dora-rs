@@ -1,0 +1,124 @@
+# =============================================================================
+# Stage 1: Builder - Compile all Orchestra Rust binaries
+# =============================================================================
+FROM rust:1.88-bookworm AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    cmake \
+    pkg-config \
+    libssl-dev \
+    libclang-dev \
+    clang \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Dora CLI
+RUN cargo install dora-cli --version 0.3.13 --locked
+
+WORKDIR /build
+
+# Copy platform-specific workspace Cargo.toml (orchestra members only)
+COPY docker/Cargo.orchestra.toml Cargo.toml
+COPY Cargo.lock ./
+
+# Copy shared library Cargo.toml
+COPY robo_rover_lib/Cargo.toml robo_rover_lib/
+
+# Copy orchestra node Cargo.toml files
+COPY orchestra/web_bridge/Cargo.toml orchestra/web_bridge/
+COPY orchestra/speech_recognizer/Cargo.toml orchestra/speech_recognizer/
+COPY orchestra/command_parser/Cargo.toml orchestra/command_parser/
+COPY orchestra/audio_converter/Cargo.toml orchestra/audio_converter/
+COPY orchestra/video_encoder/Cargo.toml orchestra/video_encoder/
+COPY orchestra/zenoh_bridge/Cargo.toml orchestra/zenoh_bridge/
+COPY orchestra/kokoro_tts/Cargo.toml orchestra/kokoro_tts/
+
+# Create dummy source files for dependency pre-compilation
+RUN mkdir -p robo_rover_lib/src && \
+    echo "pub fn dummy() {}" > robo_rover_lib/src/lib.rs
+
+RUN mkdir -p orchestra/web_bridge/src && \
+    echo "fn main() {}" > orchestra/web_bridge/src/main.rs && \
+    mkdir -p orchestra/speech_recognizer/src && \
+    echo "fn main() {}" > orchestra/speech_recognizer/src/main.rs && \
+    mkdir -p orchestra/command_parser/src && \
+    echo "fn main() {}" > orchestra/command_parser/src/main.rs && \
+    mkdir -p orchestra/audio_converter/src && \
+    echo "fn main() {}" > orchestra/audio_converter/src/main.rs && \
+    mkdir -p orchestra/video_encoder/src && \
+    echo "fn main() {}" > orchestra/video_encoder/src/main.rs && \
+    mkdir -p orchestra/zenoh_bridge/src && \
+    echo "fn main() {}" > orchestra/zenoh_bridge/src/main.rs && \
+    mkdir -p orchestra/kokoro_tts/src && \
+    echo "fn main() {}" > orchestra/kokoro_tts/src/main.rs
+
+# Pre-build dependencies (this layer will be cached)
+RUN cargo build --release \
+    -p web_bridge \
+    -p speech_recognizer \
+    -p command_parser \
+    -p audio_converter \
+    -p video_encoder \
+    -p orchestra_zenoh_bridge \
+    || true
+
+# Copy actual source code
+COPY robo_rover_lib robo_rover_lib/
+COPY orchestra orchestra/
+
+# Build all orchestra nodes
+RUN cargo build --release \
+    -p web_bridge \
+    -p speech_recognizer \
+    -p command_parser \
+    -p audio_converter \
+    -p video_encoder \
+    -p orchestra_zenoh_bridge
+
+# =============================================================================
+# Stage 2: Runtime - Minimal image with only required binaries
+# =============================================================================
+FROM debian:bookworm-slim AS runtime
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN useradd -m -s /bin/bash dora
+
+WORKDIR /app
+
+# Copy binaries from builder
+COPY --from=builder /build/target/release/web_bridge ./bin/
+COPY --from=builder /build/target/release/speech_recognizer ./bin/
+COPY --from=builder /build/target/release/command_parser ./bin/
+COPY --from=builder /build/target/release/audio_converter ./bin/
+COPY --from=builder /build/target/release/video_encoder ./bin/
+COPY --from=builder /build/target/release/orchestra_zenoh_bridge ./bin/
+COPY --from=builder /usr/local/cargo/bin/dora ./bin/
+
+# Copy dataflow and config templates
+COPY orchestra/orchestra-dataflow.yml ./dataflow/orchestra-dataflow.yml
+COPY orchestra/zenoh_bridge/zenoh_config.json5 ./config/zenoh_config.json5
+
+# Create directories for models and runtime data
+RUN mkdir -p /models/ggml && \
+    chown -R dora:dora /app
+
+# Add entrypoint script
+COPY docker/scripts/entrypoint-orchestra.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Set PATH
+ENV PATH="/app/bin:${PATH}"
+
+# Expose ports
+EXPOSE 3030 7447
+
+# Switch to non-root user (commented out because dora might need permissions)
+# USER dora
+
+ENTRYPOINT ["/entrypoint.sh"]
