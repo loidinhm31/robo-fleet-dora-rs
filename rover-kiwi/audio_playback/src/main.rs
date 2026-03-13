@@ -83,45 +83,27 @@ fn main() -> Result<()> {
         channels
     );
 
-    // Initialize audio output device
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or_else(|| eyre::eyre!("No output device available"))?;
-
-    tracing::info!("Using audio output device: {}", device.name()?);
-
-    // Configure audio stream
-    let config = StreamConfig {
-        channels,
-        sample_rate: cpal::SampleRate(sample_rate),
-        buffer_size: cpal::BufferSize::Default,
-    };
-
-    tracing::info!("Stream config: {:?}", config);
-
     // Create shared audio buffer (5 seconds of audio)
     let buffer_capacity = (sample_rate * channels as u32 * 5) as usize;
     let audio_buffer = Arc::new(Mutex::new(AudioBuffer::new(buffer_capacity)));
-    let audio_buffer_clone = audio_buffer.clone();
 
-    // Build audio output stream
-    let stream = device.build_output_stream(
-        &config,
-        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            let mut buffer = audio_buffer_clone.lock().unwrap();
-            buffer.read(data);
-        },
-        |err| {
-            tracing::error!("Audio stream error: {}", err);
-        },
-        None,
-    )?;
+    // Try to initialize audio output device — degrade gracefully if unavailable
+    let _stream: Option<Stream> = match init_audio_stream(sample_rate, channels, audio_buffer.clone()) {
+        Ok(stream) => {
+            tracing::info!("Audio playback stream started");
+            Some(stream)
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Audio output unavailable ({}), running in silent mode. \
+                 Audio data will be received but not played back.",
+                e
+            );
+            None
+        }
+    };
 
-    stream.play()?;
-    tracing::info!("Audio playback stream started");
-
-    // Initialize Dora node
+    // Initialize Dora node (must happen even in silent mode to avoid cascade crash)
     let (_node, mut events) = DoraNode::init_from_env()?;
 
     tracing::info!("Audio playback node ready");
@@ -137,30 +119,36 @@ fn main() -> Result<()> {
                     // Handle incoming audio from web_bridge
                     let samples = parse_audio_data(&*data)?;
 
-                    // Write to playback buffer
-                    let mut buffer = audio_buffer.lock().unwrap();
-                    let written = buffer.write(&samples);
+                    if _stream.is_some() {
+                        // Write to playback buffer only when audio hardware is available
+                        let mut buffer = audio_buffer.lock().unwrap();
+                        let written = buffer.write(&samples);
 
-                    total_samples += written as u64;
+                        total_samples += written as u64;
 
-                    if written < samples.len() {
-                        buffer_overruns += 1;
-                        tracing::warn!(
-                            "Buffer overrun: wrote {}/{} samples (total overruns: {})",
-                            written,
+                        if written < samples.len() {
+                            buffer_overruns += 1;
+                            tracing::warn!(
+                                "Buffer overrun: wrote {}/{} samples (total overruns: {})",
+                                written,
+                                samples.len(),
+                                buffer_overruns
+                            );
+                        }
+
+                        let available = buffer.available();
+                        tracing::debug!(
+                            "Received {} samples, buffer: {}/{} ({:.1}%)",
                             samples.len(),
-                            buffer_overruns
+                            available,
+                            buffer_capacity,
+                            (available as f32 / buffer_capacity as f32) * 100.0
                         );
+                    } else {
+                        // Silent mode: count samples but don't play them
+                        total_samples += samples.len() as u64;
+                        tracing::debug!("Silent mode: discarded {} audio samples", samples.len());
                     }
-
-                    let available = buffer.available();
-                    tracing::debug!(
-                        "Received {} samples, buffer: {}/{} ({:.1}%)",
-                        samples.len(),
-                        available,
-                        buffer_capacity,
-                        (available as f32 / buffer_capacity as f32) * 100.0
-                    );
                 }
                 other => {
                     tracing::warn!("Unexpected input: {}", other);
@@ -182,11 +170,46 @@ fn main() -> Result<()> {
         }
     }
 
-    // Stop stream
-    drop(stream);
     tracing::info!("Audio playback node stopped");
 
     Ok(())
+}
+
+/// Attempt to open an ALSA/CPAL output stream. Returns Err if no audio device is available.
+fn init_audio_stream(
+    sample_rate: u32,
+    channels: u16,
+    audio_buffer: Arc<Mutex<AudioBuffer>>,
+) -> Result<Stream> {
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .ok_or_else(|| eyre::eyre!("No output device available"))?;
+
+    tracing::info!("Using audio output device: {}", device.name()?);
+
+    let config = StreamConfig {
+        channels,
+        sample_rate: cpal::SampleRate(sample_rate),
+        buffer_size: cpal::BufferSize::Default,
+    };
+
+    tracing::info!("Stream config: {:?}", config);
+
+    let stream = device.build_output_stream(
+        &config,
+        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+            let mut buffer = audio_buffer.lock().unwrap();
+            buffer.read(data);
+        },
+        |err| {
+            tracing::error!("Audio stream error: {}", err);
+        },
+        None,
+    )?;
+
+    stream.play()?;
+    Ok(stream)
 }
 
 /// Parse audio data from various Arrow array formats

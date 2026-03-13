@@ -35,50 +35,38 @@ fn main() -> Result<()> {
         sample_rate, channels, chunk_size
     );
 
-    let host = cpal::default_host();
+    // Initialize Dora node first — so a failed audio init never cascades to other nodes
+    let (mut node, mut events) = DoraNode::init_from_env()?;
+    let output_id = DataId::from("audio".to_owned());
 
-    // Get default input device
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| eyre::eyre!("No default input device available"))?;
-
-    tracing::info!("Using audio device: {}", device.name()?);
-
-    // Configure audio stream
     let config = StreamConfig {
         channels,
         sample_rate: cpal::SampleRate(sample_rate),
         buffer_size: cpal::BufferSize::Fixed(chunk_size as u32),
     };
 
-    // Initialize Dora node
-    let (mut node, mut events) = DoraNode::init_from_env()?;
-    let output_id = DataId::from("audio".to_owned());
-
     // Create ring buffer for audio samples (larger buffer to prevent underruns)
-    // Use Arc<Mutex<>> to share between stream callback and main loop
     let ring = HeapRb::<f32>::new(chunk_size * 10);
     let (producer, consumer) = ring.split();
     let producer = Arc::new(Mutex::new(producer));
     let consumer = Arc::new(Mutex::new(consumer));
 
-    // Build audio input stream (using f32 samples)
-    let err_fn = |err| tracing::error!("Audio stream error: {}", err);
-    let producer_clone = producer.clone();
-
-    let mut stream_opt: Option<Stream> = Some(device.build_input_stream(
-        &config,
-        move |data: &[f32], _: &_| {
-            if let Ok(mut prod) = producer_clone.lock() {
-                write_audio_data(data, &mut prod);
+    // Try to open the microphone — degrade gracefully if ALSA/hardware is unavailable
+    let mut stream_opt: Option<Stream> =
+        match try_open_input_stream(sample_rate, channels, chunk_size, producer.clone()) {
+            Ok(stream) => {
+                tracing::info!("Audio stream started successfully");
+                Some(stream)
             }
-        },
-        err_fn,
-        None,
-    )?);
-
-    stream_opt.as_ref().unwrap().play()?;
-    tracing::info!("Audio stream started successfully");
+            Err(e) => {
+                tracing::warn!(
+                    "Audio input unavailable ({}), running in silent mode. \
+                     No audio will be captured or sent.",
+                    e
+                );
+                None
+            }
+        };
 
     let mut frame_count = 0u64;
     let mut audio_buffer = Vec::with_capacity(chunk_size);
@@ -150,20 +138,23 @@ fn main() -> Result<()> {
                                                 while cons.try_pop().is_some() {}
                                             }
 
-                                            let producer_clone = producer.clone();
-                                            let new_stream = device.build_input_stream(
-                                                &config,
-                                                move |data: &[f32], _: &_| {
-                                                    if let Ok(mut prod) = producer_clone.lock() {
-                                                        write_audio_data(data, &mut prod);
-                                                    }
-                                                },
-                                                err_fn,
-                                                None,
-                                            )?;
-                                            new_stream.play()?;
-                                            stream_opt = Some(new_stream);
-                                            tracing::info!("Audio stream started");
+                                            match try_open_input_stream(
+                                                sample_rate,
+                                                channels,
+                                                chunk_size,
+                                                producer.clone(),
+                                            ) {
+                                                Ok(new_stream) => {
+                                                    stream_opt = Some(new_stream);
+                                                    tracing::info!("Audio stream started");
+                                                }
+                                                Err(e) => {
+                                                    tracing::warn!(
+                                                        "Failed to start audio stream: {}",
+                                                        e
+                                                    );
+                                                }
+                                            }
                                         }
                                     }
                                     AudioAction::Stop => {
@@ -198,6 +189,44 @@ fn main() -> Result<()> {
     drop(stream_opt);
     tracing::info!("Audio capture stopped");
     Ok(())
+}
+
+/// Try to open a CPAL input stream. Returns Err if no microphone / ALSA device is available.
+fn try_open_input_stream(
+    sample_rate: u32,
+    channels: u16,
+    chunk_size: usize,
+    producer: Arc<Mutex<ringbuf::HeapProd<f32>>>,
+) -> Result<Stream> {
+    let host = cpal::default_host();
+    let device = host
+        .default_input_device()
+        .ok_or_else(|| eyre::eyre!("No default input device available"))?;
+
+    tracing::info!("Using audio device: {}", device.name()?);
+
+    let config = StreamConfig {
+        channels,
+        sample_rate: cpal::SampleRate(sample_rate),
+        buffer_size: cpal::BufferSize::Fixed(chunk_size as u32),
+    };
+
+    let err_fn = |err| tracing::error!("Audio stream error: {}", err);
+    let producer_clone = producer.clone();
+
+    let stream = device.build_input_stream(
+        &config,
+        move |data: &[f32], _: &_| {
+            if let Ok(mut prod) = producer_clone.lock() {
+                write_audio_data(data, &mut prod);
+            }
+        },
+        err_fn,
+        None,
+    )?;
+
+    stream.play()?;
+    Ok(stream)
 }
 
 fn write_audio_data<T>(input: &[T], producer: &mut ringbuf::HeapProd<f32>)
