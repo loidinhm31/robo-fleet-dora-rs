@@ -120,6 +120,21 @@ RUN cargo build --release \
     -p video_encoder \
     -p audio_converter
 
+# Collect sherpa-onnx shared library if it was built as a dynamic library.
+# sherpa-rs-sys may link statically (no .so needed) or dynamically depending on build.
+# We search broadly and collect what exists; runtime will work either way.
+RUN apt-get update && apt-get install -y binutils && rm -rf /var/lib/apt/lists/* && \
+    echo "=== sherpa_tts dynamic dependencies ===" && \
+    readelf -d /build/target/release/sherpa_tts | grep -E 'NEEDED|RPATH|RUNPATH' || true && \
+    echo "=== sherpa files found in build ===" && \
+    find /build/target /root /tmp -name "*sherpa*" -type f 2>/dev/null | head -20 && \
+    echo "=== Attempting copy ===" && \
+    find /build/target /root /tmp -name "libsherpa-onnx-c-api.so" -type f 2>/dev/null \
+        | head -1 | xargs -I{} cp -L {} /usr/local/lib/ && \
+    (ls /usr/local/lib/libsherpa-onnx-c-api.so && echo "Dynamic lib copied.") \
+        || echo "No dynamic sherpa-onnx lib found — binary may be statically linked (OK)." && \
+    touch /usr/local/lib/libsherpa-onnx-placeholder
+
 # =============================================================================
 # Stage 2: ONNX Runtime Downloader
 # =============================================================================
@@ -128,7 +143,7 @@ FROM debian:bookworm-slim AS onnxruntime-downloader
 RUN apt-get update && apt-get install -y wget && rm -rf /var/lib/apt/lists/*
 
 ARG TARGETARCH
-ARG ORT_VERSION=1.20.1
+ARG ORT_VERSION=1.17.1
 
 RUN if [ "$TARGETARCH" = "amd64" ]; then \
         ORT_ARCH="x64"; \
@@ -194,7 +209,10 @@ COPY --from=builder /usr/local/cargo/bin/dora ./bin/
 
 # Copy ONNX Runtime libraries
 COPY --from=onnxruntime-downloader /onnxruntime/lib/libonnxruntime.so* /usr/local/lib/
-RUN ldconfig
+
+# Copy sherpa-onnx C API library if dynamically linked (placeholder ensures COPY doesn't fail)
+COPY --from=builder /usr/local/lib/libsherpa-onnx* /usr/local/lib/
+RUN rm -f /usr/local/lib/libsherpa-onnx-placeholder && ldconfig
 
 # Copy dataflow and config templates
 COPY rover-kiwi/rover-kiwi-dataflow.yml ./dataflow/rover-kiwi-dataflow.yml

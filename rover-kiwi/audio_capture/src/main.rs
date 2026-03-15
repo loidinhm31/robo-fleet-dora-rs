@@ -39,7 +39,7 @@ fn main() -> Result<()> {
     let (mut node, mut events) = DoraNode::init_from_env()?;
     let output_id = DataId::from("audio".to_owned());
 
-    let config = StreamConfig {
+    let _config = StreamConfig {
         channels,
         sample_rate: cpal::SampleRate(sample_rate),
         buffer_size: cpal::BufferSize::Fixed(chunk_size as u32),

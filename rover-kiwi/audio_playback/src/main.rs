@@ -1,5 +1,5 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Sample, SampleFormat, Stream, StreamConfig};
+use cpal::{Stream, StreamConfig};
 use dora_node_api::arrow::array::{Array, BinaryArray, Float32Array, Int16Array};
 use dora_node_api::{DoraNode, Event};
 use eyre::Result;

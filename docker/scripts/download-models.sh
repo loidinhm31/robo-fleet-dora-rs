@@ -6,6 +6,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 MODELS_DIR="$PROJECT_ROOT/models/.cache"
+export MODELS_DIR
 
 echo "==================================================================="
 echo "  Robo-Fleet Model Download Script"
@@ -48,49 +49,97 @@ else
 fi
 
 # =============================================================================
-# 3. YOLO Model (requires PyTorch export)
+# Architecture check — PyTorch model export runs on x86_64 only.
+# On ARM (Raspberry Pi) the models must be pre-exported on the workstation
+# and copied over (or volume-mounted via Docker).
 # =============================================================================
-echo ""
-echo "[3/4] Checking YOLO model..."
-if [ -f "$MODELS_DIR/yolo/yolo12n.onnx" ]; then
-    echo "  ✓ YOLO model already exists"
-else
-    echo "  ⚠ YOLO model NOT found"
-    echo ""
-    echo "  The YOLO model needs to be exported manually from PyTorch weights."
-    echo "  To export the YOLO model:"
-    echo ""
-    echo "    cd $PROJECT_ROOT/models/scripts"
-    echo "    python3 -m venv venv"
-    echo "    source venv/bin/activate"
-    echo "    pip install ultralytics"
-    echo "    python3 export_yolo_to_onnx.py"
-    echo ""
-    echo "  The exported model will be saved to:"
-    echo "    $MODELS_DIR/yolo/yolo12n.onnx"
-    echo ""
+ARCH=$(uname -m)
+CAN_EXPORT=true
+if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "armv7l" ]; then
+    CAN_EXPORT=false
 fi
 
 # =============================================================================
-# 4. OSNet ReID Model (requires PyTorch export)
+# 3. YOLO Model (requires PyTorch export on x86_64)
 # =============================================================================
 echo ""
-echo "[4/4] Checking OSNet ReID model..."
-if [ -f "$MODELS_DIR/reid/osnet_x0_25.onnx" ]; then
-    echo "  ✓ OSNet ReID model already exists"
+echo "[3/4] Exporting YOLO model..."
+if [ -f "$MODELS_DIR/yolo/yolo12n.onnx" ]; then
+    echo "  ✓ YOLO model already exists, skipping export"
+elif [ "$CAN_EXPORT" = false ]; then
+    echo "  ⚠ ARM architecture detected ($ARCH) — PyTorch export must run on x86_64"
+    echo "    On your workstation: make models"
+    echo "    Then copy to Pi:     rsync -av models/.cache/yolo/ raspb4@<pi-ip>:~/WS/robo-fleet-dora-rs/models/.cache/yolo/"
+elif ! command -v python3 &>/dev/null; then
+    echo "  ✗ python3 not found — cannot export YOLO model"
+    echo "    Install Python 3 and re-run, or export manually: cd $PROJECT_ROOT/models/scripts && python3 export_yolo_to_onnx.py"
 else
-    echo "  ⚠ OSNet ReID model NOT found"
-    echo ""
-    echo "  The OSNet model needs to be downloaded and exported."
-    echo "  To download and export the OSNet model:"
-    echo ""
-    echo "    cd $PROJECT_ROOT/models/scripts"
-    echo "    ./download_osnet_model.sh"
-    echo ""
-    echo "  The script will create a Python venv, download the model,"
-    echo "  and export it to ONNX format at:"
-    echo "    $MODELS_DIR/reid/osnet_x0_25.onnx"
-    echo ""
+    echo "  Setting up Python venv for YOLO export..."
+    VENV_DIR="$PROJECT_ROOT/models/scripts/venv"
+    [ -d "$VENV_DIR" ] || python3 -m venv "$VENV_DIR"
+    "$VENV_DIR/bin/pip" install --quiet ultralytics
+    "$VENV_DIR/bin/python" "$PROJECT_ROOT/models/scripts/export_yolo_to_onnx.py"
+    echo "  ✓ YOLO model exported"
+fi
+
+# =============================================================================
+# 4. OSNet ReID Model (requires PyTorch export on x86_64)
+# =============================================================================
+echo ""
+echo "[4/4] Exporting OSNet ReID model..."
+if [ -f "$MODELS_DIR/reid/osnet_x0_25.onnx" ]; then
+    echo "  ✓ OSNet ReID model already exists, skipping export"
+elif [ "$CAN_EXPORT" = false ]; then
+    echo "  ⚠ ARM architecture detected ($ARCH) — PyTorch export must run on x86_64"
+    echo "    On your workstation: make models"
+    echo "    Then copy to Pi:     rsync -av models/.cache/reid/ raspb4@<pi-ip>:~/WS/robo-fleet-dora-rs/models/.cache/reid/"
+elif ! command -v python3 &>/dev/null; then
+    echo "  ✗ python3 not found — cannot export OSNet model"
+    echo "    Install Python 3 and re-run, or export manually: cd $PROJECT_ROOT/models/scripts && ./download_osnet_model.sh"
+else
+    echo "  Setting up Python venv for OSNet export..."
+    VENV_DIR="$PROJECT_ROOT/models/scripts/venv"
+    [ -d "$VENV_DIR" ] || python3 -m venv "$VENV_DIR"
+    "$VENV_DIR/bin/pip" install --quiet torch torchvision torchreid onnx gdown tensorboard onnxscript
+
+    echo "  Downloading and exporting OSNet x0.25..."
+    "$VENV_DIR/bin/python" - <<'PYTHON'
+import torch
+import torchreid
+import onnx
+from pathlib import Path
+import os, sys
+
+OUTPUT_DIR = Path(os.environ["MODELS_DIR"]) / "reid"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+ONNX_PATH = OUTPUT_DIR / "osnet_x0_25.onnx"
+
+print("  Loading osnet_x0_25 pretrained model...")
+model = torchreid.models.build_model(
+    name="osnet_x0_25", num_classes=1000, pretrained=True, loss="softmax"
+)
+model.eval()
+
+dummy_input = torch.randn(1, 3, 256, 128)
+with torch.no_grad():
+    torch.onnx.export(
+        model,
+        dummy_input,
+        str(ONNX_PATH),
+        export_params=True,
+        opset_version=12,       # opset 12 → ONNX IR v7 (ORT 1.16+ compatible)
+        do_constant_folding=True,
+        input_names=["input"],
+        output_names=["output"],
+        dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+        dynamo=False,           # disable dynamo to avoid IR v10 output
+    )
+
+onnx_model = onnx.load(str(ONNX_PATH))
+onnx.checker.check_model(onnx_model)
+print(f"  ✓ Exported to {ONNX_PATH} (IR version {onnx_model.ir_version})")
+PYTHON
+    echo "  ✓ OSNet ReID model exported"
 fi
 
 # =============================================================================

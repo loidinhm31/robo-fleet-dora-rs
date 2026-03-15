@@ -14,8 +14,13 @@ from pathlib import Path
 from ultralytics import YOLO
 
 def main():
-    # Setup output directory
-    cache_dir = Path.home() / ".cache" / "yolo"
+    # Setup output directory — prefer MODELS_DIR env var (set by download-models.sh),
+    # fall back to ~/.cache/yolo for standalone use
+    models_dir = os.environ.get("MODELS_DIR")
+    if models_dir:
+        cache_dir = Path(models_dir) / "yolo"
+    else:
+        cache_dir = Path.home() / ".cache" / "yolo"
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     output_path = cache_dir / "yolo12n.onnx"

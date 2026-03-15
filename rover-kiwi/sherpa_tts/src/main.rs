@@ -72,8 +72,21 @@ fn main() -> Result<()> {
     let mut tts = VitsTts::new(vits_config);
     tracing::info!("Sherpa-ONNX VITS TTS engine initialized successfully");
 
-    // Initialize audio output
-    let (_stream, stream_handle) = OutputStream::try_default()?;
+    // Initialize audio output (optional — degrade to silent if unavailable)
+    let audio_output: Option<(rodio::OutputStream, rodio::OutputStreamHandle)> =
+        match OutputStream::try_default() {
+            Ok(pair) => {
+                tracing::info!("Audio output initialized successfully");
+                Some(pair)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Audio output unavailable ({}), running in silent mode. TTS will synthesize but not play audio.",
+                    e
+                );
+                None
+            }
+        };
 
     // Initialize Dora node
     let (_node, mut events) = DoraNode::init_from_env()?;
@@ -101,11 +114,15 @@ fn main() -> Result<()> {
                                             audio.duration
                                         );
 
-                                        // Play the audio
-                                        if let Err(e) = play_audio(&stream_handle, &audio.samples, audio.sample_rate, volume) {
-                                            tracing::error!("Failed to play audio: {}", e);
+                                        // Play the audio if output is available
+                                        if let Some((ref _stream, ref stream_handle)) = audio_output {
+                                            if let Err(e) = play_audio(stream_handle, &audio.samples, audio.sample_rate, volume) {
+                                                tracing::error!("Failed to play audio: {}", e);
+                                            } else {
+                                                tracing::info!("TTS playback completed");
+                                            }
                                         } else {
-                                            tracing::info!("TTS playback completed");
+                                            tracing::debug!("Silent mode: skipping audio playback");
                                         }
                                     }
                                     Err(e) => {
