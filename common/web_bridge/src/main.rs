@@ -630,12 +630,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let allowed_origins = parse_allowed_origins();
         tracing::info!("CORS allowed origins: {:?}", allowed_origins);
 
-        // Convert to HeaderValue for CORS layer
-        let origins: Vec<HeaderValue> = allowed_origins
-            .iter()
-            .filter_map(|origin| origin.parse().ok())
-            .collect();
-
         // Define allowed headers explicitly (required when using credentials)
         let allowed_headers = [
             axum::http::header::CONTENT_TYPE,
@@ -643,25 +637,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             axum::http::header::ACCEPT,
         ];
 
-        let cors_layer = if origins.is_empty() {
-            tracing::warn!("No valid CORS origins configured, defaulting to localhost");
-            CorsLayer::new()
-                .allow_origin([
-                    "http://localhost:3000".parse::<HeaderValue>().unwrap(),
-                    "http://localhost:5173".parse::<HeaderValue>().unwrap(),
-                ])
-                .allow_methods([Method::GET, Method::POST])
-                .allow_headers(allowed_headers)
-                .allow_credentials(true)
+        let cors_layer = if allowed_origins.iter().any(|o| o == "*") {
+            // Wildcard: AllowOrigin::list rejects "*", must use permissive()
+            tracing::warn!("CORS wildcard origin configured - credentials disabled");
+            CorsLayer::permissive()
         } else {
-            CorsLayer::new()
-                .allow_origin(origins)
-                .allow_methods([Method::GET, Method::POST])
-                .allow_headers(allowed_headers)
-                .allow_credentials(true)
+            // Convert to HeaderValue for CORS layer
+            let origins: Vec<HeaderValue> = allowed_origins
+                .iter()
+                .filter_map(|origin| origin.parse().ok())
+                .collect();
+
+            if origins.is_empty() {
+                tracing::warn!("No valid CORS origins configured, defaulting to localhost");
+                CorsLayer::new()
+                    .allow_origin([
+                        "http://localhost:3000".parse::<HeaderValue>().unwrap(),
+                        "http://localhost:5173".parse::<HeaderValue>().unwrap(),
+                    ])
+                    .allow_methods([Method::GET, Method::POST])
+                    .allow_headers(allowed_headers)
+                    .allow_credentials(true)
+            } else {
+                CorsLayer::new()
+                    .allow_origin(origins)
+                    .allow_methods([Method::GET, Method::POST])
+                    .allow_headers(allowed_headers)
+                    .allow_credentials(true)
+            }
         };
 
         let app = axum::Router::new()
+            .route("/health", axum::routing::get(|| async {
+                axum::Json(serde_json::json!({"status": "ok"}))
+            }))
             .layer(
                 ServiceBuilder::new()
                     .layer(cors_layer)
