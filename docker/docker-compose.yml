@@ -155,6 +155,7 @@ services:
       ZENOH_CONFIG: /app/config/zenoh_config.json5
 
       # Web bridge settings (used when ROVER_MODE=direct)
+      BIND_ADDRESS: "0.0.0.0"
       SOCKET_IO_PORT: "3030"
       AUTH_USERNAME: ${AUTH_USERNAME:-admin}
       AUTH_PASSWORD: ${AUTH_PASSWORD:-password}
