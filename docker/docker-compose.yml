@@ -68,7 +68,7 @@ services:
       SOCKET_IO_PORT: "3030"
       AUTH_USERNAME: ${AUTH_USERNAME:-admin}
       AUTH_PASSWORD: ${AUTH_PASSWORD:-password}
-      ALLOWED_ORIGINS: "http://localhost:1420,http://localhost:3000,http://localhost:5173"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-https://dms-study.cloud,http://localhost:1420,http://localhost:3000,http://localhost:5173}"
       RATE_LIMIT_AUTH_PER_MINUTE: "5"
       RATE_LIMIT_COMMANDS_PER_SECOND: "100"
       MAX_TTS_TEXT_LENGTH: "1000"
@@ -204,9 +204,10 @@ services:
       CHANNELS: "1"
       CHUNK_SIZE: "800"
       # Use ALSA hardware directly (no PulseAudio — Pi runs headless without a sound server).
-      # ALSA will use the 'default' device backed by /dev/snd which is mapped via devices:.
-      # To re-enable PulseAudio/PipeWire, set PULSE_SERVER=unix:/run/user/1000/pulse/native
-      # and add the pulse socket volume mount back.
+      # AUDIO_DEVICE selects the capture device by substring match when ALSA's 'default' PCM
+      # resolves to a playback-only card (e.g. HDMI at card 0/1 with USB mic at card 2+).
+      # Override per-deploy: AUDIO_DEVICE="PC-LM1E Camera" make up-rover
+      AUDIO_DEVICE: ${AUDIO_DEVICE:-USB Audio}
 
       # TTS (Sherpa-ONNX)
       TTS_MODEL_DIR: /models/sherpa-onnx/vits-piper-en_US-lessac-medium
