@@ -168,6 +168,7 @@ RUN apt-get update && apt-get install -y \
     libssl3 \
     libasound2 \
     libasound2-plugins \
+    alsa-utils \
     gstreamer1.0-tools \
     gstreamer1.0-plugins-base \
     gstreamer1.0-plugins-good \

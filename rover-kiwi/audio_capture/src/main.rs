@@ -39,11 +39,6 @@ fn main() -> Result<()> {
     let (mut node, mut events) = DoraNode::init_from_env()?;
     let output_id = DataId::from("audio".to_owned());
 
-    let _config = StreamConfig {
-        channels,
-        sample_rate: cpal::SampleRate(sample_rate),
-        buffer_size: cpal::BufferSize::Fixed(chunk_size as u32),
-    };
 
     // Create ring buffer for audio samples (larger buffer to prevent underruns)
     let ring = HeapRb::<f32>::new(chunk_size * 10);
@@ -192,6 +187,9 @@ fn main() -> Result<()> {
 }
 
 /// Try to open a CPAL input stream. Returns Err if no microphone / ALSA device is available.
+/// Respects AUDIO_DEVICE env var: substring-matches against device names reported by cpal.
+/// Example: AUDIO_DEVICE="USB Audio" targets the USB camera mic on systems where card 0/1
+/// are playback-only and ALSA's 'default' resolves to the wrong card.
 fn try_open_input_stream(
     sample_rate: u32,
     channels: u16,
@@ -199,16 +197,35 @@ fn try_open_input_stream(
     producer: Arc<Mutex<ringbuf::HeapProd<f32>>>,
 ) -> Result<Stream> {
     let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| eyre::eyre!("No default input device available"))?;
+
+    let device = match env::var("AUDIO_DEVICE").ok().as_deref() {
+        Some(target) => {
+            tracing::info!("AUDIO_DEVICE='{}', scanning input devices", target);
+            host.input_devices()?
+                .find(|d| d.name().map_or(false, |n| n.contains(target)))
+                .ok_or_else(|| {
+                    let available: Vec<String> = host
+                        .input_devices()
+                        .map(|devs| devs.filter_map(|d| d.name().ok()).collect())
+                        .unwrap_or_default();
+                    eyre::eyre!(
+                        "AUDIO_DEVICE '{}' not found. Available: {:?}",
+                        target,
+                        available
+                    )
+                })?
+        }
+        None => host
+            .default_input_device()
+            .ok_or_else(|| eyre::eyre!("No default input device available"))?,
+    };
 
     tracing::info!("Using audio device: {}", device.name()?);
 
     let config = StreamConfig {
         channels,
         sample_rate: cpal::SampleRate(sample_rate),
-        buffer_size: cpal::BufferSize::Fixed(chunk_size as u32),
+        buffer_size: cpal::BufferSize::Default,
     };
 
     let err_fn = |err| tracing::error!("Audio stream error: {}", err);

@@ -1052,13 +1052,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     })
                                     .unwrap_or(1);
 
-                                tracing::debug!(
-                                    "Received pre-converted audio: {} format, {} Hz, {} channels, {} bytes",
-                                    format, sample_rate, channels, audio_bytes.len()
-                                );
-
                                 // Broadcast pre-converted audio to all clients
                                 frame_counter += 1;
+
+                                if frame_counter <= 3 || frame_counter % 200 == 0 {
+                                    let client_count = state_for_video.video_clients.lock()
+                                        .map(|c| c.len()).unwrap_or(0);
+                                    tracing::info!(
+                                        "audio_frame #{}: {} bytes, {} Hz, {} clients",
+                                        frame_counter, audio_bytes.len(), sample_rate, client_count
+                                    );
+                                }
 
                                 let timestamp = SystemTime::now()
                                     .duration_since(UNIX_EPOCH)
@@ -1314,7 +1318,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
-                    _ => {}
+                    other => {
+                        tracing::warn!("Unhandled dora input: '{}'", other);
+                    }
                 },
                 Event::Stop(_) => {
                     tracing::info!("Stop event received");

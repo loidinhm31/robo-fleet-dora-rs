@@ -138,6 +138,11 @@ services:
       - ../rover-kiwi/rover-kiwi-dataflow.yml:/app/dataflow/rover-kiwi-dataflow.yml:ro
       - ../rover-kiwi/rover-kiwi-direct-dataflow.yml:/app/dataflow/rover-kiwi-direct-dataflow.yml:ro
 
+      # Host PulseAudio socket — gives the container the same audio path as a direct
+      # dora start on the host. PULSE_UID defaults to 1000 (Raspberry Pi default user).
+      # Override: PULSE_UID=$(id -u) make up-rover
+      - /run/user/${PULSE_UID:-1000}/pulse:/run/user/${PULSE_UID:-1000}/pulse
+
     environment:
       # Rust logging
       RUST_LOG: info
@@ -203,11 +208,10 @@ services:
       SAMPLE_RATE: "16000"
       CHANNELS: "1"
       CHUNK_SIZE: "800"
-      # Use ALSA hardware directly (no PulseAudio — Pi runs headless without a sound server).
-      # AUDIO_DEVICE selects the capture device by substring match when ALSA's 'default' PCM
-      # resolves to a playback-only card (e.g. HDMI at card 0/1 with USB mic at card 2+).
-      # Override per-deploy: AUDIO_DEVICE="PC-LM1E Camera" make up-rover
-      AUDIO_DEVICE: ${AUDIO_DEVICE:-USB Audio}
+      # Route audio through host PulseAudio — same path as direct `dora start` on the host.
+      # The entrypoint detects the pulse socket and writes asound.conf accordingly.
+      # Override: PULSE_UID=$(id -u) make up-rover  (default 1000 = Pi default user)
+      PULSE_SERVER: "unix:/run/user/${PULSE_UID:-1000}/pulse/native"
 
       # TTS (Sherpa-ONNX)
       TTS_MODEL_DIR: /models/sherpa-onnx/vits-piper-en_US-lessac-medium

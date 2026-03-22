@@ -54,7 +54,16 @@ sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
 
 Install Dora CLI:
 ```shell
-cargo install dora-cli
+cargo install dora-cli --locked
+```
+
+Install ALSA development headers (required for audio capture):
+```shell
+# Arch/Manjaro
+sudo pacman -S alsa-lib
+
+# Ubuntu/Debian / Raspberry Pi OS
+sudo apt install libasound2-dev
 ```
 
 Install CMake (required for Whisper.cpp speech recognition):
@@ -513,8 +522,8 @@ v4l2-ctl --list-devices  # Detailed info
 **Missing dependencies**:
 ```shell
 # Install all system dependencies
-sudo pacman -S gstreamer gst-plugins-base cmake  # Arch
-sudo apt install libgstreamer1.0-dev cmake build-essential  # Ubuntu
+sudo pacman -S gstreamer gst-plugins-base cmake alsa-lib  # Arch
+sudo apt install libgstreamer1.0-dev cmake build-essential libasound2-dev  # Ubuntu/Raspberry Pi OS
 ```
 
 **TypeScript errors**:
