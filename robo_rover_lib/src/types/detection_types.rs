@@ -102,19 +102,25 @@ impl DetectionResult {
 
     /// Compute cosine similarity between ReID features of two detections
     pub fn reid_similarity(&self, other: &DetectionResult) -> Option<f32> {
-        match (&self.reid_features, &other.reid_features) {
-            (Some(f1), Some(f2)) if f1.len() == f2.len() => {
-                let dot: f32 = f1.iter().zip(f2.iter()).map(|(a, b)| a * b).sum();
-                let norm1: f32 = f1.iter().map(|x| x * x).sum::<f32>().sqrt();
-                let norm2: f32 = f2.iter().map(|x| x * x).sum::<f32>().sqrt();
-                if norm1 > 0.0 && norm2 > 0.0 {
-                    Some(dot / (norm1 * norm2))
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
+        cosine_similarity(
+            self.reid_features.as_deref()?,
+            other.reid_features.as_deref()?,
+        )
+    }
+}
+
+/// Cosine similarity between two feature vectors. Returns None if lengths differ or norms are zero.
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
+    if a.len() != b.len() || a.is_empty() {
+        return None;
+    }
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm_a > 0.0 && norm_b > 0.0 {
+        Some(dot / (norm_a * norm_b))
+    } else {
+        None
     }
 }
 
@@ -253,6 +259,20 @@ impl TrackingCommand {
                 .as_millis() as u64,
         }
     }
+}
+
+/// Fine-grained detection control (detection without tracking, for future use).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetectionControl {
+    pub command: DetectionAction,
+    pub timestamp: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DetectionAction {
+    Enable,
+    Disable,
 }
 
 /// Current state of tracking system

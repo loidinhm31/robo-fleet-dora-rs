@@ -1,217 +1,260 @@
+mod vision_pipeline;
+
 use dora_node_api::{
     self,
-    arrow::array::{Array, BinaryArray},
+    arrow::array::{Array as ArrowArray, BinaryArray},
     dora_core::config::DataId,
     DoraNode, Event, Parameter,
 };
-use kornia_io::gstreamer::{RTSPCameraConfig, V4L2CameraConfig};
-use robo_rover_lib::{init_tracing, CameraAction, CameraControl};
+use kornia_io::gstreamer::{CameraCapture, RTSPCameraConfig, V4L2CameraConfig};
+use object_detector::DetectorConfig;
+use object_tracker::TrackerConfig;
+use reid_extractor::ReIdConfig;
+use robo_rover_lib::{init_tracing, types::TrackingCommand, CameraAction, CameraControl};
+use std::env;
+use vision_pipeline::{PipelineOutput, VisionPipeline};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _guard = init_tracing();
+    tracing::info!("Starting kornia_capture node");
 
-    tracing::info!("Starting camera capture node");
+    let source_type = env::var("SOURCE_TYPE").map_err(|e| format!("SOURCE_TYPE: {e}"))?;
+    let source_uri = env::var("SOURCE_URI").map_err(|e| format!("SOURCE_URI: {e}"))?;
 
-    // parse env variables
-    let source_type =
-        std::env::var("SOURCE_TYPE").map_err(|e| format!("SOURCE_TYPE error: {e}"))?;
-    let source_uri = std::env::var("SOURCE_URI").map_err(|e| format!("SOURCE_URI error: {e}"))?;
-
-    let output = DataId::from("frame".to_owned());
-    let (mut node, mut events) = DoraNode::init_from_env()?;
-
-    // Match on camera type and handle each separately
-    match source_type.as_str() {
+    // Build camera based on source type
+    let mut camera_opt: Option<CameraCapture> = Some(match source_type.as_str() {
         "webcam" => {
-            let image_cols = std::env::var("IMAGE_COLS")
-                .map_err(|e| format!("IMAGE_COLS error: {e}"))?
+            let cols = env::var("IMAGE_COLS")
+                .map_err(|e| format!("IMAGE_COLS: {e}"))?
                 .parse::<usize>()?;
-            let image_rows = std::env::var("IMAGE_ROWS")
-                .map_err(|e| format!("IMAGE_ROWS error: {e}"))?
+            let rows = env::var("IMAGE_ROWS")
+                .map_err(|e| format!("IMAGE_ROWS: {e}"))?
                 .parse::<usize>()?;
-            let source_fps = std::env::var("SOURCE_FPS")
-                .map_err(|e| format!("SOURCE_FPS error: {e}"))?
+            let fps = env::var("SOURCE_FPS")
+                .map_err(|e| format!("SOURCE_FPS: {e}"))?
                 .parse::<u32>()?;
 
-            let mut camera_opt = Some(
-                V4L2CameraConfig::new()
-                    .with_size([image_cols, image_rows].into())
-                    .with_fps(source_fps)
-                    .with_device(&source_uri)
-                    .build()?
-            );
+            V4L2CameraConfig::new()
+                .with_size([cols, rows].into())
+                .with_fps(fps)
+                .with_device(&source_uri)
+                .build()?
+        }
+        "rtsp" => RTSPCameraConfig::new().with_url(&source_uri).build()?,
+        _ => return Err(format!("Invalid SOURCE_TYPE: {source_type}").into()),
+    });
 
-            camera_opt.as_mut().unwrap().start()?;
-            tracing::info!("V4L2 camera started successfully");
+    camera_opt.as_ref().unwrap().start()?;
+    tracing::info!("{source_type} camera started");
 
-            while let Some(event) = events.recv() {
-                match event {
-                    Event::Input {
-                        id,
-                        metadata,
-                        data,
-                    } => match id.as_str() {
-                        "tick" => {
-                            if let Some(ref mut camera) = camera_opt {
-                                let Some(frame) = camera.grab_rgb8()? else {
-                                    continue;
-                                };
+    let mut pipeline = build_pipeline()?;
 
-                                let mut params = metadata.parameters;
-                                params.insert("encoding".to_owned(), Parameter::String("RGB8".to_string()));
-                                params.insert(
-                                    "height".to_owned(),
-                                    Parameter::Integer(frame.size().height as i64),
-                                );
-                                params.insert(
-                                    "width".to_owned(),
-                                    Parameter::Integer(frame.size().width as i64),
-                                );
+    let frame_output = DataId::from("frame".to_owned());
+    let (mut node, mut events) = DoraNode::init_from_env()?;
 
-                                node.send_output_bytes(
-                                    output.clone(),
-                                    params,
-                                    frame.numel(),
-                                    frame.as_slice(),
-                                )?;
-                            }
-                        }
-                        "camera_control" | "camera_control_voice" => {
-                            if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
-                                if binary_array.len() > 0 {
-                                    let control_bytes = binary_array.value(0);
-                                    if let Ok(camera_control) =
-                                        serde_json::from_slice::<CameraControl>(control_bytes)
-                                    {
-                                        let source = if id.as_str() == "camera_control_voice" { "voice" } else { "web" };
-                                        tracing::info!("Camera control received from {}: {:?}", source, camera_control.command);
-                                        match camera_control.command {
-                                            CameraAction::Start => {
-                                                if camera_opt.is_none() {
-                                                    tracing::info!("Starting V4L2 camera");
-                                                    let new_camera = V4L2CameraConfig::new()
-                                                        .with_size([image_cols, image_rows].into())
-                                                        .with_fps(source_fps)
-                                                        .with_device(&source_uri)
-                                                        .build()?;
-                                                    new_camera.start()?;
-                                                    camera_opt = Some(new_camera);
-                                                    tracing::info!("V4L2 camera started");
-                                                }
-                                            }
-                                            CameraAction::Stop => {
-                                                if let Some(camera) = camera_opt.take() {
-                                                    tracing::info!("Stopping V4L2 camera");
-                                                    camera.close()?;
-                                                    tracing::info!("V4L2 camera stopped");
-                                                }
+    while let Some(event) = events.recv() {
+        match event {
+            Event::Input { id, metadata, data } => match id.as_str() {
+                "tick" => {
+                    let Some(ref mut camera) = camera_opt else {
+                        continue;
+                    };
+                    let Some(frame) = camera.grab_rgb8()? else {
+                        continue;
+                    };
+
+                    let width = frame.size().width as u32;
+                    let height = frame.size().height as u32;
+
+                    let mut params = metadata.parameters;
+                    params.insert("encoding".into(), Parameter::String("RGB8".into()));
+                    params.insert("height".into(), Parameter::Integer(height as i64));
+                    params.insert("width".into(), Parameter::Integer(width as i64));
+
+                    // Always send raw frame for video streaming
+                    node.send_output_bytes(
+                        frame_output.clone(),
+                        params,
+                        frame.numel(),
+                        frame.as_slice(),
+                    )?;
+
+                    // Vision pipeline — conditionally sends tracked_detections + tracking_telemetry
+                    send_pipeline_output(&mut pipeline, frame.as_slice(), width, height, &mut node)?;
+                }
+                "camera_control" | "camera_control_voice" => {
+                    let source = if id.as_str() == "camera_control_voice" { "voice" } else { "web" };
+
+                    if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                        if binary_array.len() > 0 {
+                            match serde_json::from_slice::<CameraControl>(binary_array.value(0)) {
+                                Ok(ctrl) => {
+                                    tracing::info!("Camera control from {source}: {:?}", ctrl.command);
+                                    match ctrl.command {
+                                        CameraAction::Start => {
+                                            if camera_opt.is_none() {
+                                                let cam = build_camera(&source_type, &source_uri)?;
+                                                cam.start()?;
+                                                camera_opt = Some(cam);
+                                                tracing::info!("Camera restarted");
                                             }
                                         }
-                                    } else {
-                                        tracing::error!("Failed to parse camera control command");
-                                    }
-                                }
-                            }
-                        }
-                        other => tracing::warn!("Ignoring unexpected input: {}", other),
-                    },
-                    Event::Stop(_) => {
-                        tracing::info!("Stop event received, closing camera");
-                        if let Some(camera) = camera_opt.take() {
-                            camera.close()?;
-                        }
-                        break;
-                    }
-                    other => tracing::debug!("Received unexpected event: {:?}", other),
-                }
-            }
-        }
-        "rtsp" => {
-            let mut camera_opt = Some(RTSPCameraConfig::new().with_url(&source_uri).build()?);
-
-            camera_opt.as_mut().unwrap().start()?;
-            tracing::info!("RTSP camera started successfully");
-
-            while let Some(event) = events.recv() {
-                match event {
-                    Event::Input {
-                        id,
-                        metadata,
-                        data,
-                    } => match id.as_str() {
-                        "tick" => {
-                            if let Some(ref mut camera) = camera_opt {
-                                let Some(frame) = camera.grab_rgb8()? else {
-                                    continue;
-                                };
-
-                                let mut params = metadata.parameters;
-                                params.insert("encoding".to_owned(), Parameter::String("RGB8".to_string()));
-                                params.insert(
-                                    "height".to_owned(),
-                                    Parameter::Integer(frame.size().height as i64),
-                                );
-                                params.insert(
-                                    "width".to_owned(),
-                                    Parameter::Integer(frame.size().width as i64),
-                                );
-
-                                node.send_output_bytes(
-                                    output.clone(),
-                                    params,
-                                    frame.numel(),
-                                    frame.as_slice(),
-                                )?;
-                            }
-                        }
-                        "camera_control" | "camera_control_voice" => {
-                            if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
-                                if binary_array.len() > 0 {
-                                    let control_bytes = binary_array.value(0);
-                                    if let Ok(camera_control) =
-                                        serde_json::from_slice::<CameraControl>(control_bytes)
-                                    {
-                                        let source = if id.as_str() == "camera_control_voice" { "voice" } else { "web" };
-                                        tracing::info!("Camera control received from {}: {:?}", source, camera_control.command);
-                                        match camera_control.command {
-                                            CameraAction::Start => {
-                                                if camera_opt.is_none() {
-                                                    tracing::info!("Starting RTSP camera");
-                                                    let new_camera = RTSPCameraConfig::new().with_url(&source_uri).build()?;
-                                                    new_camera.start()?;
-                                                    camera_opt = Some(new_camera);
-                                                    tracing::info!("RTSP camera started");
-                                                }
-                                            }
-                                            CameraAction::Stop => {
-                                                if let Some(camera) = camera_opt.take() {
-                                                    tracing::info!("Stopping RTSP camera");
-                                                    camera.close()?;
-                                                    tracing::info!("RTSP camera stopped");
-                                                }
+                                        CameraAction::Stop => {
+                                            if let Some(cam) = camera_opt.take() {
+                                                cam.close()?;
+                                                tracing::info!("Camera stopped");
                                             }
                                         }
-                                    } else {
-                                        tracing::error!("Failed to parse camera control command");
                                     }
                                 }
+                                Err(e) => tracing::error!("Failed to parse CameraControl: {e}"),
                             }
                         }
-                        other => tracing::warn!("Ignoring unexpected input: {}", other),
-                    },
-                    Event::Stop(_) => {
-                        tracing::info!("Stop event received, closing RTSP camera");
-                        if let Some(camera) = camera_opt.take() {
-                            camera.close()?;
-                        }
-                        break;
                     }
-                    other => tracing::debug!("Received unexpected event: {:?}", other),
                 }
+                "tracking_command" => {
+                    if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                        if binary_array.len() > 0 {
+                            match serde_json::from_slice::<TrackingCommand>(binary_array.value(0)) {
+                                Ok(cmd) => {
+                                    tracing::info!("Tracking command: {:?}", cmd);
+                                    pipeline.handle_tracking_command(cmd);
+                                }
+                                Err(e) => tracing::error!("Failed to parse TrackingCommand: {e}"),
+                            }
+                        }
+                    }
+                }
+                other => tracing::warn!("Ignoring unexpected input: {other}"),
+            },
+            Event::Stop(_) => {
+                tracing::info!("Stop received, closing camera");
+                if let Some(cam) = camera_opt.take() {
+                    cam.close()?;
+                }
+                break;
             }
+            other => tracing::debug!("Unexpected event: {:?}", other),
         }
-        _ => return Err(format!("Invalid source type: {source_type}").into()),
     }
 
+    Ok(())
+}
+
+fn build_camera(
+    source_type: &str,
+    source_uri: &str,
+) -> Result<CameraCapture, Box<dyn std::error::Error>> {
+    match source_type {
+        "webcam" => {
+            let cols = env::var("IMAGE_COLS")?.parse::<usize>()?;
+            let rows = env::var("IMAGE_ROWS")?.parse::<usize>()?;
+            let fps = env::var("SOURCE_FPS")?.parse::<u32>()?;
+
+            Ok(V4L2CameraConfig::new()
+                .with_size([cols, rows].into())
+                .with_fps(fps)
+                .with_device(source_uri)
+                .build()?)
+        }
+        "rtsp" => Ok(RTSPCameraConfig::new().with_url(source_uri).build()?),
+        _ => Err(format!("Invalid SOURCE_TYPE: {source_type}").into()),
+    }
+}
+
+fn build_pipeline() -> Result<VisionPipeline, Box<dyn std::error::Error>> {
+    let home = env::var("HOME").unwrap_or_default();
+
+    let confidence_threshold = env::var("CONFIDENCE_THRESHOLD")
+        .unwrap_or_else(|_| "0.5".into())
+        .parse::<f32>()?;
+
+    let nms_threshold = env::var("NMS_THRESHOLD")
+        .unwrap_or_else(|_| "0.4".into())
+        .parse::<f32>()?;
+
+    let target_classes = env::var("TARGET_CLASSES")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.trim().to_string())
+        .collect::<Vec<_>>();
+
+    let max_age = env::var("MAX_TRACKING_AGE")
+        .unwrap_or_else(|_| "50".into())
+        .parse::<u32>()?;
+
+    let min_hits = env::var("MIN_HITS")
+        .unwrap_or_else(|_| "3".into())
+        .parse::<u32>()?;
+
+    let iou_threshold = env::var("IOU_THRESHOLD")
+        .unwrap_or_else(|_| "0.3".into())
+        .parse::<f32>()?;
+
+    let reid_weight = env::var("REID_WEIGHT")
+        .unwrap_or_else(|_| "0.8".into())
+        .parse::<f32>()?;
+
+    let reid_threshold = env::var("REID_THRESHOLD")
+        .unwrap_or_else(|_| "0.5".into())
+        .parse::<f32>()?;
+
+    let enable_cmc = env::var("ENABLE_CMC")
+        .unwrap_or_else(|_| "true".into())
+        .parse::<bool>()?;
+
+    Ok(VisionPipeline::new(
+        DetectorConfig {
+            model_path: env::var("MODEL_PATH")
+                .unwrap_or_else(|_| format!("{home}/.cache/yolo/yolo12n.onnx")),
+            confidence_threshold,
+            nms_threshold,
+            target_classes,
+        },
+        ReIdConfig {
+            model_path: env::var("REID_MODEL_PATH")
+                .unwrap_or_else(|_| format!("{home}/.cache/reid/osnet_x0_25.onnx")),
+            min_bbox_size: env::var("MIN_BBOX_SIZE")
+                .unwrap_or_else(|_| "32".into())
+                .parse::<u32>()?,
+        },
+        TrackerConfig {
+            max_age,
+            min_hits,
+            iou_threshold,
+            reid_weight,
+            reid_threshold,
+            enable_cmc,
+        },
+    ))
+}
+
+fn send_pipeline_output(
+    pipeline: &mut VisionPipeline,
+    frame_data: &[u8],
+    width: u32,
+    height: u32,
+    node: &mut DoraNode,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match pipeline.process_frame(frame_data, width, height) {
+        Ok(PipelineOutput::FullTracking { tracked_detections, tracking_telemetry }) => {
+            let det_json = serde_json::to_vec(&tracked_detections)?;
+            node.send_output(
+                DataId::from("tracked_detections".to_owned()),
+                Default::default(),
+                BinaryArray::from_vec(vec![det_json.as_slice()]),
+            )?;
+
+            let tel_json = serde_json::to_vec(&tracking_telemetry)?;
+            node.send_output(
+                DataId::from("tracking_telemetry".to_owned()),
+                Default::default(),
+                BinaryArray::from_vec(vec![tel_json.as_slice()]),
+            )?;
+        }
+        Ok(PipelineOutput::CameraOnly) => {} // no ML outputs when disabled
+        Err(e) => tracing::error!("Vision pipeline error: {:?}", e),
+    }
     Ok(())
 }

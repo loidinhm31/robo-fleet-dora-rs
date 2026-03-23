@@ -2,40 +2,40 @@ nodes:
   # ============================================================================
   # PyBullet Simulation - Local virtual rover for testing without real hardware
   # ============================================================================
-  - id: pybullet-sim
-    build: pip install -e pybullet_sim
-    path: pybullet_sim/pybullet_sim/main.py
-    inputs:
-      # Commands from web UI
-      rover_command: web-bridge/rover_command
-      arm_command: web-bridge/arm_command
-    outputs:
-      # Telemetry to web UI
-      - rover_telemetry
-      - arm_telemetry
-    env:
-      # Required
-      URDF_PATH: "../model/LeKiwi.urdf"
-
-      # Robot parameters (ST3215/STS3215 servo specs)
-      WHEEL_RADIUS: "0.05"          # 50mm wheels
-      CHASSIS_RADIUS: "0.15"        # 150mm from center to wheel
-      MAX_WHEEL_TORQUE: "2.94"      # 30 kg·cm = 2.94 N·m
-      MAX_WHEEL_VELOCITY: "6.47"    # ~62 RPM
-      CHASSIS_MASS: "2.0"           # 2kg robot
-
-      # Display
-      GUI_ENABLED: "true"            # Set to "false" for headless mode
-
-      # Physics simulation
-      PHYSICS_TIME_STEP: "0.004166"  # 240 Hz
-      GRAVITY: "-9.81"               # m/s²
-      FRICTION_COEFFICIENT: "0.7"    # Surface friction
-      LATERAL_FRICTION: "0.9"        # Mecanum wheel side friction
-      REAL_TIME: "false"             # Set to "true" for real-time simulation
-
-      # Logging
-      RUST_LOG: "info"
+#  - id: pybullet-sim
+#    build: pip install -e pybullet_sim
+#    path: pybullet_sim/pybullet_sim/main.py
+#    inputs:
+#      # Commands from web UI
+#      rover_command: web-bridge/rover_command
+#      arm_command: web-bridge/arm_command
+#    outputs:
+#      # Telemetry to web UI
+#      - rover_telemetry
+#      - arm_telemetry
+#    env:
+#      # Required
+#      URDF_PATH: "../model/LeKiwi.urdf"
+#
+#      # Robot parameters (ST3215/STS3215 servo specs)
+#      WHEEL_RADIUS: "0.05"          # 50mm wheels
+#      CHASSIS_RADIUS: "0.15"        # 150mm from center to wheel
+#      MAX_WHEEL_TORQUE: "2.94"      # 30 kg·cm = 2.94 N·m
+#      MAX_WHEEL_VELOCITY: "6.47"    # ~62 RPM
+#      CHASSIS_MASS: "2.0"           # 2kg robot
+#
+#      # Display
+#      GUI_ENABLED: "true"            # Set to "false" for headless mode
+#
+#      # Physics simulation
+#      PHYSICS_TIME_STEP: "0.004166"  # 240 Hz
+#      GRAVITY: "-9.81"               # m/s²
+#      FRICTION_COEFFICIENT: "0.7"    # Surface friction
+#      LATERAL_FRICTION: "0.9"        # Mecanum wheel side friction
+#      REAL_TIME: "false"             # Set to "true" for real-time simulation
+#
+#      # Logging
+#      RUST_LOG: "info"
 
   # ============================================================================
   # Orchestra Zenoh Bridge - Connects orchestra dataflow to Zenoh network
@@ -165,14 +165,14 @@ nodes:
       # ========================================================================
       # Telemetry from LOCAL SIMULATION (for testing without real hardware)
       # ========================================================================
-      rover_telemetry: pybullet-sim/rover_telemetry
-      arm_telemetry: pybullet-sim/arm_telemetry
+#      rover_telemetry: pybullet-sim/rover_telemetry
+#      arm_telemetry: pybullet-sim/arm_telemetry
 
       # ========================================================================
       # Telemetry from REMOTE ROVERS (via orchestra-bridge)
       # ========================================================================
-      # rover_telemetry: orchestra-bridge/rover_telemetry
-      # arm_telemetry: orchestra-bridge/arm_telemetry
+      rover_telemetry: orchestra-bridge/rover_telemetry
+      arm_telemetry: orchestra-bridge/arm_telemetry
       servo_telemetry: orchestra-bridge/servo_telemetry
       performance_metrics: orchestra-bridge/performance_metrics
 

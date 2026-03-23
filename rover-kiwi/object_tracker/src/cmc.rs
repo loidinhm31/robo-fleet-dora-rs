@@ -1,4 +1,4 @@
-use image::{GrayImage, Luma};
+use image::{GrayImage, ImageBuffer, Luma, Rgb};
 use imageproc::corners::{corners_fast9, Corner};
 use nalgebra as na;
 use rand::seq::SliceRandom;
@@ -295,25 +295,18 @@ impl CameraMotionCompensator {
         na::Point2::new(transformed.x, transformed.y)
     }
 
-    /// Convert RGB8 frame to grayscale
+    /// Convert RGB8 frame to grayscale (BT.601 luma). Borrows frame_data — no copy.
     pub fn rgb_to_gray(rgb_data: &[u8], width: u32, height: u32) -> GrayImage {
+        let rgb_buf = ImageBuffer::<Rgb<u8>, &[u8]>::from_raw(width, height, rgb_data)
+            .expect("invalid RGB frame dimensions");
+
         let mut gray = GrayImage::new(width, height);
-
-        for y in 0..height {
-            for x in 0..width {
-                let idx = ((y * width + x) * 3) as usize;
-                if idx + 2 < rgb_data.len() {
-                    let r = rgb_data[idx] as f32;
-                    let g = rgb_data[idx + 1] as f32;
-                    let b = rgb_data[idx + 2] as f32;
-
-                    // Standard RGB to grayscale conversion
-                    let gray_value = (0.299 * r + 0.587 * g + 0.114 * b) as u8;
-                    gray.put_pixel(x, y, Luma([gray_value]));
-                }
-            }
+        for (x, y, pixel) in rgb_buf.enumerate_pixels() {
+            let v = (0.299 * pixel[0] as f32
+                + 0.587 * pixel[1] as f32
+                + 0.114 * pixel[2] as f32) as u8;
+            gray.put_pixel(x, y, Luma([v]));
         }
-
         gray
     }
 }
