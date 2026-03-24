@@ -52,77 +52,44 @@ nodes:
       RUST_LOG: info
       ENTITY_ID: "rover-kiwi"  # Rover identity for fleet tracking
 
-  # GStreamer camera capture
+  # GStreamer camera capture + consolidated vision pipeline
   - id: gst-camera
     build: cargo build -p kornia_capture --release
     path: ../target/release/kornia_capture
     inputs:
       tick: dora/timer/millis/33  # ~30 FPS
       camera_control: web-bridge/camera_command
+      tracking_command: web-bridge/tracking_command
     outputs:
-      - frame  # Raw RGB8 frames
+      - frame                  # Raw RGB8 frames
+      - detections             # DetectionFrame raw YOLO (detection-only mode)
+      - tracked_detections     # DetectionFrame with tracking IDs
+      - tracking_telemetry     # TrackingTelemetry
     env:
       SOURCE_TYPE: "webcam"
       SOURCE_URI: "/dev/video0"
       IMAGE_COLS: "640"
       IMAGE_ROWS: "480"
       SOURCE_FPS: "30"
-
-  # Object detector - YOLOv12n inference
-  - id: object-detector
-    build: cargo build --release -p object_detector
-    path: ../target/release/object_detector
-    inputs:
-      frame: gst-camera/frame  # RGB8 from local camera
-    outputs:
-      - detections  # DetectionFrame with bounding boxes
-    env:
-      RUST_LOG: info
       MODEL_PATH: "${HOME}/.cache/yolo/yolo12n.onnx"
       CONFIDENCE_THRESHOLD: "0.5"
       NMS_THRESHOLD: "0.4"
       TARGET_CLASSES: ""
       ORT_DYLIB_PATH: "/usr/local/lib/libonnxruntime.so"
-
-  # ReID feature extractor - Extract appearance features using OSNet
-  - id: reid-extractor
-    build: cargo build --release -p reid_extractor
-    path: ../target/release/reid_extractor
-    inputs:
-      frame: gst-camera/frame  # RGB8 frame for cropping
-      detections: object-detector/detections  # Detections to extract features from
-    outputs:
-      - detections_with_reid  # DetectionFrame with ReID features added
-    env:
-      RUST_LOG: info
       REID_MODEL_PATH: "${HOME}/.cache/reid/osnet_x0_25.onnx"
-      MIN_BBOX_SIZE: "32"  # Minimum bbox width/height for ReID extraction
-
-  # Object tracker - BoTSORT algorithm with ReID and CMC
-  - id: object-tracker
-    build: cargo build --release -p object_tracker
-    path: ../target/release/object_tracker
-    inputs:
-      frame: gst-camera/frame  # RGB8 frame for camera motion compensation
-      detections: reid-extractor/detections_with_reid  # Detections with ReID features
-      tracking_command: web-bridge/tracking_command
-    outputs:
-      - tracked_detections  # DetectionFrame with tracking IDs
-      - tracking_telemetry  # Tracking state info
-    env:
-      RUST_LOG: info
+      MIN_BBOX_SIZE: "32"
       MAX_TRACKING_AGE: "50"
       MIN_HITS: "3"
       IOU_THRESHOLD: "0.3"
-      REID_WEIGHT: "0.8"  # 0.0=IoU only, 1.0=ReID only, 0.5=balanced
-      REID_THRESHOLD: "0.5"  # Minimum ReID similarity for matching
-      ENABLE_CMC: "true"  # Enable camera motion compensation (BoTSORT)
+      REID_WEIGHT: "0.8"
+      REID_THRESHOLD: "0.5"
+      ENABLE_CMC: "true"
 
   - id: visual-servo-controller
     build: cargo build --release -p visual_servo_controller
     path: ../target/release/visual_servo_controller
     inputs:
-      tracking_telemetry: object-tracker/tracking_telemetry
+      tracking_telemetry: gst-camera/tracking_telemetry
     outputs:
       - servo_command
       - servo_telemetry
@@ -198,8 +165,9 @@ nodes:
       video_frame: video-encoder/encoded_frame
       audio_frame: audio-converter/audio_output
       servo_telemetry: visual-servo-controller/servo_telemetry
-      tracked_detections: object-tracker/tracked_detections
-      tracking_telemetry: object-tracker/tracking_telemetry
+      detections: gst-camera/detections
+      tracked_detections: gst-camera/tracked_detections
+      tracking_telemetry: gst-camera/tracking_telemetry
       performance_metrics: performance-monitor/metrics
     outputs:
       - rover_command

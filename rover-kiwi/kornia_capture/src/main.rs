@@ -238,6 +238,21 @@ fn send_pipeline_output(
     node: &mut DoraNode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match pipeline.process_frame(frame_data, width, height) {
+        Ok(PipelineOutput::DetectionOnly { detections, tracking_telemetry }) => {
+            let det_json = serde_json::to_vec(&detections)?;
+            node.send_output(
+                DataId::from("detections".to_owned()),
+                Default::default(),
+                BinaryArray::from_vec(vec![det_json.as_slice()]),
+            )?;
+            // Emit telemetry with state=DetectionOnly so web UI badge reflects pipeline mode
+            let tel_json = serde_json::to_vec(&tracking_telemetry)?;
+            node.send_output(
+                DataId::from("tracking_telemetry".to_owned()),
+                Default::default(),
+                BinaryArray::from_vec(vec![tel_json.as_slice()]),
+            )?;
+        }
         Ok(PipelineOutput::FullTracking { tracked_detections, tracking_telemetry }) => {
             let det_json = serde_json::to_vec(&tracked_detections)?;
             node.send_output(

@@ -66,6 +66,7 @@ nodes:
       - rover_telemetry     # Rover position/velocity telemetry (with entity_id)
       - arm_telemetry       # Arm joint positions (with entity_id)
       - servo_telemetry     # Visual servoing telemetry (with entity_id)
+      - detections          # DetectionFrame raw YOLO (detection-only mode, with entity_id)
       - tracked_detections  # DetectionFrame with tracking IDs from rover (with entity_id)
       - tracking_telemetry  # Object tracking telemetry from rover (with entity_id)
       - performance_metrics # System metrics from rover (with entity_id)
@@ -177,6 +178,7 @@ nodes:
       performance_metrics: orchestra-bridge/performance_metrics
 
       # Processed data (from rovers via orchestra-bridge)
+      detections: orchestra-bridge/detections
       tracked_detections: orchestra-bridge/tracked_detections
       tracking_telemetry: orchestra-bridge/tracking_telemetry
       transcription: speech-recognizer/transcription

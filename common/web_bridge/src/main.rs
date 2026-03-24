@@ -1426,6 +1426,8 @@ fn convert_web_command_to_tracking_command(web_cmd: &WebTrackingCommand) -> Opti
         .as_millis() as u64;
 
     match web_cmd.command_type.as_str() {
+        "enable_detection" => Some(TrackingCommand::EnableDetection { timestamp }),
+        "disable_detection" => Some(TrackingCommand::DisableDetection { timestamp }),
         "enable" => Some(TrackingCommand::Enable { timestamp }),
         "disable" => Some(TrackingCommand::Disable { timestamp }),
         "select_target" => {

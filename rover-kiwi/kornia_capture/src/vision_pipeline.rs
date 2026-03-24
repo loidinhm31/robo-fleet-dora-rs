@@ -2,12 +2,18 @@ use eyre::Result;
 use object_detector::{DetectorConfig, YoloDetector};
 use object_tracker::{ObjectTracker, TrackerConfig};
 use reid_extractor::{ReIdConfig, ReIdExtractor};
-use robo_rover_lib::types::{DetectionFrame, TrackingCommand, TrackingTelemetry};
+use robo_rover_lib::types::{DetectionFrame, TrackingCommand, TrackingState, TrackingTelemetry};
 use std::sync::Arc;
 use tracing::info;
 
 pub enum PipelineOutput {
     CameraOnly,
+    /// YOLO detections without tracking IDs. Carries telemetry with state=DetectionOnly
+    /// so web UI badge reflects current pipeline mode.
+    DetectionOnly {
+        detections: DetectionFrame,
+        tracking_telemetry: TrackingTelemetry,
+    },
     FullTracking {
         tracked_detections: DetectionFrame,
         tracking_telemetry: TrackingTelemetry,
@@ -20,7 +26,8 @@ pub struct VisionPipeline {
     reid: Option<ReIdExtractor>,
     tracker: ObjectTracker,
 
-    pipeline_enabled: bool,
+    detection_enabled: bool,
+    tracking_enabled: bool,
 
     detector_config: DetectorConfig,
     reid_config: ReIdConfig,
@@ -37,43 +44,70 @@ impl VisionPipeline {
             detector: None,
             reid: None,
             tracker: ObjectTracker::new(tracker_config),
-            pipeline_enabled: false,
+            detection_enabled: false,
+            tracking_enabled: false,
             detector_config,
             reid_config,
         }
     }
 
-    /// Process one camera frame. Returns CameraOnly when pipeline is disabled.
-    /// On model error: auto-disables pipeline, returns CameraOnly (camera keeps streaming).
+    /// Process one camera frame. State machine:
+    /// - !detection && !tracking → CameraOnly
+    /// - detection && !tracking  → YOLO only → DetectionOnly
+    /// - tracking (any)          → YOLO + ReID + BoTSORT → FullTracking
     pub fn process_frame(&mut self, frame: &[u8], w: u32, h: u32) -> Result<PipelineOutput> {
-        if !self.pipeline_enabled {
+        if !self.detection_enabled {
             return Ok(PipelineOutput::CameraOnly);
         }
 
-        if let Err(e) = self.ensure_models_loaded() {
-            tracing::error!("Failed to load ML models: {:?} — disabling pipeline", e);
-            self.pipeline_enabled = false;
+        if let Err(e) = self.ensure_detector_loaded() {
+            tracing::error!("Failed to load YOLO: {:?} — disabling detection", e);
+            self.detection_enabled = false;
+            self.tracking_enabled = false;
             return Ok(PipelineOutput::CameraOnly);
         }
 
         let detector = self.detector.as_mut().unwrap();
-        let reid = self.reid.as_mut().unwrap();
-
         let detection_frame = match detector.detect(frame, w, h) {
             Ok(f) => f,
             Err(e) => {
-                tracing::error!("YOLO detect failed: {:?} — disabling pipeline", e);
-                self.pipeline_enabled = false;
+                tracing::error!("YOLO detect failed: {:?} — disabling detection", e);
+                self.detection_enabled = false;
+                self.tracking_enabled = false;
                 return Ok(PipelineOutput::CameraOnly);
             }
         };
 
+        if !self.tracking_enabled {
+            return Ok(PipelineOutput::DetectionOnly {
+                detections: detection_frame,
+                tracking_telemetry: self.detection_only_telemetry(),
+            });
+        }
+
+        // Full pipeline: ReID + BoTSORT
+        if let Err(e) = self.ensure_reid_loaded() {
+            tracing::error!("Failed to load ReID: {:?} — falling back to detection-only", e);
+            self.tracking_enabled = false;
+            // Return already-computed YOLO frame — no re-detection
+            return Ok(PipelineOutput::DetectionOnly {
+                detections: detection_frame,
+                tracking_telemetry: self.detection_only_telemetry(),
+            });
+        }
+
+        let reid = self.reid.as_mut().unwrap();
         let enriched = match reid.process_detections(frame, w, h, detection_frame) {
             Ok(f) => f,
             Err(e) => {
-                tracing::error!("ReID failed: {:?} — disabling pipeline", e);
-                self.pipeline_enabled = false;
-                return Ok(PipelineOutput::CameraOnly);
+                tracing::error!("ReID failed: {:?} — falling back to detection-only", e);
+                self.tracking_enabled = false;
+                // Telemetry reflects degradation; detections lost for this frame (ReID consumed it).
+                // Acceptable trade-off: avoids re-running YOLO under persistent ReID failure.
+                return Ok(PipelineOutput::DetectionOnly {
+                    detections: DetectionFrame::new(0, w, h, vec![]),
+                    tracking_telemetry: self.detection_only_telemetry(),
+                });
             }
         };
 
@@ -92,30 +126,69 @@ impl VisionPipeline {
 
     pub fn handle_tracking_command(&mut self, cmd: TrackingCommand) {
         match &cmd {
+            TrackingCommand::EnableDetection { .. } => {
+                info!("Detection enabled (detection-only mode)");
+                self.detection_enabled = true;
+                // tracking stays as-is
+            }
+            // Disables both detection AND tracking (full pipeline off → camera-only).
+            // Named DisableDetection because detection is the prerequisite for tracking;
+            // disabling detection implicitly disables tracking.
+            TrackingCommand::DisableDetection { .. } => {
+                info!("Detection disabled → camera-only");
+                self.detection_enabled = false;
+                self.tracking_enabled = false;
+            }
             TrackingCommand::Enable { .. } => {
-                info!("Vision pipeline enabled (tracking on)");
-                self.pipeline_enabled = true;
+                info!("Full tracking enabled");
+                self.detection_enabled = true;
+                self.tracking_enabled = true;
             }
             TrackingCommand::Disable { .. } => {
-                info!("Vision pipeline disabled (tracking off)");
-                self.pipeline_enabled = false;
-                // Models stay loaded; tracker state (tracks HashMap) preserved.
-                // Intentional: avoids cold start + stale-track-ID churn on re-enable.
+                info!("Tracking disabled → camera-only");
+                self.detection_enabled = false;
+                self.tracking_enabled = false;
             }
-            _ => {} // SelectTarget / ClearTarget — delegated to tracker below
+            _ => {} // SelectTarget / ClearTarget / SelectTargetById — delegated to tracker
         }
         self.tracker.handle_tracking_command(cmd);
     }
 
-    fn ensure_models_loaded(&mut self) -> Result<()> {
-        if self.detector.is_some() && self.reid.is_some() {
+    fn detection_only_telemetry(&self) -> TrackingTelemetry {
+        let mut telemetry = self.tracker.get_tracking_telemetry();
+        // Override state: tracker returns Disabled when tracking_enabled=false,
+        // but pipeline is in detection-only mode (YOLO active, ReID/tracker off).
+        telemetry.state = TrackingState::DetectionOnly;
+        telemetry
+    }
+
+    fn ensure_detector_loaded(&mut self) -> Result<()> {
+        if self.detector.is_some() {
             return Ok(());
         }
 
-        info!("Loading ML models (first enable)...");
+        let env = self.get_or_init_ort_env()?;
+        info!("Loading YOLO detector (first enable)...");
+        self.detector = Some(YoloDetector::new(env, self.detector_config.clone())?);
+        info!("YOLO detector loaded");
+        Ok(())
+    }
 
-        let env = match &self.ort_env {
-            Some(env) => env.clone(),
+    fn ensure_reid_loaded(&mut self) -> Result<()> {
+        if self.reid.is_some() {
+            return Ok(());
+        }
+
+        let env = self.get_or_init_ort_env()?;
+        info!("Loading ReID extractor...");
+        self.reid = Some(ReIdExtractor::new(env, self.reid_config.clone())?);
+        info!("ReID extractor loaded");
+        Ok(())
+    }
+
+    fn get_or_init_ort_env(&mut self) -> Result<Arc<ort::Environment>> {
+        match &self.ort_env {
+            Some(env) => Ok(env.clone()),
             None => {
                 let env = ort::Environment::builder()
                     .with_name("vision_pipeline")
@@ -123,21 +196,8 @@ impl VisionPipeline {
                     .build()?
                     .into_arc();
                 self.ort_env = Some(env.clone());
-                env
+                Ok(env)
             }
-        };
-
-        if self.detector.is_none() {
-            self.detector =
-                Some(YoloDetector::new(env.clone(), self.detector_config.clone())?);
-            info!("YOLO detector loaded");
         }
-
-        if self.reid.is_none() {
-            self.reid = Some(ReIdExtractor::new(env, self.reid_config.clone())?);
-            info!("ReID extractor loaded");
-        }
-
-        Ok(())
     }
 }

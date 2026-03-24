@@ -25,6 +25,7 @@ struct RoverSubscriptions {
     rover_telemetry_sub: ZenohSubscriber,
     arm_telemetry_sub: ZenohSubscriber,
     servo_telemetry_sub: ZenohSubscriber,
+    detections_sub: ZenohSubscriber,
     tracked_detections_sub: ZenohSubscriber,
     tracking_telemetry_sub: ZenohSubscriber,
     metrics_sub: ZenohSubscriber,
@@ -67,6 +68,12 @@ async fn subscribe_to_rover(
         .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", servo_telemetry_topic, e))?;
     tracing::info!("{}", servo_telemetry_topic);
 
+    let detections_topic = format!("rover/{}/video/detections_only", entity_id);
+    let detections_sub = session.declare_subscriber(&detections_topic)
+        .await
+        .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", detections_topic, e))?;
+    tracing::info!("{}", detections_topic);
+
     let tracked_detections_topic = format!("rover/{}/video/detections", entity_id);
     let tracked_detections_sub = session.declare_subscriber(&tracked_detections_topic)
         .await
@@ -92,6 +99,7 @@ async fn subscribe_to_rover(
         rover_telemetry_sub,
         arm_telemetry_sub,
         servo_telemetry_sub,
+        detections_sub,
         tracked_detections_sub,
         tracking_telemetry_sub,
         metrics_sub,
@@ -280,6 +288,7 @@ async fn main() -> Result<()> {
     let rover_telemetry_output = DataId::from("rover_telemetry".to_owned());
     let arm_telemetry_output = DataId::from("arm_telemetry".to_owned());
     let servo_telemetry_output = DataId::from("servo_telemetry".to_owned());
+    let detections_output = DataId::from("detections".to_owned());
     let tracked_detections_output = DataId::from("tracked_detections".to_owned());
     let tracking_telemetry_output = DataId::from("tracking_telemetry".to_owned());
     let performance_metrics_output = DataId::from("performance_metrics".to_owned());
@@ -519,6 +528,18 @@ async fn main() -> Result<()> {
                     forward_telemetry_with_entity_id(
                         &mut node,
                         &servo_telemetry_output,
+                        entity_id,
+                        sample
+                    );
+                }
+            }
+
+            // Receive from all active rovers' detection-only results
+            result = receive_from_rovers(&active_rovers, |subs| &subs.detections_sub) => {
+                if let Some((entity_id, sample)) = result {
+                    forward_telemetry_with_entity_id(
+                        &mut node,
+                        &detections_output,
                         entity_id,
                         sample
                     );

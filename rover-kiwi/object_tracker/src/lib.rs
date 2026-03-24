@@ -182,6 +182,8 @@ impl ObjectTracker {
                 info!("Cleared target at {}", timestamp);
                 self.selected_target_id = None;
             }
+            // Handled at VisionPipeline level; tracker ignores these
+            TrackingCommand::EnableDetection { .. } | TrackingCommand::DisableDetection { .. } => {}
         }
     }
 

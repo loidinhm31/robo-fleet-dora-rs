@@ -97,6 +97,15 @@ async fn main() -> Result<()> {
         .map_err(|e| eyre::eyre!("Failed to declare publisher {}: {}", metrics_topic, e))?;
     tracing::info!("Publisher: {}", metrics_topic);
 
+    // Detection-only mode (YOLO, no tracking IDs) — separate from tracked_detections
+    let detections_topic = format!("rover/{}/video/detections_only", entity_id);
+    let detections_pub = session
+        .declare_publisher(&detections_topic)
+        .await
+        .map_err(|e| eyre::eyre!("Failed to declare publisher {}: {}", detections_topic, e))?;
+    tracing::info!("Publisher: {}", detections_topic);
+
+    // Full tracking mode (YOLO + ReID + BoTSORT, with tracking IDs)
     let tracked_detections_topic = format!("rover/{}/video/detections", entity_id);
     let tracked_detections_pub = session
         .declare_publisher(&tracked_detections_topic)
@@ -254,6 +263,9 @@ async fn main() -> Result<()> {
                                             }
                                             "performance_metrics" => {
                                                 let _ = metrics_pub.put(bytes).await;
+                                            }
+                                            "detections" => {
+                                                let _ = detections_pub.put(bytes).await;
                                             }
                                             "tracked_detections" => {
                                                 let _ = tracked_detections_pub.put(bytes).await;

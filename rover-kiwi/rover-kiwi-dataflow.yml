@@ -63,8 +63,9 @@ nodes:
       tracking_command: zenoh-bridge/tracking_command  # Gates detection/tracking pipeline
     outputs:
       - frame                  # Raw RGB8 (always active, for video streaming)
-      - tracked_detections     # DetectionFrame with tracking IDs (when pipeline enabled)
-      - tracking_telemetry     # TrackingTelemetry (when pipeline enabled)
+      - detections             # DetectionFrame raw YOLO (detection-only mode)
+      - tracked_detections     # DetectionFrame with tracking IDs (when full pipeline enabled)
+      - tracking_telemetry     # TrackingTelemetry (when full pipeline enabled)
     env:
       # Camera
       SOURCE_TYPE: "webcam"
@@ -161,8 +162,9 @@ nodes:
       # arm_telemetry: sim-interface/arm_telemetry
       servo_telemetry: visual-servo-controller/servo_telemetry
       performance_metrics: performance-monitor/metrics
-      tracked_detections: gst-camera/tracked_detections   # Previously from object-tracker
-      tracking_telemetry: gst-camera/tracking_telemetry   # Previously from object-tracker
+      detections: gst-camera/detections                   # DetectionFrame (detection-only mode)
+      tracked_detections: gst-camera/tracked_detections   # DetectionFrame with tracking IDs
+      tracking_telemetry: gst-camera/tracking_telemetry   # TrackingTelemetry
     outputs:
       - camera_command
       - audio_command

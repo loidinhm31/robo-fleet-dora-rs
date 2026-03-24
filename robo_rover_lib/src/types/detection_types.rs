@@ -188,7 +188,16 @@ impl TrackingTarget {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum TrackingCommand {
-    /// Enable tracking mode
+    /// Enable detection-only mode (YOLO, no ReID/tracking)
+    EnableDetection {
+        timestamp: u64,
+    },
+    /// Disable detection — returns to camera-only mode.
+    /// Also disables tracking because detection is a prerequisite for tracking.
+    DisableDetection {
+        timestamp: u64,
+    },
+    /// Enable full tracking mode (YOLO + ReID + BoTSORT)
     Enable {
         timestamp: u64,
     },
@@ -213,6 +222,24 @@ pub enum TrackingCommand {
 }
 
 impl TrackingCommand {
+    pub fn new_enable_detection() -> Self {
+        Self::EnableDetection {
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+        }
+    }
+
+    pub fn new_disable_detection() -> Self {
+        Self::DisableDetection {
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+        }
+    }
+
     pub fn new_enable() -> Self {
         Self::Enable {
             timestamp: SystemTime::now()
@@ -261,24 +288,11 @@ impl TrackingCommand {
     }
 }
 
-/// Fine-grained detection control (detection without tracking, for future use).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DetectionControl {
-    pub command: DetectionAction,
-    pub timestamp: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DetectionAction {
-    Enable,
-    Disable,
-}
-
 /// Current state of tracking system
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum TrackingState {
     Disabled,
+    DetectionOnly,
     Enabled,
     Tracking,
     TargetLost,
