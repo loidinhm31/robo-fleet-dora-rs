@@ -268,7 +268,15 @@ fn send_pipeline_output(
                 BinaryArray::from_vec(vec![tel_json.as_slice()]),
             )?;
         }
-        Ok(PipelineOutput::CameraOnly) => {} // no ML outputs when disabled
+        Ok(PipelineOutput::CameraOnly { tracking_telemetry }) => {
+            // Emit state=Disabled so the web UI badge updates immediately
+            let tel_json = serde_json::to_vec(&tracking_telemetry)?;
+            node.send_output(
+                DataId::from("tracking_telemetry".to_owned()),
+                Default::default(),
+                BinaryArray::from_vec(vec![tel_json.as_slice()]),
+            )?;
+        }
         Err(e) => tracing::error!("Vision pipeline error: {:?}", e),
     }
     Ok(())

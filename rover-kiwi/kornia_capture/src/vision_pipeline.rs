@@ -7,7 +7,9 @@ use std::sync::Arc;
 use tracing::info;
 
 pub enum PipelineOutput {
-    CameraOnly,
+    /// Camera running, ML pipeline disabled. Carries telemetry with state=Disabled
+    /// so web UI badge updates immediately when detection is toggled off.
+    CameraOnly { tracking_telemetry: TrackingTelemetry },
     /// YOLO detections without tracking IDs. Carries telemetry with state=DetectionOnly
     /// so web UI badge reflects current pipeline mode.
     DetectionOnly {
@@ -57,14 +59,18 @@ impl VisionPipeline {
     /// - tracking (any)          → YOLO + ReID + BoTSORT → FullTracking
     pub fn process_frame(&mut self, frame: &[u8], w: u32, h: u32) -> Result<PipelineOutput> {
         if !self.detection_enabled {
-            return Ok(PipelineOutput::CameraOnly);
+            return Ok(PipelineOutput::CameraOnly {
+                tracking_telemetry: self.tracker.get_tracking_telemetry(),
+            });
         }
 
         if let Err(e) = self.ensure_detector_loaded() {
             tracing::error!("Failed to load YOLO: {:?} — disabling detection", e);
             self.detection_enabled = false;
             self.tracking_enabled = false;
-            return Ok(PipelineOutput::CameraOnly);
+            return Ok(PipelineOutput::CameraOnly {
+                tracking_telemetry: self.tracker.get_tracking_telemetry(),
+            });
         }
 
         let detector = self.detector.as_mut().unwrap();
@@ -74,7 +80,9 @@ impl VisionPipeline {
                 tracing::error!("YOLO detect failed: {:?} — disabling detection", e);
                 self.detection_enabled = false;
                 self.tracking_enabled = false;
-                return Ok(PipelineOutput::CameraOnly);
+                return Ok(PipelineOutput::CameraOnly {
+                    tracking_telemetry: self.tracker.get_tracking_telemetry(),
+                });
             }
         };
 
@@ -145,8 +153,8 @@ impl VisionPipeline {
                 self.tracking_enabled = true;
             }
             TrackingCommand::Disable { .. } => {
-                info!("Tracking disabled → camera-only");
-                self.detection_enabled = false;
+                info!("Tracking disabled → detection-only");
+                // detection stays on; only tracking disabled (progressive degradation)
                 self.tracking_enabled = false;
             }
             _ => {} // SelectTarget / ClearTarget / SelectTargetById — delegated to tracker
