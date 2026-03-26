@@ -811,9 +811,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // MongoDB startup
     let mongodb_uri = env::var("MONGODB_URI")
         .unwrap_or_else(|_| "mongodb://localhost:27017".to_string());
+    let mongodb_database = env::var("MONGODB_DATABASE")
+        .unwrap_or_else(|_| "qm_hub".to_string());
 
-    tracing::info!("Connecting to MongoDB at {}", mongodb_uri);
-    let db = security::connect_db(&mongodb_uri).await.map_err(|e| {
+    tracing::info!("Connecting to MongoDB at {}, database: {}", mongodb_uri, mongodb_database);
+    let db = security::connect_db(&mongodb_uri, &mongodb_database).await.map_err(|e| {
         tracing::error!("MongoDB connection failed: {}", e);
         e
     })?;

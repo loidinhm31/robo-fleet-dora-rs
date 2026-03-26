@@ -138,10 +138,10 @@ pub struct User {
 
 // ─── MongoDB Helpers ─────────────────────────────────────────────────────────
 
-pub async fn connect_db(uri: &str) -> Result<Database, mongodb::error::Error> {
+pub async fn connect_db(uri: &str, db_name: &str) -> Result<Database, mongodb::error::Error> {
     let options = ClientOptions::parse(uri).await?;
     let client = mongodb::Client::with_options(options)?;
-    Ok(client.database("qm_hub"))
+    Ok(client.database(db_name))
 }
 
 pub async fn ensure_indexes(collection: &Collection<User>) -> Result<(), mongodb::error::Error> {
