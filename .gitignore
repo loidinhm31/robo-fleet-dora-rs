@@ -5,3 +5,6 @@ onnxruntime-*.tgz
 /models/.cache/*
 /models/scripts/venv
 /memory
+
+# Environment secrets (keep .env.example tracked)
+.env

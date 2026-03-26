@@ -23,11 +23,17 @@ use socketioxide::{
 };
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
+use axum::{middleware, response::Response, body::Body};
 use std::env;
 use log::info;
+use mongodb::Collection;
 
 mod security;
-use security::{AuthRateLimiter, CommandRateLimiter, parse_allowed_origins, log_auth_attempt, log_rate_limit_exceeded, log_validation_error};
+use security::{
+    AuthRateLimiter, CommandRateLimiter, SessionRegistry,
+    parse_allowed_origins, log_auth_attempt, log_rate_limit_exceeded, log_validation_error,
+    load_or_generate_jwt_secret,
+};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct JointPositions {
@@ -134,6 +140,7 @@ pub struct WebAudioCommand {
 pub struct AuthCredentials {
     pub username: String,
     pub password: String,
+    pub token: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -176,6 +183,7 @@ struct SharedState {
     pub performance_monitoring_enabled: Arc<Mutex<bool>>,
     pub auth_rate_limiter: Arc<AuthRateLimiter>,
     pub command_rate_limiter: Arc<CommandRateLimiter>,
+    pub session_registry: Arc<SessionRegistry>,
     pub fleet_status: Arc<Mutex<FleetStatus>>,
     pub active_rovers_status: Arc<Mutex<ActiveRoversStatus>>,
 }
@@ -223,6 +231,7 @@ impl SharedState {
             performance_monitoring_enabled: Arc::new(Mutex::new(true)),
             auth_rate_limiter: Arc::new(AuthRateLimiter::new()),
             command_rate_limiter: Arc::new(CommandRateLimiter::new()),
+            session_registry: Arc::new(SessionRegistry::new()),
             fleet_status: Arc::new(Mutex::new(fleet_status)),
             active_rovers_status: Arc::new(Mutex::new(active_rovers_status)),
         }
@@ -230,59 +239,73 @@ impl SharedState {
 }
 
 
-fn setup_socketio(shared_state: SharedState) -> (SocketIo, socketioxide::layer::SocketIoLayer) {
+fn setup_socketio(
+    shared_state: SharedState,
+    user_collection: Arc<Collection<security::User>>,
+    jwt_secret: Arc<String>,
+    session_ttl_secs: u64,
+) -> (SocketIo, socketioxide::layer::SocketIoLayer) {
     let (layer, io) = SocketIo::new_layer();
 
-    // Get authentication credentials from environment variables
-    let auth_username = env::var("AUTH_USERNAME").unwrap_or_else(|_| {
-        tracing::warn!("AUTH_USERNAME not set, using default 'admin' - CHANGE THIS IN PRODUCTION!");
-        "admin".to_string()
-    });
-    let auth_password = env::var("AUTH_PASSWORD").unwrap_or_else(|_| {
-        tracing::warn!("AUTH_PASSWORD not set, using default 'password' - CHANGE THIS IN PRODUCTION!");
-        "password".to_string()
-    });
-
-    tracing::info!("Authentication enabled - Username: {}", auth_username);
-    tracing::info!("Security features: Rate limiting enabled, Input validation enabled");
+    tracing::info!("Authentication: MongoDB + bcrypt + JWT (TTL {}s)", session_ttl_secs);
+    tracing::info!("Security features: Rate limiting enabled, Input validation enabled, JWT sessions enabled");
 
     // Clone io for use inside the closure
     let io_for_fleet = io.clone();
     let io_for_active_rovers = io.clone();
 
     io.ns("/", move |socket: SocketRef, TryData::<AuthCredentials>(auth)| {
+        let user_collection = user_collection.clone();
+        let jwt_secret = jwt_secret.clone();
+        let shared_state = shared_state.clone();
+
+        async move {
         let socket_id = socket.id.to_string();
 
         // Check rate limit for authentication attempts
         if !shared_state.auth_rate_limiter.check_auth_attempt(&socket_id) {
             log_rate_limit_exceeded(&socket_id, "auth");
-            tracing::warn!("Rate limit exceeded for auth attempt from: {}", socket_id);
+            socket.emit("auth_error", serde_json::json!({"reason": "rate_limited"})).ok();
             socket.disconnect().ok();
             return;
         }
 
-        // Validate authentication
-        let (is_authenticated, username) = match auth {
-            Ok(credentials) => {
-                let auth_ok = credentials.username == auth_username && credentials.password == auth_password;
-                (auth_ok, credentials.username.clone())
+        let credentials = match auth {
+            Ok(c) => c,
+            Err(_) => {
+                log_auth_attempt(&socket_id, "unknown", false);
+                socket.emit("auth_error", serde_json::json!({"reason": "invalid_credentials"})).ok();
+                socket.disconnect().ok();
+                return;
             }
-            Err(_) => (false, "unknown".to_string()),
         };
 
-        // Log authentication attempt
-        log_auth_attempt(&socket_id, &username, is_authenticated);
+        let username_for_log = credentials.username.clone();
+        let token_ref = credentials.token.as_deref();
 
-        if !is_authenticated {
-            tracing::warn!("Authentication failed for connection attempt from: {}", socket_id);
-            socket.disconnect().ok();
-            return;
+        match security::authenticate_and_issue_token(
+            token_ref,
+            &credentials.username,
+            &credentials.password,
+            &user_collection,
+            &jwt_secret,
+            session_ttl_secs,
+        ).await {
+            Ok((token, claims)) => {
+                let sub = claims.sub.clone();
+                log_auth_attempt(&socket_id, &sub, true);
+                socket.emit("auth_token", token).ok();
+                shared_state.session_registry.register(&socket_id, claims);
+                shared_state.auth_rate_limiter.reset(&socket_id);
+                tracing::info!("Client authenticated and connected: {} (user={})", socket_id, sub);
+            }
+            Err(reason) => {
+                log_auth_attempt(&socket_id, &username_for_log, false);
+                socket.emit("auth_error", serde_json::json!({"reason": reason.as_str()})).ok();
+                socket.disconnect().ok();
+                return;
+            }
         }
-
-        tracing::info!("Client authenticated and connected: {}", socket_id);
-
-        // Reset rate limiter on successful auth
-        shared_state.auth_rate_limiter.reset(&socket_id);
 
         // Add client to video streaming list
         let client_state = ClientState::new(socket_id.clone());
@@ -294,8 +317,12 @@ fn setup_socketio(shared_state: SharedState) -> (SocketIo, socketioxide::layer::
 
         let shared_state_clone = shared_state.clone();
         let socket_id_clone = socket_id.clone();
-        socket.on("arm_command", move |_socket: SocketRef, Data::<Value>(data)| {
-            // Check rate limit
+        socket.on("arm_command", move |socket: SocketRef, Data::<Value>(data)| {
+            if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
+                socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                socket.disconnect().ok();
+                return;
+            }
             if !shared_state_clone.command_rate_limiter.check_command(&socket_id_clone) {
                 log_rate_limit_exceeded(&socket_id_clone, "arm_command");
                 return;
@@ -330,8 +357,12 @@ fn setup_socketio(shared_state: SharedState) -> (SocketIo, socketioxide::layer::
         let socket_id_clone = socket_id.clone();
         socket.on(
             "rover_command",
-            move |_socket: SocketRef, Data::<Value>(data)| {
-                // Check rate limit
+            move |socket: SocketRef, Data::<Value>(data)| {
+                if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
+                    socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                    socket.disconnect().ok();
+                    return;
+                }
                 if !shared_state_clone.command_rate_limiter.check_command(&socket_id_clone) {
                     log_rate_limit_exceeded(&socket_id_clone, "rover_command");
                     return;
@@ -391,9 +422,19 @@ fn setup_socketio(shared_state: SharedState) -> (SocketIo, socketioxide::layer::
         );
 
         let shared_state_clone = shared_state.clone();
+        let socket_id_clone = socket_id.clone();
         socket.on(
             "tracking_command",
-            move |_socket: SocketRef, Data::<Value>(data)| {
+            move |socket: SocketRef, Data::<Value>(data)| {
+                if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
+                    socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                    socket.disconnect().ok();
+                    return;
+                }
+                if !shared_state_clone.command_rate_limiter.check_command(&socket_id_clone) {
+                    log_rate_limit_exceeded(&socket_id_clone, "tracking_command");
+                    return;
+                }
                 if let Ok(web_cmd) = serde_json::from_value::<WebTrackingCommand>(data) {
                     tracing::debug!("Received tracking command: {:?}", web_cmd.command_type);
                     shared_state_clone
@@ -409,8 +450,12 @@ fn setup_socketio(shared_state: SharedState) -> (SocketIo, socketioxide::layer::
         let socket_id_clone = socket_id.clone();
         socket.on(
             "tts_command",
-            move |_socket: SocketRef, Data::<Value>(data)| {
-                // Check rate limit
+            move |socket: SocketRef, Data::<Value>(data)| {
+                if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
+                    socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                    socket.disconnect().ok();
+                    return;
+                }
                 if !shared_state_clone.command_rate_limiter.check_command(&socket_id_clone) {
                     log_rate_limit_exceeded(&socket_id_clone, "tts_command");
                     return;
@@ -438,8 +483,12 @@ fn setup_socketio(shared_state: SharedState) -> (SocketIo, socketioxide::layer::
         let socket_id_clone = socket_id.clone();
         socket.on(
             "audio_stream",
-            move |_socket: SocketRef, Data::<Value>(data)| {
-                // Check rate limit (audio streams are less restricted)
+            move |socket: SocketRef, Data::<Value>(data)| {
+                if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
+                    socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                    socket.disconnect().ok();
+                    return;
+                }
                 if !shared_state_clone.command_rate_limiter.check_command(&socket_id_clone) {
                     log_rate_limit_exceeded(&socket_id_clone, "audio_stream");
                     return;
@@ -490,10 +539,20 @@ fn setup_socketio(shared_state: SharedState) -> (SocketIo, socketioxide::layer::
         );
 
         let shared_state_clone = shared_state.clone();
+        let socket_id_clone = socket_id.clone();
         let io_for_fleet_clone = io_for_fleet.clone();
         socket.on(
             "fleet_select",
-            move |_socket: SocketRef, Data::<Value>(data)| {
+            move |socket: SocketRef, Data::<Value>(data)| {
+                if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
+                    socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                    socket.disconnect().ok();
+                    return;
+                }
+                if !shared_state_clone.command_rate_limiter.check_command(&socket_id_clone) {
+                    log_rate_limit_exceeded(&socket_id_clone, "fleet_select");
+                    return;
+                }
                 if let Ok(select_cmd) = serde_json::from_value::<FleetSelectCommand>(data) {
                     tracing::info!("Fleet select requested: {}", select_cmd.entity_id);
 
@@ -587,26 +646,123 @@ fn setup_socketio(shared_state: SharedState) -> (SocketIo, socketioxide::layer::
             },
         );
 
+        // auth_refresh: client proactively refreshes its token before expiry
+        let jwt_secret_clone = jwt_secret.clone();
+        let session_registry_clone = shared_state.session_registry.clone();
+        let socket_id_clone = socket_id.clone();
+        socket.on(
+            "auth_refresh",
+            move |socket: SocketRef, Data::<Value>(data)| {
+                let current_token = data.get("token").and_then(|v| v.as_str()).unwrap_or("");
+                match security::jwt::validate_token(current_token, &jwt_secret_clone) {
+                    Ok(old_claims) => {
+                        match security::jwt::generate_token(
+                            &old_claims.sub,
+                            &old_claims.role,
+                            &jwt_secret_clone,
+                            session_ttl_secs,
+                        ) {
+                            Ok((new_token, new_claims)) => {
+                                session_registry_clone.register(&socket_id_clone, new_claims);
+                                socket.emit("auth_token", new_token).ok();
+                                tracing::debug!("Token refreshed for: {}", socket_id_clone);
+                            }
+                            Err(e) => {
+                                tracing::error!("Token refresh generation failed: {}", e);
+                                socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                                socket.disconnect().ok();
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        session_registry_clone.remove(&socket_id_clone);
+                        socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                        socket.disconnect().ok();
+                    }
+                }
+            },
+        );
+
         let shared_state_clone = shared_state.clone();
         socket.on_disconnect(move |socket: SocketRef| {
             let socket_id = socket.id.to_string();
             tracing::info!("Client disconnected: {}", socket_id);
 
-            // Remove client from video list
             if let Ok(mut clients) = shared_state_clone.video_clients.lock() {
                 clients.retain(|c| c.socket_id != socket_id);
             }
+            shared_state_clone.session_registry.remove(&socket_id);
         });
+
+        } // end async move
     });
 
     (io, layer)
 }
 
+async fn security_headers(
+    req: axum::http::Request<Body>,
+    next: middleware::Next,
+) -> Response {
+    let mut response = next.run(req).await;
+    let h = response.headers_mut();
+    h.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    h.insert(
+        "strict-transport-security",
+        HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+    );
+    h.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    response
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _guard = init_tracing();
+    dotenv::dotenv().ok();
 
     tracing::info!("Starting Web Bridge...");
+
+    // MongoDB startup
+    let mongodb_uri = env::var("MONGODB_URI")
+        .unwrap_or_else(|_| "mongodb://localhost:27017".to_string());
+
+    tracing::info!("Connecting to MongoDB at {}", mongodb_uri);
+    let db = security::connect_db(&mongodb_uri).await.map_err(|e| {
+        tracing::error!("MongoDB connection failed: {}", e);
+        e
+    })?;
+    let user_collection: Arc<Collection<security::User>> =
+        Arc::new(db.collection("robo_control_user"));
+
+    security::ensure_indexes(&user_collection).await?;
+    security::seed_admin_user(&user_collection).await?;
+
+    // Default credential guard
+    let allow_default = env::var("ALLOW_DEFAULT_CREDENTIALS")
+        .unwrap_or_else(|_| "false".to_string())
+        == "true";
+    if !allow_default {
+        if let Ok(Some(admin)) = security::find_user(&user_collection, "admin").await {
+            let still_default = tokio::task::spawn_blocking(move || {
+                security::verify_password_blocking("password", &admin.password_hash)
+            }).await.unwrap_or(false);
+
+            if still_default {
+                tracing::error!(
+                    "FATAL: admin account still uses default password. \
+                     Change it or set ALLOW_DEFAULT_CREDENTIALS=true"
+                );
+                std::process::exit(1);
+            }
+        }
+    }
+
+    let jwt_secret = Arc::new(load_or_generate_jwt_secret());
+    let session_ttl_secs = env::var("SESSION_TTL_SECONDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3600u64);
 
     let (node, mut events) = DoraNode::init_from_env()?;
     let arm_command_output = DataId::from("arm_command".to_owned());
@@ -621,8 +777,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let fleet_select_command_output = DataId::from("fleet_select_command".to_owned());
 
     let shared_state = SharedState::new();
-    let (io, layer) = setup_socketio(shared_state.clone());
+    let (io, layer) = setup_socketio(
+        shared_state.clone(),
+        user_collection,
+        jwt_secret.clone(),
+        session_ttl_secs,
+    );
     let io_handle = Arc::new(Mutex::new(Some(io.clone())));
+
+    // Background sweep: disconnect sessions whose JWT has expired
+    let sweep_registry = shared_state.session_registry.clone();
+    let sweep_io = io.clone();
+    tokio::spawn(async move {
+        tracing::info!("Session sweep task started (interval: 60s)");
+        loop {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            let expired = sweep_registry.sweep_expired();
+            for socket_id in expired {
+                tracing::debug!("Sweep: disconnecting expired session {}", socket_id);
+                if let Ok(sid) = socket_id.parse() {
+                    if let Some(ns) = sweep_io.of("/") {
+                        if let Some(socket) = ns.get_socket(sid) {
+                            socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                            socket.disconnect().ok();
+                        }
+                    }
+                }
+            }
+        }
+    });
 
     // Start Socket.IO server
     let socketio_handle = tokio::spawn(async move {
@@ -671,6 +854,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .route("/health", axum::routing::get(|| async {
                 axum::Json(serde_json::json!({"status": "ok"}))
             }))
+            .layer(middleware::from_fn(security_headers))
             .layer(
                 ServiceBuilder::new()
                     .layer(cors_layer)
