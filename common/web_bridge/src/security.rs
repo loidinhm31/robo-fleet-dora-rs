@@ -54,6 +54,41 @@ impl AuthRateLimiter {
     }
 }
 
+/// Rate limiter for authentication attempts (per IP address)
+pub struct IpRateLimiter {
+    limiters: Arc<Mutex<HashMap<String, (RateLimiter<NotKeyed, InMemoryState, DefaultClock>, Instant)>>>,
+    max_attempts: u32,
+}
+
+impl IpRateLimiter {
+    pub fn new() -> Self {
+        let max_attempts = env::var("RATE_LIMIT_AUTH_PER_MINUTE_IP")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(20);
+
+        Self {
+            limiters: Arc::new(Mutex::new(HashMap::new())),
+            max_attempts,
+        }
+    }
+
+    pub fn check_auth_attempt_ip(&self, ip: &str) -> bool {
+        let mut limiters = self.limiters.lock().unwrap();
+
+        let now = Instant::now();
+        limiters.retain(|_, (_, last_seen)| now.duration_since(*last_seen) < Duration::from_secs(300));
+
+        let (limiter, last_seen) = limiters.entry(ip.to_string()).or_insert_with(|| {
+            let quota = Quota::per_minute(NonZeroU32::new(self.max_attempts).unwrap());
+            (RateLimiter::direct(quota), now)
+        });
+
+        *last_seen = now;
+        limiter.check().is_ok()
+    }
+}
+
 /// Rate limiter for commands (per socket ID)
 pub struct CommandRateLimiter {
     limiters: Arc<Mutex<HashMap<String, (RateLimiter<NotKeyed, InMemoryState, DefaultClock>, Instant)>>>,
@@ -432,6 +467,49 @@ pub mod validation {
     }
 }
 
+/// Extracts the client IP from request headers.
+/// When `trust_proxy` is true, parses X-Forwarded-For (first hop) then X-Real-IP.
+/// Falls back to "unknown" when no peer address is available.
+pub fn extract_client_ip(headers: &axum::http::HeaderMap, trust_proxy: bool) -> String {
+    if trust_proxy {
+        if let Some(fwd) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+            let first = fwd.split(',').next().unwrap_or("").trim();
+            if !first.is_empty() {
+                return first.to_string();
+            }
+        }
+        if let Some(real_ip) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+            let ip = real_ip.trim();
+            if !ip.is_empty() {
+                return ip.to_string();
+            }
+        }
+    }
+    "unknown".to_string()
+}
+
+/// Warns on any non-localhost HTTP origin when ALLOW_HTTP_ORIGINS is not "true".
+pub fn warn_http_origins(origins: &[String]) {
+    if env::var("ALLOW_HTTP_ORIGINS").unwrap_or_else(|_| "false".to_string()) == "true" {
+        return;
+    }
+    for origin in origins {
+        if origin.starts_with("http://") {
+            let host = origin.trim_start_matches("http://");
+            let is_local = host.starts_with("localhost")
+                || host.starts_with("127.0.0.1")
+                || host.starts_with("0.0.0.0");
+            if !is_local {
+                tracing::warn!(
+                    security_event = "http_origin_in_production",
+                    origin = origin.as_str(),
+                    "Non-HTTPS origin configured — set ALLOW_HTTP_ORIGINS=true to silence this warning"
+                );
+            }
+        }
+    }
+}
+
 // ─── CORS / Origins ───────────────────────────────────────────────────────────
 
 pub fn parse_allowed_origins() -> Vec<String> {
@@ -605,5 +683,75 @@ mod tests {
         // Just verify it doesn't panic — actual log content verified via tracing subscriber
         log_auth_attempt("socket-123", "admin", false);
         log_auth_attempt("socket-123", "admin", true);
+    }
+
+    #[test]
+    fn test_extract_ip_forwarded_for_trust_proxy() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "1.2.3.4, 5.6.7.8".parse().unwrap(),
+        );
+        assert_eq!(extract_client_ip(&headers, true), "1.2.3.4");
+    }
+
+    #[test]
+    fn test_extract_ip_no_proxy_trust_false() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-forwarded-for", "1.2.3.4".parse().unwrap());
+        // trust_proxy=false → must not use headers
+        assert_eq!(extract_client_ip(&headers, false), "unknown");
+    }
+
+    #[test]
+    fn test_extract_ip_real_ip_fallback() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-real-ip", "10.0.0.1".parse().unwrap());
+        assert_eq!(extract_client_ip(&headers, true), "10.0.0.1");
+    }
+
+    #[test]
+    fn test_extract_ip_empty_headers() {
+        let headers = axum::http::HeaderMap::new();
+        assert_eq!(extract_client_ip(&headers, true), "unknown");
+        assert_eq!(extract_client_ip(&headers, false), "unknown");
+    }
+
+    #[test]
+    fn test_ip_rate_limiter_allows_under_limit() {
+        // Default limit is 20/min; first call must succeed
+        let limiter = IpRateLimiter::new();
+        assert!(limiter.check_auth_attempt_ip("1.2.3.4"));
+    }
+
+    #[test]
+    fn test_ip_rate_limiter_blocks_after_exhaustion() {
+        // Override via env is not practical in unit test; use governor directly by hammering
+        // Set env for this test scope — may not affect already-constructed limiter,
+        // so we construct after setting env.
+        // governor default quota is read at construction time.
+        std::env::set_var("RATE_LIMIT_AUTH_PER_MINUTE_IP", "3");
+        let limiter = IpRateLimiter::new();
+        // Exhaust the bucket
+        let _ = limiter.check_auth_attempt_ip("9.9.9.9");
+        let _ = limiter.check_auth_attempt_ip("9.9.9.9");
+        let _ = limiter.check_auth_attempt_ip("9.9.9.9");
+        // 4th attempt must be blocked
+        assert!(!limiter.check_auth_attempt_ip("9.9.9.9"));
+        // Different IP must still pass
+        assert!(limiter.check_auth_attempt_ip("8.8.8.8"));
+        std::env::remove_var("RATE_LIMIT_AUTH_PER_MINUTE_IP");
+    }
+
+    #[test]
+    fn test_warn_http_origins_no_panic() {
+        // Ensure the function runs without panicking for mixed origin list
+        let origins = vec![
+            "http://example.com".to_string(),
+            "https://secure.example.com".to_string(),
+            "http://localhost:3000".to_string(),
+            "http://127.0.0.1:5173".to_string(),
+        ];
+        warn_http_origins(&origins); // Must not panic
     }
 }

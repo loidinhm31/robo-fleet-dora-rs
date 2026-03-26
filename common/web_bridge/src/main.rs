@@ -12,7 +12,7 @@ use robo_rover_lib::{
 use robo_rover_lib::types::{DetectionFrame, TrackingCommand, TrackingTelemetry, SpeechTranscription, SystemMetrics, FleetStatus, FleetSelectCommand, FleetSubscriptionCommand, ActiveRoversStatus};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid;
 
 use axum::http::{Method, HeaderValue};
@@ -30,9 +30,9 @@ use mongodb::Collection;
 
 mod security;
 use security::{
-    AuthRateLimiter, CommandRateLimiter, SessionRegistry,
+    AuthRateLimiter, CommandRateLimiter, IpRateLimiter, SessionRegistry,
     parse_allowed_origins, log_auth_attempt, log_rate_limit_exceeded, log_validation_error,
-    load_or_generate_jwt_secret,
+    load_or_generate_jwt_secret, extract_client_ip, warn_http_origins,
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -70,6 +70,7 @@ struct ClientState {
     jpeg_quality: u8,
     last_video_sent: Arc<Mutex<SystemTime>>,
     last_audio_sent: Arc<Mutex<SystemTime>>,
+    last_activity: Arc<Mutex<Instant>>,
     video_frames_sent: Arc<Mutex<u64>>,
     audio_frames_sent: Arc<Mutex<u64>>,
     frames_dropped: Arc<Mutex<u64>>,
@@ -85,6 +86,7 @@ impl ClientState {
             jpeg_quality: 80,
             last_video_sent: Arc::new(Mutex::new(SystemTime::now())),
             last_audio_sent: Arc::new(Mutex::new(SystemTime::now())),
+            last_activity: Arc::new(Mutex::new(Instant::now())),
             video_frames_sent: Arc::new(Mutex::new(0)),
             audio_frames_sent: Arc::new(Mutex::new(0)),
             frames_dropped: Arc::new(Mutex::new(0)),
@@ -123,6 +125,14 @@ impl ClientState {
 
     fn mark_frame_dropped(&self) {
         *self.frames_dropped.lock().unwrap() += 1;
+    }
+}
+
+fn touch_activity(clients: &Mutex<Vec<ClientState>>, socket_id: &str) {
+    if let Ok(clients) = clients.lock() {
+        if let Some(client) = clients.iter().find(|c| c.socket_id == socket_id) {
+            *client.last_activity.lock().unwrap() = Instant::now();
+        }
     }
 }
 
@@ -182,6 +192,7 @@ struct SharedState {
     pub video_clients: Arc<Mutex<Vec<ClientState>>>,
     pub performance_monitoring_enabled: Arc<Mutex<bool>>,
     pub auth_rate_limiter: Arc<AuthRateLimiter>,
+    pub ip_rate_limiter: Arc<IpRateLimiter>,
     pub command_rate_limiter: Arc<CommandRateLimiter>,
     pub session_registry: Arc<SessionRegistry>,
     pub fleet_status: Arc<Mutex<FleetStatus>>,
@@ -230,6 +241,7 @@ impl SharedState {
             video_clients: Arc::new(Mutex::new(Vec::new())),
             performance_monitoring_enabled: Arc::new(Mutex::new(true)),
             auth_rate_limiter: Arc::new(AuthRateLimiter::new()),
+            ip_rate_limiter: Arc::new(IpRateLimiter::new()),
             command_rate_limiter: Arc::new(CommandRateLimiter::new()),
             session_registry: Arc::new(SessionRegistry::new()),
             fleet_status: Arc::new(Mutex::new(fleet_status)),
@@ -244,11 +256,13 @@ fn setup_socketio(
     user_collection: Arc<Collection<security::User>>,
     jwt_secret: Arc<String>,
     session_ttl_secs: u64,
+    trust_proxy: bool,
 ) -> (SocketIo, socketioxide::layer::SocketIoLayer) {
     let (layer, io) = SocketIo::new_layer();
 
     tracing::info!("Authentication: MongoDB + bcrypt + JWT (TTL {}s)", session_ttl_secs);
     tracing::info!("Security features: Rate limiting enabled, Input validation enabled, JWT sessions enabled");
+    tracing::info!("Proxy trust: {}", trust_proxy);
 
     // Clone io for use inside the closure
     let io_for_fleet = io.clone();
@@ -261,6 +275,16 @@ fn setup_socketio(
 
         async move {
         let socket_id = socket.id.to_string();
+
+        // Per-IP rate limit (in addition to per-socket)
+        let client_ip = extract_client_ip(&socket.req_parts().headers, trust_proxy);
+        if !shared_state.ip_rate_limiter.check_auth_attempt_ip(&client_ip) {
+            log_rate_limit_exceeded(&socket_id, "auth_ip");
+            tracing::warn!(security_event = "ip_rate_limit_exceeded", client_ip = %client_ip, "Per-IP auth rate limit exceeded");
+            socket.emit("auth_error", serde_json::json!({"reason": "rate_limited"})).ok();
+            socket.disconnect().ok();
+            return;
+        }
 
         // Check rate limit for authentication attempts
         if !shared_state.auth_rate_limiter.check_auth_attempt(&socket_id) {
@@ -327,6 +351,7 @@ fn setup_socketio(
                 log_rate_limit_exceeded(&socket_id_clone, "arm_command");
                 return;
             }
+            touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
 
             if let Ok(web_cmd) = serde_json::from_value::<WebArmCommand>(data) {
                 // Validate joint positions if present
@@ -367,6 +392,7 @@ fn setup_socketio(
                     log_rate_limit_exceeded(&socket_id_clone, "rover_command");
                     return;
                 }
+                touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
 
                 if let Ok(web_cmd) = serde_json::from_value::<WebRoverCommand>(data) {
                     // Validate wheel velocities if present
@@ -392,9 +418,20 @@ fn setup_socketio(
         );
 
         let shared_state_clone = shared_state.clone();
+        let socket_id_clone = socket_id.clone();
         socket.on(
             "camera_control",
-            move |_socket: SocketRef, Data::<Value>(data)| {
+            move |socket: SocketRef, Data::<Value>(data)| {
+                if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
+                    socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                    socket.disconnect().ok();
+                    return;
+                }
+                if !shared_state_clone.command_rate_limiter.check_command(&socket_id_clone) {
+                    log_rate_limit_exceeded(&socket_id_clone, "camera_control");
+                    return;
+                }
+                touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
                 if let Ok(web_cmd) = serde_json::from_value::<WebCameraCommand>(data) {
                     tracing::debug!("Received camera control: {:?}", web_cmd.command);
                     shared_state_clone
@@ -407,9 +444,20 @@ fn setup_socketio(
         );
 
         let shared_state_clone = shared_state.clone();
+        let socket_id_clone = socket_id.clone();
         socket.on(
             "audio_control",
-            move |_socket: SocketRef, Data::<Value>(data)| {
+            move |socket: SocketRef, Data::<Value>(data)| {
+                if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
+                    socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                    socket.disconnect().ok();
+                    return;
+                }
+                if !shared_state_clone.command_rate_limiter.check_command(&socket_id_clone) {
+                    log_rate_limit_exceeded(&socket_id_clone, "audio_control");
+                    return;
+                }
+                touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
                 if let Ok(web_cmd) = serde_json::from_value::<WebAudioCommand>(data) {
                     tracing::debug!("Received audio control: {:?}", web_cmd.command);
                     shared_state_clone
@@ -435,6 +483,7 @@ fn setup_socketio(
                     log_rate_limit_exceeded(&socket_id_clone, "tracking_command");
                     return;
                 }
+                touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
                 if let Ok(web_cmd) = serde_json::from_value::<WebTrackingCommand>(data) {
                     tracing::debug!("Received tracking command: {:?}", web_cmd.command_type);
                     shared_state_clone
@@ -460,6 +509,7 @@ fn setup_socketio(
                     log_rate_limit_exceeded(&socket_id_clone, "tts_command");
                     return;
                 }
+                touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
 
                 if let Ok(web_cmd) = serde_json::from_value::<WebTtsCommand>(data) {
                     // Validate TTS text
@@ -493,6 +543,7 @@ fn setup_socketio(
                     log_rate_limit_exceeded(&socket_id_clone, "audio_stream");
                     return;
                 }
+                touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
 
                 if let Ok(web_audio) = serde_json::from_value::<WebAudioStream>(data) {
                     // Validate audio data
@@ -513,10 +564,25 @@ fn setup_socketio(
         );
 
         let shared_state_clone = shared_state.clone();
+        let socket_id_clone = socket_id.clone();
         socket.on(
             "voice_command_audio",
-            move |_socket: SocketRef, Data::<Value>(data)| {
+            move |socket: SocketRef, Data::<Value>(data)| {
+                if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
+                    socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                    socket.disconnect().ok();
+                    return;
+                }
+                if !shared_state_clone.command_rate_limiter.check_command(&socket_id_clone) {
+                    log_rate_limit_exceeded(&socket_id_clone, "voice_command_audio");
+                    return;
+                }
+                touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
                 if let Ok(web_audio) = serde_json::from_value::<WebAudioStream>(data) {
+                    if let Err(e) = security::validation::validate_audio_data(&web_audio.audio_data) {
+                        log_validation_error(&socket_id_clone, &format!("Voice audio: {}", e));
+                        return;
+                    }
                     tracing::debug!("Received voice command audio: {} samples", web_audio.audio_data.len());
                     shared_state_clone
                         .voice_command_audio_queue
@@ -553,6 +619,7 @@ fn setup_socketio(
                     log_rate_limit_exceeded(&socket_id_clone, "fleet_select");
                     return;
                 }
+                touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
                 if let Ok(select_cmd) = serde_json::from_value::<FleetSelectCommand>(data) {
                     tracing::info!("Fleet select requested: {}", select_cmd.entity_id);
 
@@ -583,10 +650,21 @@ fn setup_socketio(
         );
 
         let shared_state_clone = shared_state.clone();
+        let socket_id_clone = socket_id.clone();
         let io_for_active_rovers = io_for_active_rovers.clone();
         socket.on(
             "fleet_subscription",
-            move |_socket: SocketRef, Data::<Value>(data)| {
+            move |socket: SocketRef, Data::<Value>(data)| {
+                if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
+                    socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                    socket.disconnect().ok();
+                    return;
+                }
+                if !shared_state_clone.command_rate_limiter.check_command(&socket_id_clone) {
+                    log_rate_limit_exceeded(&socket_id_clone, "fleet_subscription");
+                    return;
+                }
+                touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
                 if let Ok(sub_cmd) = serde_json::from_value::<WebFleetSubscriptionCommand>(data) {
                     tracing::info!("Fleet subscription command: action={}", sub_cmd.action);
 
@@ -649,10 +727,17 @@ fn setup_socketio(
         // auth_refresh: client proactively refreshes its token before expiry
         let jwt_secret_clone = jwt_secret.clone();
         let session_registry_clone = shared_state.session_registry.clone();
+        let auth_rate_limiter_clone = shared_state.auth_rate_limiter.clone();
         let socket_id_clone = socket_id.clone();
         socket.on(
             "auth_refresh",
             move |socket: SocketRef, Data::<Value>(data)| {
+                if !auth_rate_limiter_clone.check_auth_attempt(&socket_id_clone) {
+                    log_rate_limit_exceeded(&socket_id_clone, "auth_refresh");
+                    socket.emit("auth_error", serde_json::json!({"reason": "rate_limited"})).ok();
+                    socket.disconnect().ok();
+                    return;
+                }
                 let current_token = data.get("token").and_then(|v| v.as_str()).unwrap_or("");
                 match security::jwt::validate_token(current_token, &jwt_secret_clone) {
                     Ok(old_claims) => {
@@ -763,6 +848,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(3600u64);
+    let trust_proxy = env::var("TRUST_PROXY_HEADERS")
+        .unwrap_or_else(|_| "false".to_string())
+        == "true";
+    let idle_timeout_secs = env::var("IDLE_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(1800);
 
     let (node, mut events) = DoraNode::init_from_env()?;
     let arm_command_output = DataId::from("arm_command".to_owned());
@@ -782,6 +874,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         user_collection,
         jwt_secret.clone(),
         session_ttl_secs,
+        trust_proxy,
     );
     let io_handle = Arc::new(Mutex::new(Some(io.clone())));
 
@@ -807,10 +900,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // Background sweep: disconnect idle clients exceeding IDLE_TIMEOUT_SECONDS
+    let idle_clients = shared_state.video_clients.clone();
+    let idle_io = io.clone();
+    tokio::spawn(async move {
+        tracing::info!("Idle sweep task started (timeout: {}s, interval: 60s)", idle_timeout_secs);
+        let timeout = Duration::from_secs(idle_timeout_secs);
+        loop {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            let idle_ids: Vec<String> = {
+                // Snapshot (socket_id, elapsed) under the outer lock, then release.
+                // last_activity.lock() is always acquired after video_clients.lock() so
+                // lock ordering is consistent and deadlock-free.
+                let clients = idle_clients.lock().unwrap();
+                clients
+                    .iter()
+                    .filter_map(|c| {
+                        let elapsed = c.last_activity.lock().unwrap().elapsed();
+                        if elapsed >= timeout { Some(c.socket_id.clone()) } else { None }
+                    })
+                    .collect()
+            };
+            for socket_id in idle_ids {
+                tracing::info!("Idle sweep: disconnecting idle client {}", socket_id);
+                if let Ok(sid) = socket_id.parse() {
+                    if let Some(ns) = idle_io.of("/") {
+                        if let Some(socket) = ns.get_socket(sid) {
+                            socket.emit("auth_error", serde_json::json!({"reason": "idle_timeout"})).ok();
+                            socket.disconnect().ok();
+                        }
+                    }
+                }
+            }
+        }
+    });
+
     // Start Socket.IO server
     let socketio_handle = tokio::spawn(async move {
         // Get allowed origins from environment
         let allowed_origins = parse_allowed_origins();
+        warn_http_origins(&allowed_origins);
         tracing::info!("CORS allowed origins: {:?}", allowed_origins);
 
         // Define allowed headers explicitly (required when using credentials)
