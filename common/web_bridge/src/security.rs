@@ -127,6 +127,7 @@ impl CommandRateLimiter {
 // ─── User Model ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct User {
     pub username: String,
     pub password_hash: String,

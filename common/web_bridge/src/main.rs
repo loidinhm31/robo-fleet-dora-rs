@@ -820,7 +820,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         e
     })?;
     let user_collection: Arc<Collection<security::User>> =
-        Arc::new(db.collection("robo_control_user"));
+        Arc::new(db.collection("roboControlUser"));
 
     security::ensure_indexes(&user_collection).await?;
     security::seed_admin_user(&user_collection).await?;
