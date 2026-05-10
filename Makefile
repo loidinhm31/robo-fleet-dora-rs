@@ -12,7 +12,8 @@
 .DEFAULT_GOAL := help
 
 # Docker compose command with file path
-COMPOSE := docker compose -f docker/docker-compose.yml
+# --ansi never: prevent ANSI escape codes that corrupt non-TTY output (e.g. fleet-control SSE stream)
+COMPOSE := docker compose --ansi never -f docker/docker-compose.yml
 
 # =============================================================================
 # Help
@@ -50,8 +51,11 @@ help:
 	@echo "  make clean           - Remove containers, images, and volumes"
 	@echo ""
 	@echo "Environment Variables:"
-	@echo "  AUTH_USERNAME        - Web UI username (default: admin)"
-	@echo "  AUTH_PASSWORD        - Web UI password (default: password)"
+	@echo "  MONGODB_URI          - MongoDB connection string (default: mongodb://localhost:27017)"
+	@echo "  MONGODB_DATABASE     - MongoDB database name (default: qm_hub)"
+	@echo "  JWT_SECRET           - JWT signing secret (auto-generated if unset, warn-only)"
+	@echo "  ALLOW_DEFAULT_CREDENTIALS - Bootstrap mode: allow default admin/password (default: false)"
+	@echo "  SESSION_TTL_SECONDS  - Session expiry in seconds (default: 3600)"
 	@echo "  ENTITY_ID            - Rover entity ID (default: rover-kiwi)"
 	@echo "  ROVER_MODE           - Rover mode: zenoh (default) or direct"
 	@echo "  SOURCE_URI           - Camera device (default: /dev/video0)"
@@ -61,7 +65,7 @@ help:
 	@echo ""
 	@echo "Examples:"
 	@echo "  make models && make build-orchestra && make up-orchestra"
-	@echo "  AUTH_PASSWORD=mysecret make up-orchestra"
+	@echo "  MONGODB_URI=mongodb://mongo-host:27017 JWT_SECRET=\$$(openssl rand -base64 32) make up-orchestra"
 	@echo "  SOURCE_URI=/dev/video2 make up-rover"
 	@echo "  AUDIO_GID=\$$(getent group audio | cut -d: -f3) make up-rover"
 	@echo ""
@@ -78,11 +82,11 @@ models:
 # =============================================================================
 build-orchestra:
 	@echo "Building orchestra image (x86_64)..."
-	$(COMPOSE) --profile orchestra build
+	$(COMPOSE) --profile orchestra build --progress plain
 
 build-rover:
 	@echo "Building rover image (ARM64, native build)..."
-	$(COMPOSE) --profile rover-kiwi build
+	$(COMPOSE) --profile rover-kiwi build --progress plain
 
 build-rover-cross:
 	@echo "Building rover image (ARM64, cross-compile from x86_64)..."
@@ -102,8 +106,7 @@ up-orchestra:
 	$(COMPOSE) --profile orchestra up -d
 	@echo ""
 	@echo "Orchestra started! Access web UI at: http://localhost:3030"
-	@echo "Username: $${AUTH_USERNAME:-admin}"
-	@echo "Password: $${AUTH_PASSWORD:-password}"
+	@echo "Auth: MongoDB at $${MONGODB_URI:-mongodb://localhost:27017} (db: $${MONGODB_DATABASE:-qm_hub})"
 	@echo ""
 	@echo "View logs with: make logs-orchestra"
 
@@ -114,6 +117,7 @@ up-rover:
 	@echo "Rover-Kiwi started!"
 	@echo "View logs with: make logs-rover"
 
+# @env: SOURCE_URI SOURCE_TYPE
 up-rover-direct:  ## Start rover in direct-connect mode (web UI on rover, no Zenoh)
 	@echo "Starting rover container (direct mode)..."
 	ROVER_MODE=direct $(COMPOSE) --profile rover-kiwi up -d

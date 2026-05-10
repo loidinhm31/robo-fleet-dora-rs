@@ -163,9 +163,7 @@ pnpm dev
 
 Access at: `http://localhost:5173`
 
-**Default Credentials**:
-- Username: `admin`
-- Password: `password`
+**Default Credentials**: Managed via MongoDB. Set `ALLOW_DEFAULT_CREDENTIALS=true` on first run to bootstrap an admin user, then disable it. See [SETUP_ENVIRONMENT.md](SETUP_ENVIRONMENT.md) for MongoDB setup.
 
 ### 5. Test Features
 
@@ -353,19 +351,19 @@ kokoro-tts:
 
 ### Web Bridge Authentication
 
+Authentication uses MongoDB + bcrypt + JWT. Configure via environment variables in the dataflow YAML:
+
 ```yaml
 web-bridge:
   env:
-    AUTH_USERNAME: "admin"
-    AUTH_PASSWORD: "password"
+    MONGODB_URI: "mongodb://localhost:27017"
+    MONGODB_DATABASE: "qm_hub"
+    JWT_SECRET: "your-secret"           # auto-generated with warning if unset
+    ALLOW_DEFAULT_CREDENTIALS: "false"  # set true only for first-run bootstrap
+    SESSION_TTL_SECONDS: "3600"
 ```
 
-Update the corresponding values in the web UI:
-```typescript
-// robo-control-app/src/views/RoboRoverControl.tsx
-const AUTH_USERNAME = "admin";
-const AUTH_PASSWORD = "password";
-```
+The web UI authenticates via a login form and receives a JWT token. No hardcoded credentials in the frontend.
 
 ## Web UI Implementation
 

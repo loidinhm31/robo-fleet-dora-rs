@@ -46,8 +46,8 @@ make up-orchestra
 ```
 
 Access the web UI at http://localhost:3030
-- Username: `admin`
-- Password: `password` (or set `AUTH_PASSWORD` env var)
+
+Auth is MongoDB-based. Set `ALLOW_DEFAULT_CREDENTIALS=true` in your `.env` for first-run bootstrap, then log in with `admin` / `password` and change credentials. See `.env.example` for all auth vars.
 
 **Rover:**
 ```bash
@@ -135,8 +135,11 @@ This downloads and exports `models/.cache/reid/osnet_x0_25.onnx` (~6 MB).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AUTH_USERNAME` | `admin` | Web UI username |
-| `AUTH_PASSWORD` | `password` | Web UI password |
+| `MONGODB_URI` | `mongodb://localhost:27017` | MongoDB connection string |
+| `MONGODB_DATABASE` | `qm_hub` | MongoDB database name |
+| `JWT_SECRET` | *(auto-generated)* | JWT signing secret — set explicitly in production |
+| `ALLOW_DEFAULT_CREDENTIALS` | `false` | Bootstrap mode: allow default admin/password login |
+| `SESSION_TTL_SECONDS` | `3600` | Session expiry in seconds |
 | `SELECTED_ENTITY_ID` | `rover-kiwi` | Default selected rover |
 | `FLEET_ROSTER` | `rover-kiwi` | Comma-separated rover IDs |
 | `ZENOH_MODE` | `peer` | Zenoh network mode |
@@ -154,7 +157,7 @@ This downloads and exports `models/.cache/reid/osnet_x0_25.onnx` (~6 MB).
 
 Example:
 ```bash
-AUTH_PASSWORD=mysecret make up-orchestra
+MONGODB_URI=mongodb://mongo-host:27017 JWT_SECRET=$(openssl rand -base64 32) make up-orchestra
 SOURCE_URI=/dev/video2 make up-rover
 ```
 
@@ -348,7 +351,9 @@ ssh pi@raspberry-pi 'docker load < rover-image.tar.gz'
 
 1. **Use secrets for authentication:**
 ```bash
-export AUTH_PASSWORD=$(openssl rand -base64 32)
+# Generate a strong JWT secret and point to your MongoDB instance
+export JWT_SECRET=$(openssl rand -base64 32)
+export MONGODB_URI=mongodb://your-mongo-host:27017
 make up-orchestra
 ```
 
@@ -387,7 +392,8 @@ restart: always
 
 - Store sensitive credentials in `.env` file (not committed to git):
   ```bash
-  echo "AUTH_PASSWORD=your-secret-password" > .env
+  cp docker/.env.example docker/.env
+  # Edit docker/.env — set MONGODB_URI, JWT_SECRET, and ALLOW_DEFAULT_CREDENTIALS
   ```
 
 - Use HTTPS/TLS for web UI in production with reverse proxy (nginx, traefik)

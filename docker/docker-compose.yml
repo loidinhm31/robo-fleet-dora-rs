@@ -17,13 +17,13 @@ services:
 
     volumes:
       # Model files (Whisper for speech recognition)
-      - ../models/.cache/ggml:/models/ggml:ro
+      - ${HOST_WORKSPACE:-..}/models/.cache/ggml:/models/ggml:ro
 
       # Zenoh configuration (optional override)
-      - ../orchestra/zenoh_bridge/zenoh_config.json5:/app/config/zenoh_config.json5:ro
+      - ${HOST_WORKSPACE:-..}/orchestra/zenoh_bridge/zenoh_config.json5:/app/config/zenoh_config.json5:ro
 
       # Dataflow override (optional - for development)
-      # - ../orchestra/orchestra-dataflow.yml:/app/dataflow/orchestra-dataflow.yml:ro
+      # - ${HOST_WORKSPACE:-..}/orchestra/orchestra-dataflow.yml:/app/dataflow/orchestra-dataflow.yml:ro
 
     environment:
       # Rust logging
@@ -66,8 +66,11 @@ services:
       ZENOH_ENABLED: "false"
       BIND_ADDRESS: "0.0.0.0"
       SOCKET_IO_PORT: "3030"
-      AUTH_USERNAME: ${AUTH_USERNAME:-admin}
-      AUTH_PASSWORD: ${AUTH_PASSWORD:-password}
+      MONGODB_URI: ${MONGODB_URI:-mongodb://localhost:27017}
+      MONGODB_DATABASE: ${MONGODB_DATABASE:-gleanOak}
+      JWT_SECRET: ${JWT_SECRET:-}
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-3600}
+      ALLOW_DEFAULT_CREDENTIALS: ${ALLOW_DEFAULT_CREDENTIALS:-false}
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-https://dms-study.cloud,http://localhost:1420,http://localhost:3000,http://localhost:5173}"
       RATE_LIMIT_AUTH_PER_MINUTE: "5"
       RATE_LIMIT_COMMANDS_PER_SECOND: "100"
@@ -124,19 +127,19 @@ services:
 
     volumes:
       # AI Models (download separately using make models or docker/scripts/download-models.sh)
-      - ../models/.cache/yolo:/models/yolo:ro
-      - ../models/.cache/reid:/models/reid:ro
-      - ../models/.cache/sherpa-onnx:/models/sherpa-onnx:ro
+      - ${HOST_WORKSPACE:-..}/models/.cache/yolo:/models/yolo:ro
+      - ${HOST_WORKSPACE:-..}/models/.cache/reid:/models/reid:ro
+      - ${HOST_WORKSPACE:-..}/models/.cache/sherpa-onnx:/models/sherpa-onnx:ro
 
       # Zenoh configuration
-      - ../rover-kiwi/zenoh_bridge/zenoh_config.json5:/app/config/zenoh_config.json5:ro
+      - ${HOST_WORKSPACE:-..}/rover-kiwi/zenoh_bridge/zenoh_config.json5:/app/config/zenoh_config.json5:ro
 
       # Rover configuration (arm controller, simulation, etc.)
-      - ../rover-kiwi/config:/app/config/rover:ro
+      - ${HOST_WORKSPACE:-..}/rover-kiwi/config:/app/config/rover:ro
 
       # Dataflow override (optional - for development)
-      - ../rover-kiwi/rover-kiwi-dataflow.yml:/app/dataflow/rover-kiwi-dataflow.yml:ro
-      - ../rover-kiwi/rover-kiwi-direct-dataflow.yml:/app/dataflow/rover-kiwi-direct-dataflow.yml:ro
+      - ${HOST_WORKSPACE:-..}/rover-kiwi/rover-kiwi-dataflow.yml:/app/dataflow/rover-kiwi-dataflow.yml:ro
+      - ${HOST_WORKSPACE:-..}/rover-kiwi/rover-kiwi-direct-dataflow.yml:/app/dataflow/rover-kiwi-direct-dataflow.yml:ro
 
       # Host PulseAudio socket — gives the container the same audio path as a direct
       # dora start on the host. PULSE_UID defaults to 1000 (Raspberry Pi default user).
@@ -162,8 +165,11 @@ services:
       # Web bridge settings (used when ROVER_MODE=direct)
       BIND_ADDRESS: "0.0.0.0"
       SOCKET_IO_PORT: "3030"
-      AUTH_USERNAME: ${AUTH_USERNAME:-admin}
-      AUTH_PASSWORD: ${AUTH_PASSWORD:-password}
+      MONGODB_URI: ${MONGODB_URI:-mongodb://localhost:27017}
+      MONGODB_DATABASE: ${MONGODB_DATABASE:-gleanOak}
+      JWT_SECRET: ${JWT_SECRET:-}
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-3600}
+      ALLOW_DEFAULT_CREDENTIALS: ${ALLOW_DEFAULT_CREDENTIALS:-false}
 
       # Camera (GStreamer)
       SOURCE_TYPE: ${SOURCE_TYPE:-webcam}

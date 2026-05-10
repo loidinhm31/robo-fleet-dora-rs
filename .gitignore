@@ -8,3 +8,28 @@ onnxruntime-*.tgz
 
 # Environment secrets (keep .env.example tracked)
 .env
+
+/target
+
+**/out
+
+# IDEs
+.idea/
+.vscode/
+.cargo/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Tools
+.claude/
+.stfolder/
