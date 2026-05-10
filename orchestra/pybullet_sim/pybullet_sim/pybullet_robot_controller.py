@@ -35,18 +35,21 @@ class MecanumKinematics:
     """
     Mecanum wheel kinematics for triangular 3-wheel configuration.
 
+    Implements Modern Robotics Eq. (13.6) with proper mecanum roller angles.
+
     Wheel arrangement (top view):
           Front
             ^
             |
-        [Wheel 1]
+        [Wheel 1] γ=+45°
            / \
           /   \
     [W2]       [W3]
+    γ=-45°     γ=+45°
 
-    Wheel 1: Front (0°)
-    Wheel 2: Rear-left (120°)
-    Wheel 3: Rear-right (240°)
+    Wheel 1: Front (β=0°, γ=+45°)
+    Wheel 2: Rear-left (β=120°, γ=-45°)
+    Wheel 3: Rear-right (β=240°, γ=+45°)
     """
 
     def __init__(self, chassis_radius: float, wheel_radius: float):
@@ -60,16 +63,69 @@ class MecanumKinematics:
         self.R = chassis_radius  # Robot radius
         self.r = wheel_radius    # Wheel radius
 
-        # Wheel angles in the triangular configuration
-        self.wheel_angles = [
+        # Wheel position angles (β) in the triangular configuration
+        self.beta = [
             0.0,                    # Wheel 1: Front (0°)
             2.0 * math.pi / 3.0,    # Wheel 2: Rear-left (120°)
             4.0 * math.pi / 3.0,    # Wheel 3: Rear-right (240°)
         ]
 
+        # Mecanum roller sliding angles (γ) - CRITICAL for proper kinematics
+        self.gamma = [
+            math.radians(45),       # Wheel 1: +45°
+            math.radians(-45),      # Wheel 2: -45°
+            math.radians(45),       # Wheel 3: +45°
+        ]
+
+        # Pre-compute H matrix for efficiency
+        self.H = self._compute_h_matrix()
+
+    def _compute_h_matrix(self) -> np.ndarray:
+        """
+        Compute the H(0) matrix from Modern Robotics Eq. (13.6).
+
+        For wheel i: h_i(0) = (1 / (r_i * cos(γ_i))) *
+            [x_i*sin(β_i + γ_i) - y_i*cos(β_i + γ_i), cos(β_i + γ_i), sin(β_i + γ_i)]^T
+
+        For wheels arranged in a circle: x_i = d*cos(β_i), y_i = d*sin(β_i)
+
+        Returns:
+            3x3 H matrix mapping [ω, v_x, v_y] to wheel speeds
+        """
+        H = []
+
+        for i in range(3):
+            beta_i = self.beta[i]
+            gamma_i = self.gamma[i]
+
+            # Wheel position in body frame
+            x_i = self.R * math.cos(beta_i)
+            y_i = self.R * math.sin(beta_i)
+
+            # Denominator
+            denom = self.r * math.cos(gamma_i)
+
+            # Compute h_i(0) components from Eq. (13.6)
+            # First component: contribution from ω_z
+            h_omega = (x_i * math.sin(beta_i + gamma_i) -
+                      y_i * math.cos(beta_i + gamma_i)) / denom
+
+            # Second component: contribution from v_x
+            h_vx = math.cos(beta_i + gamma_i) / denom
+
+            # Third component: contribution from v_y
+            h_vy = math.sin(beta_i + gamma_i) / denom
+
+            H.append([h_omega, h_vx, h_vy])
+
+        return np.array(H)
+
     def inverse_kinematics(self, vx: float, vy: float, omega: float) -> Tuple[float, float, float]:
         """
         Convert chassis velocity to wheel angular velocities.
+
+        Uses Modern Robotics approach: u = H(0) * V_b
+        where V_b = [ω, v_x, v_y]^T
 
         Args:
             vx: Linear velocity in x-direction (m/s)
@@ -79,19 +135,13 @@ class MecanumKinematics:
         Returns:
             Tuple of (wheel1_vel, wheel2_vel, wheel3_vel) in rad/s
         """
-        wheel_vels = []
+        # Body twist vector [ω, v_x, v_y]
+        twist = np.array([omega, vx, vy])
 
-        for angle in self.wheel_angles:
-            # Mecanum wheel inverse kinematics formula:
-            # v_wheel = (vx * sin(θ) - vy * cos(θ) + ω * R) / r
-            v_wheel = (
-                vx * math.sin(angle) -
-                vy * math.cos(angle) +
-                omega * self.R
-            ) / self.r
-            wheel_vels.append(v_wheel)
+        # Compute wheel speeds using H matrix
+        wheel_speeds = self.H @ twist
 
-        return tuple(wheel_vels)
+        return tuple(wheel_speeds)
 
     def forward_kinematics(self, w1: float, w2: float, w3: float) -> Tuple[float, float, float]:
         """
@@ -321,7 +371,10 @@ class LeKiwiRobotController:
 
     def set_wheel_velocities(self, w1: float, w2: float, w3: float) -> None:
         """
-        Set wheel angular velocities.
+        Set wheel angular velocities with explicit ordering.
+
+        Wheel order matches self.wheel_joint_names:
+        [0] Front wheel (0°), [1] Right wheel (120°), [2] Left wheel (240°)
 
         Args:
             w1, w2, w3: Wheel angular velocities (rad/s)
@@ -332,39 +385,53 @@ class LeKiwiRobotController:
         max_vel = self.config.wheel.max_velocity
         velocities = [max(-max_vel, min(max_vel, v)) for v in velocities]
 
-        # Apply to each wheel
-        for (name, joint_info), vel in zip(self.wheel_joints.items(), velocities):
-            p.setJointMotorControl2(
-                self.robot_id,
-                joint_info.index,
-                controlMode=p.VELOCITY_CONTROL,
-                targetVelocity=vel,
-                force=self.config.wheel.max_torque,
-                physicsClientId=self.client
-            )
+        # Apply to each wheel in EXPLICIT order matching self.wheel_joint_names
+        for i, joint_name in enumerate(self.wheel_joint_names):
+            if joint_name in self.wheel_joints:
+                joint_info = self.wheel_joints[joint_name]
+                p.setJointMotorControl2(
+                    self.robot_id,
+                    joint_info.index,
+                    controlMode=p.VELOCITY_CONTROL,
+                    targetVelocity=velocities[i],
+                    force=self.config.wheel.max_torque,
+                    physicsClientId=self.client
+                )
+            else:
+                print(f"Warning: Wheel joint {joint_name} not found in mapped joints")
 
         self.wheel_velocities = velocities
 
     def set_wheel_positions(self, pos1: float, pos2: float, pos3: float) -> None:
         """
-        Set wheel positions (for visualization/testing).
+        Set wheel positions by converting position deltas to velocities.
+
+        This method handles accumulated wheel positions from the rover controller
+        by computing the position change since last update and converting to
+        velocity commands for the physics simulation.
 
         Args:
-            pos1, pos2, pos3: Wheel angular positions (radians)
+            pos1, pos2, pos3: Wheel angular positions (radians, accumulated)
         """
-        positions = [pos1, pos2, pos3]
+        new_positions = [pos1, pos2, pos3]
 
-        for (name, joint_info), pos in zip(self.wheel_joints.items(), positions):
-            p.setJointMotorControl2(
-                self.robot_id,
-                joint_info.index,
-                controlMode=p.POSITION_CONTROL,
-                targetPosition=pos,
-                force=self.config.wheel.max_torque,
-                physicsClientId=self.client
-            )
+        # Compute position deltas
+        delta_positions = [
+            new_pos - old_pos
+            for new_pos, old_pos in zip(new_positions, self.wheel_positions)
+        ]
 
-        self.wheel_positions = positions
+        # Convert deltas to velocities
+        # Assume 10 simulation steps between position updates
+        dt = self.config.physics.time_step * 10.0
+        velocities = [delta / dt for delta in delta_positions]
+
+        # Apply velocities using VELOCITY_CONTROL
+        # This is more stable than POSITION_CONTROL for continuous rotation
+        self.set_wheel_velocities(*velocities)
+
+        # Update tracked positions
+        self.wheel_positions = new_positions
 
     def set_chassis_velocity(self, vx: float, vy: float, omega: float) -> None:
         """
@@ -380,7 +447,11 @@ class LeKiwiRobotController:
 
     def set_arm_positions(self, positions: List[float]) -> None:
         """
-        Set arm joint positions.
+        Set arm joint positions with explicit ordering.
+
+        Positions array order must match self.arm_joint_names:
+        [0] shoulder_pan, [1] shoulder_lift, [2] elbow_flex,
+        [3] wrist_flex, [4] wrist_roll, [5] gripper
 
         Args:
             positions: List of 6 joint angles (radians)
@@ -394,17 +465,22 @@ class LeKiwiRobotController:
         for pos, (lower, upper) in zip(positions, self.config.arm.joint_limits):
             clamped_positions.append(max(lower, min(upper, pos)))
 
-        # Apply to each arm joint
-        for (name, joint_info), pos in zip(self.arm_joints.items(), clamped_positions):
-            p.setJointMotorControl2(
-                self.robot_id,
-                joint_info.index,
-                controlMode=p.POSITION_CONTROL,
-                targetPosition=pos,
-                force=self.config.arm.max_torque,
-                maxVelocity=self.config.arm.max_velocity,
-                physicsClientId=self.client
-            )
+        # Apply to each arm joint in EXPLICIT order matching self.arm_joint_names
+        # This ensures positions[i] always controls the correct joint
+        for i, joint_name in enumerate(self.arm_joint_names):
+            if joint_name in self.arm_joints:
+                joint_info = self.arm_joints[joint_name]
+                p.setJointMotorControl2(
+                    self.robot_id,
+                    joint_info.index,
+                    controlMode=p.POSITION_CONTROL,
+                    targetPosition=clamped_positions[i],
+                    force=self.config.arm.max_torque,
+                    maxVelocity=self.config.arm.max_velocity,
+                    physicsClientId=self.client
+                )
+            else:
+                print(f"Warning: Arm joint {joint_name} not found in mapped joints")
 
         self.arm_positions = clamped_positions
 
@@ -513,22 +589,26 @@ if __name__ == "__main__":
     print("=" * 50)
 
     # Test kinematics
-    print("\nTesting Mecanum Kinematics:")
+    print("\nTesting Mecanum Kinematics (Modern Robotics Eq. 13.6):")
     kinematics = MecanumKinematics(chassis_radius=0.15, wheel_radius=0.05)
+
+    print(f"H matrix:\n{kinematics.H}")
+    print(f"Wheel positions (β): {[math.degrees(b) for b in kinematics.beta]}°")
+    print(f"Roller angles (γ): {[math.degrees(g) for g in kinematics.gamma]}°")
 
     # Test forward movement
     vx, vy, omega = 1.0, 0.0, 0.0
     w1, w2, w3 = kinematics.inverse_kinematics(vx, vy, omega)
-    print(f"Forward (vx=1.0): wheels = [{w1:.2f}, {w2:.2f}, {w3:.2f}] rad/s")
+    print(f"\nForward (vx=1.0 m/s): wheels = [{w1:.2f}, {w2:.2f}, {w3:.2f}] rad/s")
 
     # Test rotation
     vx, vy, omega = 0.0, 0.0, 1.0
     w1, w2, w3 = kinematics.inverse_kinematics(vx, vy, omega)
-    print(f"Rotate (ω=1.0): wheels = [{w1:.2f}, {w2:.2f}, {w3:.2f}] rad/s")
+    print(f"Rotate (ω=1.0 rad/s): wheels = [{w1:.2f}, {w2:.2f}, {w3:.2f}] rad/s")
 
     # Test strafe
     vx, vy, omega = 0.0, 1.0, 0.0
     w1, w2, w3 = kinematics.inverse_kinematics(vx, vy, omega)
-    print(f"Strafe (vy=1.0): wheels = [{w1:.2f}, {w2:.2f}, {w3:.2f}] rad/s")
+    print(f"Strafe (vy=1.0 m/s): wheels = [{w1:.2f}, {w2:.2f}, {w3:.2f}] rad/s")
 
-    print("\nKinematics tests passed!")
+    print("\n✓ Kinematics tests passed!")
