@@ -171,7 +171,7 @@ All node configuration is via environment variables in the dataflow YAML files. 
 - **Object Detector** (on `kornia_capture` node): `CONFIDENCE_THRESHOLD`, `NMS_THRESHOLD`, `ORT_DYLIB_PATH`
 - **ReID Extractor** (on `kornia_capture` node): `REID_MODEL_PATH`, `ORT_DYLIB_PATH`
 - **Visual Servo**: `LATERAL_PID_KP/KI/KD`, `LONGITUDINAL_PID_KP/KI/KD`, `MIN_DISTANCE`, `MAX_VELOCITY`, `MAX_ANGULAR_VELOCITY`, `DEAD_ZONE`, `TARGET_BBOX_HEIGHT`
-- **Web Bridge**: `MODE` (orchestra/standalone), `SOCKET_IO_PORT` (3030), `AUTH_USERNAME`/`AUTH_PASSWORD` (admin/password), `FLEET_ROSTER`, `SELECTED_ENTITY_ID`, rate-limiting vars (`RATE_LIMIT_AUTH_PER_MINUTE`, `RATE_LIMIT_COMMANDS_PER_SECOND`)
+- **Web Bridge**: `MODE` (orchestra/standalone), `SOCKET_IO_PORT` (3030), `MONGODB_URI` (mongodb://localhost:27017), `MONGODB_DATABASE` (qm_hub), `JWT_SECRET` (auto-generated if unset), `ALLOW_DEFAULT_CREDENTIALS` (false), `SESSION_TTL_SECONDS` (3600), `FLEET_ROSTER`, `SELECTED_ENTITY_ID`, rate-limiting vars (`RATE_LIMIT_AUTH_PER_MINUTE`, `RATE_LIMIT_COMMANDS_PER_SECOND`)
 - **Camera** (`kornia_capture` node): `SOURCE_TYPE` (webcam/rtsp), `SOURCE_URI` (/dev/video0 or rtsp://...)
 
 ### Socket.IO Events

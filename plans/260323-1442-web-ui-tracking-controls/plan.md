@@ -1,7 +1,7 @@
 ---
 title: "Web UI Detection/Tracking Controls + Socket.IO Type Alignment"
 description: "Split detection/tracking into independent toggles (B1: extend TrackingCommand), fix socket.ts types to match web_bridge"
-status: pending
+status: done
 priority: P1
 effort: 3h
 branch: main
@@ -40,8 +40,8 @@ CAMERA ONLY ──enable_detection──→ DETECTION ONLY ──enable──→
 |-------|-------------|--------|--------|
 | [Phase 1](phase-01-vision-pipeline-split.md) | Split VisionPipeline state: detection_enabled + tracking_enabled | done | 45m |
 | [Phase 2](phase-02-command-types-bridge.md) | Extend TrackingCommand + web_bridge conversion + dataflow output | done | 45m |
-| [Phase 3](phase-03-fix-socket-types.md) | Fix socket.ts — web_bridge as source of truth, remove stale | pending | 30m |
-| [Phase 4](phase-04-camera-ui-controls.md) | CameraViewer: detection toggle button + state feedback | pending | 45m |
+| [Phase 3](phase-03-fix-socket-types.md) | Fix socket.ts — web_bridge as source of truth, remove stale | done | 30m |
+| [Phase 4](phase-04-camera-ui-controls.md) | CameraViewer: detection toggle button + state feedback | done | 45m |
 
 ## File Change Summary
 

@@ -38,7 +38,7 @@ The web_bridge has fundamental auth weaknesses:
 |---|-------|--------|--------|
 | 01 | [MongoDB + JWT + Bcrypt Core (Server-Side)](phase-01-jwt-bcrypt-core.md) | ~4h | done |
 | 02 | [Rate Limiting & Hardening (Server-Side)](phase-02-rate-limit-hardening.md) | ~2h | done |
-| 03 | [Client-Side JWT Integration](phase-03-client-jwt-integration.md) | ~1h | pending |
+| 03 | [Client-Side JWT Integration](phase-03-client-jwt-integration.md) | ~1h | done |
 
 Phases 01 and 02 are server-only and can run sequentially. Phase 03 depends on Phase 01 events (`auth_token`, `auth_error`) being defined.
 
