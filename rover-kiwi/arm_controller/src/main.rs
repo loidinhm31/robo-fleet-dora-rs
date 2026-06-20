@@ -269,7 +269,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 match serde_json::from_slice::<ArmCommandWithMetadata>(bytes) {
                                     Ok(cmd_with_metadata) => {
                                         if let Some(command) = cmd_with_metadata.command {
-                                            let source = if id_str == "arm_command_zenoh" { "zenoh" } else { "manual" };
+                                            let source = if id_str == "arm_command_zenoh" {
+                                                "zenoh"
+                                            } else {
+                                                "manual"
+                                            };
                                             info!("Received {} arm command: {:?}", source, command);
 
                                             match arm_controller.process_command(command) {

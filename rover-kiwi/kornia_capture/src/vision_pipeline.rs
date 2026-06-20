@@ -10,7 +10,9 @@ use tracing::info;
 pub enum PipelineOutput {
     /// Camera running, ML pipeline disabled. Carries telemetry with state=Disabled
     /// so web UI badge updates immediately when detection is toggled off.
-    CameraOnly { tracking_telemetry: TrackingTelemetry },
+    CameraOnly {
+        tracking_telemetry: TrackingTelemetry,
+    },
     /// YOLO detections without tracking IDs. Carries telemetry with state=DetectionOnly
     /// so web UI badge reflects current pipeline mode.
     DetectionOnly {
@@ -82,18 +84,24 @@ impl VisionPipeline {
     ) -> Result<ProcessedPipelineOutput> {
         let mut timings = PipelineTimings::default();
         if !self.detection_enabled {
-            return Ok(ProcessedPipelineOutput { output: PipelineOutput::CameraOnly {
-                tracking_telemetry: self.tracker.get_tracking_telemetry(),
-            }, timings });
+            return Ok(ProcessedPipelineOutput {
+                output: PipelineOutput::CameraOnly {
+                    tracking_telemetry: self.tracker.get_tracking_telemetry(),
+                },
+                timings,
+            });
         }
 
         if let Err(e) = self.ensure_detector_loaded() {
             tracing::error!("Failed to load YOLO: {:?} — disabling detection", e);
             self.detection_enabled = false;
             self.tracking_enabled = false;
-            return Ok(ProcessedPipelineOutput { output: PipelineOutput::CameraOnly {
-                tracking_telemetry: self.tracker.get_tracking_telemetry(),
-            }, timings });
+            return Ok(ProcessedPipelineOutput {
+                output: PipelineOutput::CameraOnly {
+                    tracking_telemetry: self.tracker.get_tracking_telemetry(),
+                },
+                timings,
+            });
         }
 
         let detector = self.detector.as_mut().unwrap();
@@ -104,30 +112,42 @@ impl VisionPipeline {
                 tracing::error!("YOLO detect failed: {:?} — disabling detection", e);
                 self.detection_enabled = false;
                 self.tracking_enabled = false;
-                return Ok(ProcessedPipelineOutput { output: PipelineOutput::CameraOnly {
-                    tracking_telemetry: self.tracker.get_tracking_telemetry(),
-                }, timings });
+                return Ok(ProcessedPipelineOutput {
+                    output: PipelineOutput::CameraOnly {
+                        tracking_telemetry: self.tracker.get_tracking_telemetry(),
+                    },
+                    timings,
+                });
             }
         };
         detection_frame.frame_id = frame_id;
         timings.yolo = yolo_started.elapsed();
 
         if !self.tracking_enabled {
-            return Ok(ProcessedPipelineOutput { output: PipelineOutput::DetectionOnly {
-                detections: detection_frame,
-                tracking_telemetry: self.detection_only_telemetry(),
-            }, timings });
+            return Ok(ProcessedPipelineOutput {
+                output: PipelineOutput::DetectionOnly {
+                    detections: detection_frame,
+                    tracking_telemetry: self.detection_only_telemetry(),
+                },
+                timings,
+            });
         }
 
         // Full pipeline: ReID + BoTSORT
         if let Err(e) = self.ensure_reid_loaded() {
-            tracing::error!("Failed to load ReID: {:?} — falling back to detection-only", e);
+            tracing::error!(
+                "Failed to load ReID: {:?} — falling back to detection-only",
+                e
+            );
             self.tracking_enabled = false;
             // Return already-computed YOLO frame — no re-detection
-            return Ok(ProcessedPipelineOutput { output: PipelineOutput::DetectionOnly {
-                detections: detection_frame,
-                tracking_telemetry: self.detection_only_telemetry(),
-            }, timings });
+            return Ok(ProcessedPipelineOutput {
+                output: PipelineOutput::DetectionOnly {
+                    detections: detection_frame,
+                    tracking_telemetry: self.detection_only_telemetry(),
+                },
+                timings,
+            });
         }
 
         timings.reid_count = detection_frame.detections.len();
@@ -140,10 +160,13 @@ impl VisionPipeline {
                 self.tracking_enabled = false;
                 // Telemetry reflects degradation; detections lost for this frame (ReID consumed it).
                 // Acceptable trade-off: avoids re-running YOLO under persistent ReID failure.
-                return Ok(ProcessedPipelineOutput { output: PipelineOutput::DetectionOnly {
-                    detections: DetectionFrame::new(0, w, h, vec![]),
-                    tracking_telemetry: self.detection_only_telemetry(),
-                }, timings });
+                return Ok(ProcessedPipelineOutput {
+                    output: PipelineOutput::DetectionOnly {
+                        detections: DetectionFrame::new(0, w, h, vec![]),
+                        tracking_telemetry: self.detection_only_telemetry(),
+                    },
+                    timings,
+                });
             }
         };
         timings.reid = reid_started.elapsed();
@@ -159,10 +182,13 @@ impl VisionPipeline {
         let mut tracked_frame = enriched;
         tracked_frame.detections = self.tracker.get_all_tracks();
 
-        Ok(ProcessedPipelineOutput { output: PipelineOutput::FullTracking {
-            tracked_detections: tracked_frame,
-            tracking_telemetry,
-        }, timings })
+        Ok(ProcessedPipelineOutput {
+            output: PipelineOutput::FullTracking {
+                tracked_detections: tracked_frame,
+                tracking_telemetry,
+            },
+            timings,
+        })
     }
 
     pub fn handle_tracking_command(&mut self, cmd: TrackingCommand) {

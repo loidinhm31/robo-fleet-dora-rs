@@ -50,14 +50,23 @@ impl<'a> RawVideoFramePacket<'a> {
         let width = read_u32(packet, 24)?;
         let height = read_u32(packet, 28)?;
         let payload_len = read_u32(packet, 32)? as usize;
-        let expected_len = RAW_FRAME_HEADER_LEN.checked_add(payload_len)
+        let expected_len = RAW_FRAME_HEADER_LEN
+            .checked_add(payload_len)
             .ok_or_else(|| "raw frame packet length overflow".to_string())?;
         if packet.len() != expected_len {
             return Err("raw frame packet payload length mismatch".into());
         }
-        let metadata = VideoFrameMetadata { frame_id, capture_timestamp_ms, width, height };
+        let metadata = VideoFrameMetadata {
+            frame_id,
+            capture_timestamp_ms,
+            width,
+            height,
+        };
         validate_raw_frame(metadata, payload_len)?;
-        Ok(Self { metadata, payload: &packet[RAW_FRAME_HEADER_LEN..] })
+        Ok(Self {
+            metadata,
+            payload: &packet[RAW_FRAME_HEADER_LEN..],
+        })
     }
 }
 
@@ -70,19 +79,27 @@ fn validate_raw_frame(metadata: VideoFrameMetadata, payload_len: usize) -> Resul
         .and_then(|pixels| pixels.checked_mul(3))
         .ok_or_else(|| "raw frame dimensions overflow".to_string())?;
     if expected > MAX_RAW_FRAME_BYTES || payload_len != expected {
-        return Err(format!("invalid raw RGB8 payload: expected {expected}, got {payload_len}"));
+        return Err(format!(
+            "invalid raw RGB8 payload: expected {expected}, got {payload_len}"
+        ));
     }
     Ok(())
 }
 
 fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, String> {
-    bytes.get(offset..offset + 8).and_then(|v| v.try_into().ok())
-        .map(u64::from_le_bytes).ok_or_else(|| "truncated u64 field".into())
+    bytes
+        .get(offset..offset + 8)
+        .and_then(|v| v.try_into().ok())
+        .map(u64::from_le_bytes)
+        .ok_or_else(|| "truncated u64 field".into())
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, String> {
-    bytes.get(offset..offset + 4).and_then(|v| v.try_into().ok())
-        .map(u32::from_le_bytes).ok_or_else(|| "truncated u32 field".into())
+    bytes
+        .get(offset..offset + 4)
+        .and_then(|v| v.try_into().ok())
+        .map(u32::from_le_bytes)
+        .ok_or_else(|| "truncated u32 field".into())
 }
 
 #[cfg(test)]
@@ -93,9 +110,17 @@ mod raw_frame_tests {
     fn raw_frame_packet_round_trips_identity_and_payload() {
         let payload = vec![7; 2 * 3 * 3];
         let metadata = VideoFrameMetadata {
-            frame_id: 42, capture_timestamp_ms: 1_700_000_000_123, width: 2, height: 3,
+            frame_id: 42,
+            capture_timestamp_ms: 1_700_000_000_123,
+            width: 2,
+            height: 3,
         };
-        let encoded = RawVideoFramePacket { metadata, payload: &payload }.encode().unwrap();
+        let encoded = RawVideoFramePacket {
+            metadata,
+            payload: &payload,
+        }
+        .encode()
+        .unwrap();
         let decoded = RawVideoFramePacket::decode(&encoded).unwrap();
         assert_eq!(decoded.metadata, metadata);
         assert_eq!(decoded.payload, payload);
@@ -106,12 +131,25 @@ mod raw_frame_tests {
         assert!(RawVideoFramePacket::decode(b"RFRM").is_err());
         let payload = vec![0; 3];
         let metadata = VideoFrameMetadata {
-            frame_id: 1, capture_timestamp_ms: 2, width: 1, height: 1,
+            frame_id: 1,
+            capture_timestamp_ms: 2,
+            width: 1,
+            height: 1,
         };
-        let mut encoded = RawVideoFramePacket { metadata, payload: &payload }.encode().unwrap();
+        let mut encoded = RawVideoFramePacket {
+            metadata,
+            payload: &payload,
+        }
+        .encode()
+        .unwrap();
         encoded[4] = 9;
         assert!(RawVideoFramePacket::decode(&encoded).is_err());
-        assert!(RawVideoFramePacket { metadata, payload: &[] }.encode().is_err());
+        assert!(RawVideoFramePacket {
+            metadata,
+            payload: &[]
+        }
+        .encode()
+        .is_err());
     }
 }
 
@@ -122,12 +160,12 @@ pub struct AudioFrame {
     pub entity_id: Option<String>,
     pub timestamp: u64,
     pub frame_id: u64,
-    pub sample_rate: u32,     // e.g., 48000 Hz
-    pub channels: u16,        // 1 = mono, 2 = stereo
-    pub bit_depth: u16,       // e.g., 16-bit
-    pub format: String,       // "PCM_S16LE", "PCM_F32LE", etc.
-    pub data: Vec<u8>,        // Raw PCM audio data
-    pub sample_count: usize,  // Number of samples
+    pub sample_rate: u32,    // e.g., 48000 Hz
+    pub channels: u16,       // 1 = mono, 2 = stereo
+    pub bit_depth: u16,      // e.g., 16-bit
+    pub format: String,      // "PCM_S16LE", "PCM_F32LE", etc.
+    pub data: Vec<u8>,       // Raw PCM audio data
+    pub sample_count: usize, // Number of samples
 }
 
 impl AudioFrame {
@@ -152,14 +190,14 @@ impl AudioFrame {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncodedAudioFrame {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub entity_id: Option<String>,  // Source rover entity ID (for multi-rover support)
+    pub entity_id: Option<String>, // Source rover entity ID (for multi-rover support)
     pub timestamp: u64,
     pub frame_id: u64,
     pub sample_rate: u32,
     pub channels: u16,
     pub codec: AudioCodec,
-    pub data: Vec<u8>,        // Encoded audio data
-    pub duration_ms: u32,     // Frame duration in milliseconds
+    pub data: Vec<u8>,    // Encoded audio data
+    pub duration_ms: u32, // Frame duration in milliseconds
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,42 +213,42 @@ pub enum AudioCodec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CameraFrame {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub entity_id: Option<String>,  // Source rover entity ID (for multi-rover support)
+    pub entity_id: Option<String>, // Source rover entity ID (for multi-rover support)
     pub timestamp: u64,
     pub frame_id: u64,
     pub width: u32,
     pub height: u32,
-    pub format: String,  // "RGB8", "BGR8", "GRAY8", "YUV420P"
-    pub data: Vec<u8>,   // Raw pixel data
+    pub format: String, // "RGB8", "BGR8", "GRAY8", "YUV420P"
+    pub data: Vec<u8>,  // Raw pixel data
 }
 
 /// H.264 encoded video frame
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct H264Frame {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub entity_id: Option<String>,  // Source rover entity ID (for multi-rover support)
+    pub entity_id: Option<String>, // Source rover entity ID (for multi-rover support)
     pub timestamp: u64,
     pub frame_id: u64,
     pub width: u32,
     pub height: u32,
     pub is_keyframe: bool,
-    pub data: Vec<u8>,        // H.264 NAL units
-    pub pts: i64,             // Presentation timestamp
-    pub dts: i64,             // Decoding timestamp
+    pub data: Vec<u8>, // H.264 NAL units
+    pub pts: i64,      // Presentation timestamp
+    pub dts: i64,      // Decoding timestamp
 }
 
 /// Processed video frame with H.264 or JPEG
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessedVideoFrame {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub entity_id: Option<String>,  // Source rover entity ID (for multi-rover support)
+    pub entity_id: Option<String>, // Source rover entity ID (for multi-rover support)
     pub timestamp: u64,
     pub frame_id: u64,
     pub width: u32,
     pub height: u32,
     pub codec: VideoCodec,
     pub is_keyframe: bool,
-    pub data: Vec<u8>,        // Compressed video data
+    pub data: Vec<u8>, // Compressed video data
     pub overlay_data: Option<OverlayData>,
 }
 
@@ -294,10 +332,10 @@ pub enum StreamCommand {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StreamQuality {
-    Low,      // 320x240, H.264 @ 500kbps
-    Medium,   // 640x480, H.264 @ 1Mbps
-    High,     // 1280x720, H.264 @ 2Mbps
-    Ultra,    // 1920x1080, H.264 @ 4Mbps
+    Low,    // 320x240, H.264 @ 500kbps
+    Medium, // 640x480, H.264 @ 1Mbps
+    High,   // 1280x720, H.264 @ 2Mbps
+    Ultra,  // 1920x1080, H.264 @ 4Mbps
 }
 
 impl StreamQuality {

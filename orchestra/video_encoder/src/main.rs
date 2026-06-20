@@ -2,12 +2,12 @@ use dora_node_api::{
     arrow::array::{Array, UInt8Array},
     DoraNode, Event,
 };
-use eyre::{Result, eyre};
-use image::{ImageBuffer, Rgb, codecs::jpeg::JpegEncoder};
+use eyre::{eyre, Result};
+use image::{codecs::jpeg::JpegEncoder, ImageBuffer, Rgb};
+use robo_rover_lib::{capture_age_ms, init_tracing, FrameSequenceTracker, MetricWindow};
 use std::io::Cursor;
 use std::{env, time::Duration};
-use tracing::{info, error, debug};
-use robo_rover_lib::{capture_age_ms, init_tracing, FrameSequenceTracker, MetricWindow};
+use tracing::{debug, error, info};
 
 #[derive(Debug, Clone, Copy)]
 struct EncoderConfig {
@@ -46,18 +46,16 @@ impl EncoderConfig {
     }
 }
 
-fn encode_jpeg(
-    rgb_data: &[u8],
-    width: u32,
-    height: u32,
-    quality: u8,
-) -> Result<Vec<u8>> {
+fn encode_jpeg(rgb_data: &[u8], width: u32, height: u32, quality: u8) -> Result<Vec<u8>> {
     // Verify data size
     let expected_size = (width * height * 3) as usize;
     if rgb_data.len() != expected_size {
         return Err(eyre!(
             "Invalid RGB data size: expected {} bytes ({}x{}x3), got {} bytes",
-            expected_size, width, height, rgb_data.len()
+            expected_size,
+            width,
+            height,
+            rgb_data.len()
         ));
     }
 
@@ -70,12 +68,9 @@ fn encode_jpeg(
     {
         let mut cursor = Cursor::new(&mut jpeg_data);
         let mut encoder = JpegEncoder::new_with_quality(&mut cursor, quality);
-        encoder.encode(
-            &img_buf,
-            width,
-            height,
-            image::ExtendedColorType::Rgb8,
-        ).map_err(|e| eyre!("JPEG encoding failed: {}", e))?;
+        encoder
+            .encode(&img_buf, width, height, image::ExtendedColorType::Rgb8)
+            .map_err(|e| eyre!("JPEG encoding failed: {}", e))?;
     }
 
     Ok(jpeg_data)
@@ -114,32 +109,46 @@ fn main() -> Result<()> {
                         let start_time = std::time::Instant::now();
 
                         // Extract frame metadata
-                        let width = metadata.parameters.get("width")
+                        let width = metadata
+                            .parameters
+                            .get("width")
                             .and_then(|v| match v {
                                 dora_node_api::Parameter::Integer(i) => Some(*i as u32),
                                 _ => None,
                             })
                             .unwrap_or(config.width);
 
-                        let height = metadata.parameters.get("height")
+                        let height = metadata
+                            .parameters
+                            .get("height")
                             .and_then(|v| match v {
                                 dora_node_api::Parameter::Integer(i) => Some(*i as u32),
                                 _ => None,
                             })
                             .unwrap_or(config.height);
 
-                        let frame_id = metadata.parameters.get("frame_id")
+                        let frame_id =
+                            metadata
+                                .parameters
+                                .get("frame_id")
+                                .and_then(|value| match value {
+                                    dora_node_api::Parameter::Integer(value) => {
+                                        u64::try_from(*value).ok()
+                                    }
+                                    _ => None,
+                                });
+                        let capture_timestamp_ms = metadata
+                            .parameters
+                            .get("capture_timestamp_ms")
                             .and_then(|value| match value {
-                                dora_node_api::Parameter::Integer(value) => u64::try_from(*value).ok(),
-                                _ => None,
-                            });
-                        let capture_timestamp_ms = metadata.parameters.get("capture_timestamp_ms")
-                            .and_then(|value| match value {
-                                dora_node_api::Parameter::Integer(value) => u64::try_from(*value).ok(),
+                                dora_node_api::Parameter::Integer(value) => {
+                                    u64::try_from(*value).ok()
+                                }
                                 _ => None,
                             });
                         let (Some(frame_id), Some(capture_timestamp_ms)) =
-                            (frame_id, capture_timestamp_ms) else {
+                            (frame_id, capture_timestamp_ms)
+                        else {
                             encode_metrics.record_error();
                             error!("Video frame missing capture identity");
                             continue;
@@ -148,10 +157,11 @@ fn main() -> Result<()> {
                             Ok(missing) => encode_metrics.record_drops(missing),
                             Err(()) => encode_metrics.record_error(),
                         }
-                        let frame_age_ms = capture_age_ms(capture_timestamp_ms).unwrap_or_else(|| {
-                            encode_metrics.record_error();
-                            0
-                        });
+                        let frame_age_ms =
+                            capture_age_ms(capture_timestamp_ms).unwrap_or_else(|| {
+                                encode_metrics.record_error();
+                                0
+                            });
                         encode_age_metrics.record(Duration::from_millis(frame_age_ms), 0);
 
                         // Extract RGB8 data
@@ -167,7 +177,8 @@ fn main() -> Result<()> {
                                     encode_metrics.record(encoding_time, jpeg_data.len());
 
                                     // Calculate compression ratio
-                                    let compression_ratio = rgb_bytes.len() as f32 / jpeg_data.len() as f32;
+                                    let compression_ratio =
+                                        rgb_bytes.len() as f32 / jpeg_data.len() as f32;
 
                                     debug!(
                                         "Frame {} encoded: {}x{} RGB ({} bytes) → JPEG ({} bytes, {:.1}x compression, {:.1}ms)",
@@ -181,37 +192,55 @@ fn main() -> Result<()> {
                                     );
 
                                     if let Some(snapshot) = encode_metrics.snapshot_if_due() {
-                                        info!(metric="video_pipeline", stage="jpeg_encode",
-                                            frame_id, frame_age_ms, count=snapshot.count,
-                                            bytes=snapshot.bytes, drops=snapshot.drops,
-                                            errors=snapshot.errors, p50_us=snapshot.p50_us,
-                                            p95_us=snapshot.p95_us, p99_us=snapshot.p99_us,
-                                            max_us=snapshot.max_us);
+                                        info!(
+                                            metric = "video_pipeline",
+                                            stage = "jpeg_encode",
+                                            frame_id,
+                                            frame_age_ms,
+                                            count = snapshot.count,
+                                            bytes = snapshot.bytes,
+                                            drops = snapshot.drops,
+                                            errors = snapshot.errors,
+                                            p50_us = snapshot.p50_us,
+                                            p95_us = snapshot.p95_us,
+                                            p99_us = snapshot.p99_us,
+                                            max_us = snapshot.max_us
+                                        );
                                     }
                                     if let Some(snapshot) = encode_age_metrics.snapshot_if_due() {
-                                        info!(metric="video_pipeline", stage="jpeg_encode_age",
-                                            count=snapshot.count, p50_us=snapshot.p50_us,
-                                            p95_us=snapshot.p95_us, p99_us=snapshot.p99_us,
-                                            max_us=snapshot.max_us);
+                                        info!(
+                                            metric = "video_pipeline",
+                                            stage = "jpeg_encode_age",
+                                            count = snapshot.count,
+                                            p50_us = snapshot.p50_us,
+                                            p95_us = snapshot.p95_us,
+                                            p99_us = snapshot.p99_us,
+                                            max_us = snapshot.max_us
+                                        );
                                     }
 
                                     // Create output metadata with encoding info
                                     let mut output_metadata = metadata.clone();
                                     output_metadata.parameters.insert(
                                         "codec".to_string(),
-                                        dora_node_api::Parameter::String("jpeg".to_string())
+                                        dora_node_api::Parameter::String("jpeg".to_string()),
                                     );
                                     output_metadata.parameters.insert(
                                         "quality".to_string(),
-                                        dora_node_api::Parameter::Integer(config.jpeg_quality as i64)
+                                        dora_node_api::Parameter::Integer(
+                                            config.jpeg_quality as i64,
+                                        ),
                                     );
                                     output_metadata.parameters.insert(
                                         "compressed_size".to_string(),
-                                        dora_node_api::Parameter::Integer(jpeg_data.len() as i64)
+                                        dora_node_api::Parameter::Integer(jpeg_data.len() as i64),
                                     );
 
                                     // Send encoded frame
-                                    let binary_data = dora_node_api::arrow::array::BinaryArray::from_vec(vec![jpeg_data.as_slice()]);
+                                    let binary_data =
+                                        dora_node_api::arrow::array::BinaryArray::from_vec(vec![
+                                            jpeg_data.as_slice(),
+                                        ]);
                                     node.send_output(
                                         "encoded_frame".to_owned().into(),
                                         output_metadata.parameters,

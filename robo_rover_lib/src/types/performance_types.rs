@@ -73,8 +73,7 @@ impl SystemMetrics {
 
     /// Add or update metrics for a specific node
     pub fn update_node_metrics(&mut self, metrics: NodeMetrics) {
-        self.node_metrics
-            .insert(metrics.node_id.clone(), metrics);
+        self.node_metrics.insert(metrics.node_id.clone(), metrics);
     }
 
     /// Calculate overall dataflow FPS (minimum FPS across vision nodes)

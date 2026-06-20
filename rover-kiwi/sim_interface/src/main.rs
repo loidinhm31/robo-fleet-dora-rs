@@ -4,7 +4,10 @@ use dora_node_api::{
     DoraNode, Event,
 };
 use eyre::Result;
-use robo_rover_lib::{init_tracing, ArmCommand, ArmCommandWithMetadata, ArmTelemetry, CompleteJointState, RoverCommand, RoverCommandWithMetadata, RoverTelemetry};
+use robo_rover_lib::{
+    init_tracing, ArmCommand, ArmCommandWithMetadata, ArmTelemetry, CompleteJointState,
+    RoverCommand, RoverCommandWithMetadata, RoverTelemetry,
+};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio;
@@ -69,7 +72,7 @@ pub struct UnifiedRobotController {
     url: String,
     client: reqwest::Client,
     current_arm_position: ArmJointPositions,
-    current_rover_position: [f64; 3],  // 3 mecanum wheel positions
+    current_rover_position: [f64; 3], // 3 mecanum wheel positions
 }
 
 impl UnifiedRobotController {
@@ -98,18 +101,27 @@ impl UnifiedRobotController {
         tracing::debug!("Sending complete joint state to urdf-viz:");
         tracing::debug!("Rover wheels:");
         for i in 0..3 {
-            tracing::debug!("{}: {:.3} rad ({:.1}°)",
-                     state.names[i], state.positions[i], state.positions[i].to_degrees());
+            tracing::debug!(
+                "{}: {:.3} rad ({:.1}°)",
+                state.names[i],
+                state.positions[i],
+                state.positions[i].to_degrees()
+            );
         }
         tracing::debug!("Arm joints:");
         for i in 3..9 {
-            tracing::debug!("{}: {:.3} rad ({:.1}°)",
-                     state.names[i], state.positions[i], state.positions[i].to_degrees());
+            tracing::debug!(
+                "{}: {:.3} rad ({:.1}°)",
+                state.names[i],
+                state.positions[i],
+                state.positions[i].to_degrees()
+            );
         }
 
         let endpoint = format!("{}/set_joint_positions", self.url);
 
-        let response = self.client
+        let response = self
+            .client
             .post(&endpoint)
             .header("Accept", "application/json")
             .header("Content-Type", "application/json")
@@ -157,7 +169,7 @@ impl UnifiedRobotController {
     pub async fn home(&mut self) -> Result<()> {
         self.current_arm_position = ArmJointPositions::home();
         self.current_rover_position = [0.0, 0.0, 0.0];
-        let state = CompleteJointState::new();  // Default is home
+        let state = CompleteJointState::new(); // Default is home
         self.send_complete_state(&state).await
     }
 
@@ -201,7 +213,7 @@ impl UnifiedRobotController {
     pub fn generate_rover_telemetry(&self) -> RoverTelemetry {
         let mut telemetry = RoverTelemetry::new();
         telemetry.wheel_positions = Some(self.current_rover_position);
-        telemetry.wheel_velocities = Some([0.0, 0.0, 0.0]);  // Simplified - not tracking velocities
+        telemetry.wheel_velocities = Some([0.0, 0.0, 0.0]); // Simplified - not tracking velocities
         telemetry
     }
 }
@@ -220,8 +232,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rover_telemetry_output = DataId::from("rover_telemetry".to_owned());
 
     // Get urdf-viz URL from environment or use default
-    let urdf_viz_url = std::env::var("URDFVIZ_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:7777".to_string());
+    let urdf_viz_url =
+        std::env::var("URDFVIZ_URL").unwrap_or_else(|_| "http://127.0.0.1:7777".to_string());
 
     let mut controller = UnifiedRobotController::with_url(urdf_viz_url);
 
@@ -256,23 +268,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     match serde_json::from_slice::<ArmCommandWithMetadata>(bytes) {
                                         Ok(cmd_with_metadata) => {
                                             if let Some(arm_cmd) = cmd_with_metadata.command {
-                                                tracing::debug!("Processing arm command: {:?}", arm_cmd);
+                                                tracing::debug!(
+                                                    "Processing arm command: {:?}",
+                                                    arm_cmd
+                                                );
 
                                                 match arm_cmd {
-                                                    ArmCommand::JointPosition { joint_angles, .. } => {
+                                                    ArmCommand::JointPosition {
+                                                        joint_angles,
+                                                        ..
+                                                    } => {
                                                         if joint_angles.len() >= 6 {
-                                                            let positions = ArmJointPositions::from_array(&joint_angles);
+                                                            let positions =
+                                                                ArmJointPositions::from_array(
+                                                                    &joint_angles,
+                                                                );
 
-                                                            match controller.update_arm(positions).await {
+                                                            match controller
+                                                                .update_arm(positions)
+                                                                .await
+                                                            {
                                                                 Ok(_) => {
                                                                     tracing::debug!("Arm positions sent successfully");
 
                                                                     // Send telemetry
-                                                                    let telemetry = controller.generate_arm_telemetry();
-                                                                    if let Ok(serialized) = serde_json::to_vec(&telemetry) {
-                                                                        let arrow_data = BinaryArray::from_vec(vec![serialized.as_slice()]);
+                                                                    let telemetry = controller
+                                                                        .generate_arm_telemetry();
+                                                                    if let Ok(serialized) =
+                                                                        serde_json::to_vec(
+                                                                            &telemetry,
+                                                                        )
+                                                                    {
+                                                                        let arrow_data =
+                                                                            BinaryArray::from_vec(
+                                                                                vec![serialized
+                                                                                    .as_slice()],
+                                                                            );
                                                                         let _ = node.send_output(
-                                                                            arm_telemetry_output.clone(),
+                                                                            arm_telemetry_output
+                                                                                .clone(),
                                                                             Default::default(),
                                                                             arrow_data,
                                                                         );
@@ -283,16 +317,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                                 }
                                                             }
                                                         } else {
-                                                            tracing::error!("Invalid joint angles length: {}", joint_angles.len());
+                                                            tracing::error!(
+                                                                "Invalid joint angles length: {}",
+                                                                joint_angles.len()
+                                                            );
                                                         }
                                                     }
                                                     ArmCommand::Home => {
                                                         if let Err(e) = controller.home().await {
-                                                            tracing::error!("Failed to move to home: {}", e);
+                                                            tracing::error!(
+                                                                "Failed to move to home: {}",
+                                                                e
+                                                            );
                                                         }
                                                     }
-                                                    ArmCommand::Stop | ArmCommand::EmergencyStop => {
-                                                        tracing::info!("Stop command received for arm");
+                                                    ArmCommand::Stop
+                                                    | ArmCommand::EmergencyStop => {
+                                                        tracing::info!(
+                                                            "Stop command received for arm"
+                                                        );
                                                     }
                                                     _ => {
                                                         tracing::warn!("Unsupported arm command type for simulation");
@@ -315,22 +358,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if binary_array.len() > 0 {
                                     let bytes = binary_array.value(0);
 
-                                    match serde_json::from_slice::<RoverCommandWithMetadata>(bytes) {
+                                    match serde_json::from_slice::<RoverCommandWithMetadata>(bytes)
+                                    {
                                         Ok(cmd_with_metadata) => {
                                             let rover_cmd = cmd_with_metadata.command;
-                                            tracing::debug!("Processing rover command: {:?}", rover_cmd);
+                                            tracing::debug!(
+                                                "Processing rover command: {:?}",
+                                                rover_cmd
+                                            );
 
                                             match rover_cmd {
-                                                RoverCommand::JointPositions { wheel1, wheel2, wheel3, .. } => {
-                                                    match controller.update_rover(wheel1, wheel2, wheel3).await {
+                                                RoverCommand::JointPositions {
+                                                    wheel1,
+                                                    wheel2,
+                                                    wheel3,
+                                                    ..
+                                                } => {
+                                                    match controller
+                                                        .update_rover(wheel1, wheel2, wheel3)
+                                                        .await
+                                                    {
                                                         Ok(_) => {
                                                             tracing::debug!("Rover wheel positions sent: [{:.3}, {:.3}, {:.3}]",
                                                                      wheel1, wheel2, wheel3);
 
                                                             // Send telemetry
-                                                            let telemetry = controller.generate_rover_telemetry();
-                                                            if let Ok(serialized) = serde_json::to_vec(&telemetry) {
-                                                                let arrow_data = BinaryArray::from_vec(vec![serialized.as_slice()]);
+                                                            let telemetry = controller
+                                                                .generate_rover_telemetry();
+                                                            if let Ok(serialized) =
+                                                                serde_json::to_vec(&telemetry)
+                                                            {
+                                                                let arrow_data =
+                                                                    BinaryArray::from_vec(vec![
+                                                                        serialized.as_slice(),
+                                                                    ]);
                                                                 let _ = node.send_output(
                                                                     rover_telemetry_output.clone(),
                                                                     Default::default(),
@@ -344,13 +405,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     }
                                                 }
                                                 RoverCommand::Stop { .. } => {
-                                                    tracing::info!("Stop command received for rover");
+                                                    tracing::info!(
+                                                        "Stop command received for rover"
+                                                    );
                                                     // Keep current position, don't update
-                                                    }
-                                                    _ => {
-                                                        tracing::debug!("Rover command type will be converted to joint positions by rover-controller");
-                                                    }
                                                 }
+                                                _ => {
+                                                    tracing::debug!("Rover command type will be converted to joint positions by rover-controller");
+                                                }
+                                            }
                                         }
                                         Err(e) => {
                                             tracing::error!("Failed to parse rover command: {}", e);

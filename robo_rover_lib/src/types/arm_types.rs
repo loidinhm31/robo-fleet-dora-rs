@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::CommandMetadata;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ArmCommand {

@@ -45,14 +45,22 @@ impl CameraMotionCompensator {
         let curr_corners = self.detect_corners(current_frame);
 
         // Match corners between frames using simple patch matching
-        let matches = self.match_corners(prev_frame, current_frame, &self.prev_corners, &curr_corners);
+        let matches =
+            self.match_corners(prev_frame, current_frame, &self.prev_corners, &curr_corners);
 
-        debug!("CMC: {} corners prev, {} corners curr, {} matches",
-               self.prev_corners.len(), curr_corners.len(), matches.len());
+        debug!(
+            "CMC: {} corners prev, {} corners curr, {} matches",
+            self.prev_corners.len(),
+            curr_corners.len(),
+            matches.len()
+        );
 
         // Need minimum matches to estimate motion
         if matches.len() < self.min_matches {
-            debug!("CMC: Not enough matches ({}), returning identity", matches.len());
+            debug!(
+                "CMC: Not enough matches ({}), returning identity",
+                matches.len()
+            );
             self.prev_frame = Some(current_frame.clone());
             self.prev_corners = curr_corners;
             return None;
@@ -106,9 +114,11 @@ impl CameraMotionCompensator {
             let py = prev_corner.y as i32;
 
             // Skip corners too close to border
-            if px < half_patch as i32 || py < half_patch as i32
+            if px < half_patch as i32
+                || py < half_patch as i32
                 || px >= (prev_frame.width() - half_patch) as i32
-                || py >= (prev_frame.height() - half_patch) as i32 {
+                || py >= (prev_frame.height() - half_patch) as i32
+            {
                 continue;
             }
 
@@ -121,17 +131,17 @@ impl CameraMotionCompensator {
                 let cy = curr_corner.y as i32;
 
                 // Skip corners too close to border
-                if cx < half_patch as i32 || cy < half_patch as i32
+                if cx < half_patch as i32
+                    || cy < half_patch as i32
                     || cx >= (curr_frame.width() - half_patch) as i32
-                    || cy >= (curr_frame.height() - half_patch) as i32 {
+                    || cy >= (curr_frame.height() - half_patch) as i32
+                {
                     continue;
                 }
 
                 // Compute patch distance (SSD)
                 let distance = self.patch_distance(
-                    prev_frame, px as u32, py as u32,
-                    curr_frame, cx as u32, cy as u32,
-                    patch_size,
+                    prev_frame, px as u32, py as u32, curr_frame, cx as u32, cy as u32, patch_size,
                 );
 
                 if distance < best_distance {
@@ -227,9 +237,11 @@ impl CameraMotionCompensator {
         }
 
         if best_inlier_count >= min_inliers {
-            debug!("CMC: RANSAC found {} inliers ({}% of matches)",
-                   best_inlier_count,
-                   (best_inlier_count as f32 / matches.len() as f32 * 100.0) as u32);
+            debug!(
+                "CMC: RANSAC found {} inliers ({}% of matches)",
+                best_inlier_count,
+                (best_inlier_count as f32 / matches.len() as f32 * 100.0) as u32
+            );
             best_transform
         } else {
             None
@@ -277,9 +289,7 @@ impl CameraMotionCompensator {
 
             // Build transformation matrix
             let transform = na::Matrix3::new(
-                params[0], params[1], params[2],
-                params[3], params[4], params[5],
-                0.0, 0.0, 1.0,
+                params[0], params[1], params[2], params[3], params[4], params[5], 0.0, 0.0, 1.0,
             );
 
             Some(transform)
@@ -289,7 +299,11 @@ impl CameraMotionCompensator {
     }
 
     /// Transform a point using affine transformation
-    fn transform_point(&self, transform: &na::Matrix3<f32>, point: &na::Point2<f32>) -> na::Point2<f32> {
+    fn transform_point(
+        &self,
+        transform: &na::Matrix3<f32>,
+        point: &na::Point2<f32>,
+    ) -> na::Point2<f32> {
         let p = na::Vector3::new(point.x, point.y, 1.0);
         let transformed = transform * p;
         na::Point2::new(transformed.x, transformed.y)
@@ -302,9 +316,8 @@ impl CameraMotionCompensator {
 
         let mut gray = GrayImage::new(width, height);
         for (x, y, pixel) in rgb_buf.enumerate_pixels() {
-            let v = (0.299 * pixel[0] as f32
-                + 0.587 * pixel[1] as f32
-                + 0.114 * pixel[2] as f32) as u8;
+            let v =
+                (0.299 * pixel[0] as f32 + 0.587 * pixel[1] as f32 + 0.114 * pixel[2] as f32) as u8;
             gray.put_pixel(x, y, Luma([v]));
         }
         gray

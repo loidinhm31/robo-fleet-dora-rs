@@ -32,7 +32,14 @@ impl KalmanFilter {
             0.0, 1.0, 0.0, 0.0,
         );
 
-        Self { state, covariance, process_noise, measurement_noise, transition, measurement }
+        Self {
+            state,
+            covariance,
+            process_noise,
+            measurement_noise,
+            transition,
+            measurement,
+        }
     }
 
     pub fn predict(&mut self) {
@@ -44,8 +51,8 @@ impl KalmanFilter {
     pub fn update(&mut self, measurement_x: f32, measurement_y: f32) {
         let z = na::Vector2::new(measurement_x, measurement_y);
         let innovation = z - self.measurement * self.state;
-        let innovation_cov =
-            self.measurement * self.covariance * self.measurement.transpose() + self.measurement_noise;
+        let innovation_cov = self.measurement * self.covariance * self.measurement.transpose()
+            + self.measurement_noise;
 
         if let Some(s_inv) = innovation_cov.try_inverse() {
             let kalman_gain = self.covariance * self.measurement.transpose() * s_inv;

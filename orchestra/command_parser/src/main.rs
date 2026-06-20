@@ -8,8 +8,7 @@ use robo_rover_lib::{init_tracing, types::*};
 use std::collections::HashMap;
 
 /// Pattern for matching a specific intent
-#[derive(Debug)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct IntentPattern {
     intent: Intent,
     patterns: Vec<Regex>,
@@ -149,10 +148,7 @@ impl CommandParser {
             ),
             IntentPattern::new(
                 Intent::MoveArmLeft,
-                vec![
-                    r"(?i)(move|swing)\s+(the\s+)?arm\s+left",
-                    r"(?i)arm\s+left",
-                ],
+                vec![r"(?i)(move|swing)\s+(the\s+)?arm\s+left", r"(?i)arm\s+left"],
             ),
             IntentPattern::new(
                 Intent::MoveArmRight,
@@ -178,17 +174,11 @@ impl CommandParser {
             // Vision control - with object names
             IntentPattern::new(
                 Intent::TrackObject,
-                vec![
-                    r"(?i)track\s+(the\s+)?(\w+)",
-                    r"(?i)start\s+tracking",
-                ],
+                vec![r"(?i)track\s+(the\s+)?(\w+)", r"(?i)start\s+tracking"],
             ),
             IntentPattern::new(
                 Intent::FollowObject,
-                vec![
-                    r"(?i)follow\s+(the\s+)?(\w+)",
-                    r"(?i)start\s+following",
-                ],
+                vec![r"(?i)follow\s+(the\s+)?(\w+)", r"(?i)start\s+following"],
             ),
             // Camera control - detailed
             IntentPattern::new(
@@ -245,7 +235,11 @@ impl CommandParser {
         // PHASE 1: Fast keyword matching with Aho-Corasick
         if let Some(mat) = self.keyword_matcher.find(&cleaned_text) {
             let matched_intent = &self.keyword_intents[mat.pattern()];
-            tracing::debug!("Aho-Corasick matched: {:?} (keyword: '{}')", matched_intent, &cleaned_text[mat.start()..mat.end()]);
+            tracing::debug!(
+                "Aho-Corasick matched: {:?} (keyword: '{}')",
+                matched_intent,
+                &cleaned_text[mat.start()..mat.end()]
+            );
 
             let entities = self.extract_entities(&cleaned_text, matched_intent);
             let parsed = ParsedCommand::new(matched_intent.clone(), text.to_string())
@@ -320,7 +314,9 @@ fn preprocess_text(text: &str) -> String {
     cleaned = cleaned.replace("[SILENCE]", "");
 
     // Remove extra punctuation at the end
-    cleaned = cleaned.trim_end_matches(|c: char| c == '.' || c == ',' || c == '!' || c == '?').to_string();
+    cleaned = cleaned
+        .trim_end_matches(|c: char| c == '.' || c == ',' || c == '!' || c == '?')
+        .to_string();
 
     // Collapse multiple spaces
     let re = Regex::new(r"\s+").unwrap();
@@ -373,7 +369,9 @@ static ANGLE_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)(\d+(?:\.\d+)?)\s*(degree|deg|°)").unwrap());
 
 fn extract_angle(text: &str) -> Option<f32> {
-    ANGLE_REGEX.captures(text).and_then(|cap| cap[1].parse::<f32>().ok())
+    ANGLE_REGEX
+        .captures(text)
+        .and_then(|cap| cap[1].parse::<f32>().ok())
 }
 
 fn extract_speed(text: &str) -> Option<f32> {
@@ -392,8 +390,7 @@ fn extract_speed(text: &str) -> Option<f32> {
     } else {
         // Try numeric pattern
         let re = Regex::new(r"(?i)speed\s+(\d+(?:\.\d+)?)").unwrap();
-        re.captures(text)
-            .and_then(|cap| cap[1].parse::<f32>().ok())
+        re.captures(text).and_then(|cap| cap[1].parse::<f32>().ok())
     }
 }
 
@@ -414,16 +411,85 @@ fn extract_duration(text: &str) -> Option<f32> {
 
 static YOLO_CLASSES: Lazy<Vec<&str>> = Lazy::new(|| {
     vec![
-        "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
-        "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat",
-        "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack",
-        "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball",
-        "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket",
-        "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
-        "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair",
-        "couch", "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse",
-        "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink",
-        "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier",
+        "person",
+        "bicycle",
+        "car",
+        "motorcycle",
+        "airplane",
+        "bus",
+        "train",
+        "truck",
+        "boat",
+        "traffic light",
+        "fire hydrant",
+        "stop sign",
+        "parking meter",
+        "bench",
+        "bird",
+        "cat",
+        "dog",
+        "horse",
+        "sheep",
+        "cow",
+        "elephant",
+        "bear",
+        "zebra",
+        "giraffe",
+        "backpack",
+        "umbrella",
+        "handbag",
+        "tie",
+        "suitcase",
+        "frisbee",
+        "skis",
+        "snowboard",
+        "sports ball",
+        "kite",
+        "baseball bat",
+        "baseball glove",
+        "skateboard",
+        "surfboard",
+        "tennis racket",
+        "bottle",
+        "wine glass",
+        "cup",
+        "fork",
+        "knife",
+        "spoon",
+        "bowl",
+        "banana",
+        "apple",
+        "sandwich",
+        "orange",
+        "broccoli",
+        "carrot",
+        "hot dog",
+        "pizza",
+        "donut",
+        "cake",
+        "chair",
+        "couch",
+        "potted plant",
+        "bed",
+        "dining table",
+        "toilet",
+        "tv",
+        "laptop",
+        "mouse",
+        "remote",
+        "keyboard",
+        "cell phone",
+        "microwave",
+        "oven",
+        "toaster",
+        "sink",
+        "refrigerator",
+        "book",
+        "clock",
+        "vase",
+        "scissors",
+        "teddy bear",
+        "hair drier",
         "toothbrush",
     ]
 });
@@ -582,7 +648,10 @@ fn main() -> Result<()> {
                             match serde_json::from_slice(bytes) {
                                 Ok(t) => t,
                                 Err(e) => {
-                                    tracing::error!("Failed to deserialize SpeechTranscription: {}", e);
+                                    tracing::error!(
+                                        "Failed to deserialize SpeechTranscription: {}",
+                                        e
+                                    );
                                     continue;
                                 }
                             }

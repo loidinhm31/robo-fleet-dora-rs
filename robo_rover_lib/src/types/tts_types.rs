@@ -27,9 +27,9 @@ impl Default for TtsPriority {
 /// TTS engine configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TtsConfig {
-    pub rate: f32,          // Speech rate (0.5 to 2.0, default 1.0)
-    pub volume: f32,        // Volume (0.0 to 1.0, default 1.0)
-    pub pitch: f32,         // Pitch (0.5 to 2.0, default 1.0)
+    pub rate: f32,             // Speech rate (0.5 to 2.0, default 1.0)
+    pub volume: f32,           // Volume (0.0 to 1.0, default 1.0)
+    pub pitch: f32,            // Pitch (0.5 to 2.0, default 1.0)
     pub voice: Option<String>, // Voice name (system-dependent)
 }
 

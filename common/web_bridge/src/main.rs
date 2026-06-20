@@ -4,35 +4,38 @@ use dora_node_api::{
     DoraNode, Event,
 };
 use eyre::Result;
-use robo_rover_lib::{
-    ArmCommand, ArmCommandWithMetadata, AudioAction, AudioControl, CameraAction, CameraControl,
-    CommandMetadata, CommandPriority, InputSource, RoverCommand, RoverCommandWithMetadata,
-    capture_age_ms, init_tracing, FrameSequenceTracker, MetricWindow,
+use robo_rover_lib::types::{
+    ActiveRoversStatus, DetectionFrame, FleetSelectCommand, FleetStatus, FleetSubscriptionCommand,
+    SpeechTranscription, SystemMetrics, TrackingCommand, TrackingTelemetry,
 };
-use robo_rover_lib::types::{DetectionFrame, TrackingCommand, TrackingTelemetry, SpeechTranscription, SystemMetrics, FleetStatus, FleetSelectCommand, FleetSubscriptionCommand, ActiveRoversStatus};
+use robo_rover_lib::{
+    capture_age_ms, init_tracing, ArmCommand, ArmCommandWithMetadata, AudioAction, AudioControl,
+    CameraAction, CameraControl, CommandMetadata, CommandPriority, FrameSequenceTracker,
+    InputSource, MetricWindow, RoverCommand, RoverCommandWithMetadata,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid;
 
-use axum::http::{Method, HeaderValue};
+use axum::http::{HeaderValue, Method};
+use axum::{body::Body, middleware, response::Response};
+use log::info;
+use mongodb::Collection;
 use serde_json::Value;
 use socketioxide::{
     extract::{Data, SocketRef, TryData},
     SocketIo,
 };
+use std::env;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
-use axum::{middleware, response::Response, body::Body};
-use std::env;
-use log::info;
-use mongodb::Collection;
 
 mod security;
 use security::{
-    AuthRateLimiter, CommandRateLimiter, IpRateLimiter, SessionRegistry,
-    parse_allowed_origins, log_auth_attempt, log_rate_limit_exceeded, log_validation_error,
-    load_or_generate_jwt_secret, extract_client_ip, warn_http_origins,
+    extract_client_ip, load_or_generate_jwt_secret, log_auth_attempt, log_rate_limit_exceeded,
+    log_validation_error, parse_allowed_origins, warn_http_origins, AuthRateLimiter,
+    CommandRateLimiter, IpRateLimiter, SessionRegistry,
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -47,7 +50,7 @@ pub struct JointPositions {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WebArmCommand {
-    pub command_type: String,  // "joint_position", "cartesian", "home", "stop"
+    pub command_type: String, // "joint_position", "cartesian", "home", "stop"
     pub joint_positions: Option<JointPositions>,
 }
 
@@ -138,12 +141,12 @@ fn touch_activity(clients: &Mutex<Vec<ClientState>>, socket_id: &str) {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WebCameraCommand {
-    pub command: String,  // "start" or "stop"
+    pub command: String, // "start" or "stop"
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WebAudioCommand {
-    pub command: String,  // "start" or "stop"
+    pub command: String, // "start" or "stop"
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -155,9 +158,9 @@ pub struct AuthCredentials {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WebTrackingCommand {
-    pub command_type: String,  // "enable", "disable", "select_target", "clear_target"
-    pub tracking_id: Option<u32>,  // For "select_target"
-    pub detection_index: Option<usize>,  // For "select_target" by index
+    pub command_type: String, // "enable", "disable", "select_target", "clear_target"
+    pub tracking_id: Option<u32>, // For "select_target"
+    pub detection_index: Option<usize>, // For "select_target" by index
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -167,14 +170,14 @@ pub struct WebTtsCommand {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WebAudioStream {
-    pub audio_data: Vec<f32>,  // Float32 audio samples from Web UI microphone
+    pub audio_data: Vec<f32>, // Float32 audio samples from Web UI microphone
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WebFleetSubscriptionCommand {
-    pub action: String,  // "activate", "deactivate", "set_active"
-    pub entity_id: Option<String>,  // For activate/deactivate
-    pub entity_ids: Option<Vec<String>>,  // For set_active
+    pub action: String,                  // "activate", "deactivate", "set_active"
+    pub entity_id: Option<String>,       // For activate/deactivate
+    pub entity_ids: Option<Vec<String>>, // For set_active
 }
 
 #[derive(Clone)]
@@ -202,10 +205,10 @@ struct SharedState {
 impl SharedState {
     fn new() -> Self {
         // Read fleet configuration from environment variables
-        let selected_entity = env::var("SELECTED_ENTITY_ID")
-            .unwrap_or_else(|_| "rover-kiwi".to_string());
-        let fleet_roster_str = env::var("FLEET_ROSTER")
-            .unwrap_or_else(|_| "rover-kiwi".to_string());
+        let selected_entity =
+            env::var("SELECTED_ENTITY_ID").unwrap_or_else(|_| "rover-kiwi".to_string());
+        let fleet_roster_str =
+            env::var("FLEET_ROSTER").unwrap_or_else(|_| "rover-kiwi".to_string());
         let fleet_roster: Vec<String> = fleet_roster_str
             .split(',')
             .map(|s| s.trim().to_string())
@@ -213,8 +216,8 @@ impl SharedState {
             .collect();
 
         // Read active rovers configuration (defaults to selected entity)
-        let active_rovers_str = env::var("ACTIVE_ROVERS")
-            .unwrap_or_else(|_| selected_entity.clone());
+        let active_rovers_str =
+            env::var("ACTIVE_ROVERS").unwrap_or_else(|_| selected_entity.clone());
         let active_rovers: Vec<String> = active_rovers_str
             .split(',')
             .map(|s| s.trim().to_string())
@@ -250,7 +253,6 @@ impl SharedState {
     }
 }
 
-
 fn setup_socketio(
     shared_state: SharedState,
     user_collection: Arc<Collection<security::User>>,
@@ -260,8 +262,13 @@ fn setup_socketio(
 ) -> (SocketIo, socketioxide::layer::SocketIoLayer) {
     let (layer, io) = SocketIo::new_layer();
 
-    tracing::info!("Authentication: MongoDB + bcrypt + JWT (TTL {}s)", session_ttl_secs);
-    tracing::info!("Security features: Rate limiting enabled, Input validation enabled, JWT sessions enabled");
+    tracing::info!(
+        "Authentication: MongoDB + bcrypt + JWT (TTL {}s)",
+        session_ttl_secs
+    );
+    tracing::info!(
+        "Security features: Rate limiting enabled, Input validation enabled, JWT sessions enabled"
+    );
     tracing::info!("Proxy trust: {}", trust_proxy);
 
     // Clone io for use inside the closure
@@ -785,14 +792,14 @@ fn setup_socketio(
     (io, layer)
 }
 
-async fn security_headers(
-    req: axum::http::Request<Body>,
-    next: middleware::Next,
-) -> Response {
+async fn security_headers(req: axum::http::Request<Body>, next: middleware::Next) -> Response {
     let mut response = next.run(req).await;
     let h = response.headers_mut();
     h.insert("x-frame-options", HeaderValue::from_static("DENY"));
-    h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    h.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
     h.insert(
         "strict-transport-security",
         HeaderValue::from_static("max-age=31536000; includeSubDomains"),
@@ -809,16 +816,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Starting Web Bridge...");
 
     // MongoDB startup
-    let mongodb_uri = env::var("MONGODB_URI")
-        .unwrap_or_else(|_| "mongodb://localhost:27017".to_string());
-    let mongodb_database = env::var("MONGODB_DATABASE")
-        .unwrap_or_else(|_| "qm_hub".to_string());
+    let mongodb_uri =
+        env::var("MONGODB_URI").unwrap_or_else(|_| "mongodb://localhost:27017".to_string());
+    let mongodb_database = env::var("MONGODB_DATABASE").unwrap_or_else(|_| "qm_hub".to_string());
 
-    tracing::info!("Connecting to MongoDB at {}, database: {}", mongodb_uri, mongodb_database);
-    let db = security::connect_db(&mongodb_uri, &mongodb_database).await.map_err(|e| {
-        tracing::error!("MongoDB connection failed: {}", e);
-        e
-    })?;
+    tracing::info!(
+        "Connecting to MongoDB at {}, database: {}",
+        mongodb_uri,
+        mongodb_database
+    );
+    let db = security::connect_db(&mongodb_uri, &mongodb_database)
+        .await
+        .map_err(|e| {
+            tracing::error!("MongoDB connection failed: {}", e);
+            e
+        })?;
     let user_collection: Arc<Collection<security::User>> =
         Arc::new(db.collection("roboControlUser"));
 
@@ -826,14 +838,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     security::seed_admin_user(&user_collection).await?;
 
     // Default credential guard
-    let allow_default = env::var("ALLOW_DEFAULT_CREDENTIALS")
-        .unwrap_or_else(|_| "false".to_string())
-        == "true";
+    let allow_default =
+        env::var("ALLOW_DEFAULT_CREDENTIALS").unwrap_or_else(|_| "false".to_string()) == "true";
     if !allow_default {
         if let Ok(Some(admin)) = security::find_user(&user_collection, "admin").await {
             let still_default = tokio::task::spawn_blocking(move || {
                 security::verify_password_blocking("password", &admin.password_hash)
-            }).await.unwrap_or(false);
+            })
+            .await
+            .unwrap_or(false);
 
             if still_default {
                 tracing::error!(
@@ -850,9 +863,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(3600u64);
-    let trust_proxy = env::var("TRUST_PROXY_HEADERS")
-        .unwrap_or_else(|_| "false".to_string())
-        == "true";
+    let trust_proxy =
+        env::var("TRUST_PROXY_HEADERS").unwrap_or_else(|_| "false".to_string()) == "true";
     let idle_timeout_secs = env::var("IDLE_TIMEOUT_SECONDS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
@@ -893,7 +905,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Ok(sid) = socket_id.parse() {
                     if let Some(ns) = sweep_io.of("/") {
                         if let Some(socket) = ns.get_socket(sid) {
-                            socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                            socket
+                                .emit("auth_error", serde_json::json!({"reason": "token_expired"}))
+                                .ok();
                             socket.disconnect().ok();
                         }
                     }
@@ -906,7 +920,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let idle_clients = shared_state.video_clients.clone();
     let idle_io = io.clone();
     tokio::spawn(async move {
-        tracing::info!("Idle sweep task started (timeout: {}s, interval: 60s)", idle_timeout_secs);
+        tracing::info!(
+            "Idle sweep task started (timeout: {}s, interval: 60s)",
+            idle_timeout_secs
+        );
         let timeout = Duration::from_secs(idle_timeout_secs);
         loop {
             tokio::time::sleep(Duration::from_secs(60)).await;
@@ -919,7 +936,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .iter()
                     .filter_map(|c| {
                         let elapsed = c.last_activity.lock().unwrap().elapsed();
-                        if elapsed >= timeout { Some(c.socket_id.clone()) } else { None }
+                        if elapsed >= timeout {
+                            Some(c.socket_id.clone())
+                        } else {
+                            None
+                        }
                     })
                     .collect()
             };
@@ -928,7 +949,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Ok(sid) = socket_id.parse() {
                     if let Some(ns) = idle_io.of("/") {
                         if let Some(socket) = ns.get_socket(sid) {
-                            socket.emit("auth_error", serde_json::json!({"reason": "idle_timeout"})).ok();
+                            socket
+                                .emit("auth_error", serde_json::json!({"reason": "idle_timeout"}))
+                                .ok();
                             socket.disconnect().ok();
                         }
                     }
@@ -982,15 +1005,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let app = axum::Router::new()
-            .route("/health", axum::routing::get(|| async {
-                axum::Json(serde_json::json!({"status": "ok"}))
-            }))
+            .route(
+                "/health",
+                axum::routing::get(|| async { axum::Json(serde_json::json!({"status": "ok"})) }),
+            )
             .layer(middleware::from_fn(security_headers))
-            .layer(
-                ServiceBuilder::new()
-                    .layer(cors_layer)
-                    .layer(layer),
-            );
+            .layer(ServiceBuilder::new().layer(cors_layer).layer(layer));
 
         let bind_address = env::var("BIND_ADDRESS").unwrap_or_else(|_| "127.0.0.1".to_string());
         let port = env::var("SOCKET_IO_PORT").unwrap_or_else(|_| "3030".to_string());
@@ -998,9 +1018,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         tracing::info!("Binding Socket.IO server to: {}", addr);
 
-        let listener = tokio::net::TcpListener::bind(&addr)
-            .await
-            .unwrap();
+        let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
 
         info!("Socket.IO server listening on http://{}", addr);
         axum::serve(listener, app).await.unwrap();
@@ -1204,7 +1222,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Ok(mut queue) = state_clone_audio_stream.audio_stream_queue.lock() {
                 if !queue.is_empty() {
                     let web_audio = queue.remove(0);
-                    tracing::debug!("Processing audio stream: {} samples", web_audio.audio_data.len());
+                    tracing::debug!(
+                        "Processing audio stream: {} samples",
+                        web_audio.audio_data.len()
+                    );
 
                     // Send audio data directly as Float32Array to audio_playback node
                     let arrow_data = Float32Array::from(web_audio.audio_data);
@@ -1228,7 +1249,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Ok(mut queue) = state_clone_voice_command.voice_command_audio_queue.lock() {
                 if !queue.is_empty() {
                     let web_audio = queue.remove(0);
-                    tracing::debug!("Processing voice command audio: {} samples", web_audio.audio_data.len());
+                    tracing::debug!(
+                        "Processing voice command audio: {} samples",
+                        web_audio.audio_data.len()
+                    );
 
                     // Send audio data as Float32Array to speech_recognizer node
                     let arrow_data = Float32Array::from(web_audio.audio_data);
@@ -1250,10 +1274,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node_for_fleet_sub = node_clone_fleet_sub.clone();
     let _fleet_subscription_processor = tokio::spawn(async move {
         loop {
-            if let Ok(mut queue) = state_clone_fleet_sub.fleet_subscription_command_queue.lock() {
+            if let Ok(mut queue) = state_clone_fleet_sub
+                .fleet_subscription_command_queue
+                .lock()
+            {
                 if !queue.is_empty() {
                     let web_cmd = queue.remove(0);
-                    tracing::debug!("Processing fleet subscription command: action={}", web_cmd.action);
+                    tracing::debug!(
+                        "Processing fleet subscription command: action={}",
+                        web_cmd.action
+                    );
 
                     // Convert Web command to FleetSubscriptionCommand
                     let fleet_cmd = match web_cmd.action.as_str() {
@@ -1309,7 +1339,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Ok(mut queue) = state_clone_fleet_select.fleet_select_command_queue.lock() {
                 if !queue.is_empty() {
                     let cmd = queue.remove(0);
-                    tracing::debug!("Processing fleet select command: entity_id={}", cmd.entity_id);
+                    tracing::debug!(
+                        "Processing fleet select command: entity_id={}",
+                        cmd.entity_id
+                    );
 
                     if let Ok(serialized) = serde_json::to_vec(&cmd) {
                         let arrow_data = BinaryArray::from_vec(vec![serialized.as_slice()]);
@@ -1319,7 +1352,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 Default::default(),
                                 arrow_data,
                             );
-                            tracing::info!("Sent fleet select command to orchestra-bridge: {}", cmd.entity_id);
+                            tracing::info!(
+                                "Sent fleet select command to orchestra-bridge: {}",
+                                cmd.entity_id
+                            );
                         }
                     }
                 }
@@ -1341,7 +1377,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         if let Some(event) = events.recv() {
             match event {
-                Event::Input { id, data, metadata, .. } => match id.as_str() {
+                Event::Input {
+                    id, data, metadata, ..
+                } => match id.as_str() {
                     "audio_frame" => {
                         // Now receives pre-converted Int16LE PCM from audio-converter
                         if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
@@ -1349,21 +1387,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let audio_bytes = binary_array.value(0).to_vec();
 
                                 // Extract metadata
-                                let format = metadata.parameters.get("format")
+                                let format = metadata
+                                    .parameters
+                                    .get("format")
                                     .and_then(|v| match v {
                                         dora_node_api::Parameter::String(s) => Some(s.clone()),
                                         _ => None,
                                     })
                                     .unwrap_or_else(|| "s16le".to_string());
 
-                                let sample_rate = metadata.parameters.get("sample_rate")
+                                let sample_rate = metadata
+                                    .parameters
+                                    .get("sample_rate")
                                     .and_then(|v| match v {
                                         dora_node_api::Parameter::Integer(i) => Some(*i as u32),
                                         _ => None,
                                     })
                                     .unwrap_or(16000);
 
-                                let channels = metadata.parameters.get("channels")
+                                let channels = metadata
+                                    .parameters
+                                    .get("channels")
                                     .and_then(|v| match v {
                                         dora_node_api::Parameter::Integer(i) => Some(*i as u16),
                                         _ => None,
@@ -1374,18 +1418,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 frame_counter += 1;
 
                                 if frame_counter <= 3 || frame_counter % 200 == 0 {
-                                    let client_count = state_for_video.video_clients.lock()
-                                        .map(|c| c.len()).unwrap_or(0);
+                                    let client_count = state_for_video
+                                        .video_clients
+                                        .lock()
+                                        .map(|c| c.len())
+                                        .unwrap_or(0);
                                     tracing::info!(
                                         "audio_frame #{}: {} bytes, {} Hz, {} clients",
-                                        frame_counter, audio_bytes.len(), sample_rate, client_count
+                                        frame_counter,
+                                        audio_bytes.len(),
+                                        sample_rate,
+                                        client_count
                                     );
                                 }
 
                                 let timestamp = SystemTime::now()
                                     .duration_since(UNIX_EPOCH)
                                     .unwrap()
-                                    .as_millis() as u64;
+                                    .as_millis()
+                                    as u64;
 
                                 let audio_frame_data = serde_json::json!({
                                     "timestamp": timestamp,
@@ -1400,12 +1451,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     for client in clients.iter() {
                                         if client.should_send_audio() {
                                             if let Some(ref io) = *io_for_video.lock().unwrap() {
-                                                if let Some(socket) = io
-                                                    .of("/")
-                                                    .unwrap()
-                                                    .get_socket((&client.socket_id).parse().unwrap())
+                                                if let Some(socket) =
+                                                    io.of("/").unwrap().get_socket(
+                                                        (&client.socket_id).parse().unwrap(),
+                                                    )
                                                 {
-                                                    let _ = socket.emit("audio_frame", audio_frame_data.clone());
+                                                    let _ = socket.emit(
+                                                        "audio_frame",
+                                                        audio_frame_data.clone(),
+                                                    );
                                                     client.mark_audio_sent();
                                                 }
                                             }
@@ -1419,35 +1473,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     "video_frame" => {
                         // Extract metadata (added by video-encoder)
-                        let width = metadata.parameters.get("width")
+                        let width = metadata
+                            .parameters
+                            .get("width")
                             .and_then(|v| match v {
                                 dora_node_api::Parameter::Integer(i) => Some(*i as u32),
                                 _ => None,
                             })
                             .unwrap_or(640);
 
-                        let height = metadata.parameters.get("height")
+                        let height = metadata
+                            .parameters
+                            .get("height")
                             .and_then(|v| match v {
                                 dora_node_api::Parameter::Integer(i) => Some(*i as u32),
                                 _ => None,
                             })
                             .unwrap_or(480);
 
-                        let codec = metadata.parameters.get("codec")
+                        let codec = metadata
+                            .parameters
+                            .get("codec")
                             .and_then(|v| match v {
                                 dora_node_api::Parameter::String(s) => Some(s.clone()),
                                 _ => None,
                             })
                             .unwrap_or_else(|| "jpeg".to_string());
 
-                        let capture_frame_id = metadata.parameters.get("frame_id")
+                        let capture_frame_id =
+                            metadata
+                                .parameters
+                                .get("frame_id")
+                                .and_then(|value| match value {
+                                    dora_node_api::Parameter::Integer(value) => {
+                                        u64::try_from(*value).ok()
+                                    }
+                                    _ => None,
+                                });
+                        let capture_timestamp_ms = metadata
+                            .parameters
+                            .get("capture_timestamp_ms")
                             .and_then(|value| match value {
-                                dora_node_api::Parameter::Integer(value) => u64::try_from(*value).ok(),
-                                _ => None,
-                            });
-                        let capture_timestamp_ms = metadata.parameters.get("capture_timestamp_ms")
-                            .and_then(|value| match value {
-                                dora_node_api::Parameter::Integer(value) => u64::try_from(*value).ok(),
+                                dora_node_api::Parameter::Integer(value) => {
+                                    u64::try_from(*value).ok()
+                                }
                                 _ => None,
                             });
 
@@ -1458,7 +1527,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let jpeg_data = binary_array.value(0).to_vec();
 
                                 let (Some(capture_frame_id), Some(capture_timestamp_ms)) =
-                                    (capture_frame_id, capture_timestamp_ms) else {
+                                    (capture_frame_id, capture_timestamp_ms)
+                                else {
                                     video_emit_metrics.record_error();
                                     tracing::error!("video frame missing capture identity");
                                     continue;
@@ -1476,7 +1546,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                 tracing::debug!(
                                     "Received pre-encoded frame {}: {}x{} {} ({} bytes)",
-                                    capture_frame_id, width, height, codec, jpeg_data.len()
+                                    capture_frame_id,
+                                    width,
+                                    height,
+                                    codec,
+                                    jpeg_data.len()
                                 );
 
                                 // Send pre-encoded JPEG to all connected clients
@@ -1494,16 +1568,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     "data": jpeg_data,  // Pre-encoded JPEG
                                                 });
 
-                                                if let Some(socket) = io
-                                                    .of("/")
-                                                    .unwrap()
-                                                    .get_socket((&client.socket_id).parse().unwrap())
+                                                if let Some(socket) =
+                                                    io.of("/").unwrap().get_socket(
+                                                        (&client.socket_id).parse().unwrap(),
+                                                    )
                                                 {
                                                     match socket.emit("video_frame", frame_data) {
                                                         Ok(_) => {
                                                             client.mark_video_sent();
                                                             video_emit_metrics.record(
-                                                                emit_started.elapsed(), jpeg_data.len(),
+                                                                emit_started.elapsed(),
+                                                                jpeg_data.len(),
                                                             );
                                                         }
                                                         Err(error) => {
@@ -1525,18 +1600,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             video_emit_metrics.record_error();
                                             0
                                         });
-                                    tracing::info!(metric="video_pipeline", stage="web_emit",
-                                        frame_id=capture_frame_id, frame_age_ms,
-                                        count=snapshot.count, bytes=snapshot.bytes,
-                                        drops=snapshot.drops, errors=snapshot.errors,
-                                        p50_us=snapshot.p50_us, p95_us=snapshot.p95_us,
-                                        p99_us=snapshot.p99_us, max_us=snapshot.max_us);
+                                    tracing::info!(
+                                        metric = "video_pipeline",
+                                        stage = "web_emit",
+                                        frame_id = capture_frame_id,
+                                        frame_age_ms,
+                                        count = snapshot.count,
+                                        bytes = snapshot.bytes,
+                                        drops = snapshot.drops,
+                                        errors = snapshot.errors,
+                                        p50_us = snapshot.p50_us,
+                                        p95_us = snapshot.p95_us,
+                                        p99_us = snapshot.p99_us,
+                                        max_us = snapshot.max_us
+                                    );
                                 }
                                 if let Some(snapshot) = video_age_metrics.snapshot_if_due() {
-                                    tracing::info!(metric="video_pipeline", stage="web_receive_age",
-                                        count=snapshot.count, p50_us=snapshot.p50_us,
-                                        p95_us=snapshot.p95_us, p99_us=snapshot.p99_us,
-                                        max_us=snapshot.max_us);
+                                    tracing::info!(
+                                        metric = "video_pipeline",
+                                        stage = "web_receive_age",
+                                        count = snapshot.count,
+                                        p50_us = snapshot.p50_us,
+                                        p95_us = snapshot.p95_us,
+                                        p99_us = snapshot.p99_us,
+                                        max_us = snapshot.max_us
+                                    );
                                 }
                             }
                         } else {
@@ -1556,7 +1644,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         if let Ok(clients) = state_for_video.video_clients.lock() {
                                             if let Some(ref io) = *io_for_video.lock().unwrap() {
                                                 // Emit to all clients via Socket.IO
-                                                let _ = io.of("/").unwrap().emit("detections", serde_json::to_value(&detection_frame).unwrap());
+                                                let _ = io.of("/").unwrap().emit(
+                                                    "detections",
+                                                    serde_json::to_value(&detection_frame).unwrap(),
+                                                );
                                             }
                                         }
                                     }
@@ -1578,11 +1669,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     Ok(detection_frame) => {
                                         // Forward tracked detections to all connected clients
                                         if let Some(ref io) = *io_for_video.lock().unwrap() {
-                                            let _ = io.of("/").unwrap().emit("tracked_detections", serde_json::to_value(&detection_frame).unwrap());
+                                            let _ = io.of("/").unwrap().emit(
+                                                "tracked_detections",
+                                                serde_json::to_value(&detection_frame).unwrap(),
+                                            );
                                         }
                                     }
                                     Err(e) => {
-                                        tracing::error!("Failed to deserialize tracked detections: {}", e);
+                                        tracing::error!(
+                                            "Failed to deserialize tracked detections: {}",
+                                            e
+                                        );
                                     }
                                 }
                             }
@@ -1599,11 +1696,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     Ok(telemetry) => {
                                         // Forward telemetry to all connected clients
                                         if let Some(ref io) = *io_for_video.lock().unwrap() {
-                                            let _ = io.of("/").unwrap().emit("tracking_telemetry", serde_json::to_value(&telemetry).unwrap());
+                                            let _ = io.of("/").unwrap().emit(
+                                                "tracking_telemetry",
+                                                serde_json::to_value(&telemetry).unwrap(),
+                                            );
                                         }
                                     }
                                     Err(e) => {
-                                        tracing::error!("Failed to deserialize tracking telemetry: {}", e);
+                                        tracing::error!(
+                                            "Failed to deserialize tracking telemetry: {}",
+                                            e
+                                        );
                                     }
                                 }
                             }
@@ -1621,11 +1724,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     Ok(telemetry) => {
                                         // Forward enhanced telemetry to all connected clients
                                         if let Some(ref io) = *io_for_video.lock().unwrap() {
-                                            let _ = io.of("/").unwrap().emit("servo_telemetry", serde_json::to_value(&telemetry).unwrap());
+                                            let _ = io.of("/").unwrap().emit(
+                                                "servo_telemetry",
+                                                serde_json::to_value(&telemetry).unwrap(),
+                                            );
                                         }
                                     }
                                     Err(e) => {
-                                        tracing::error!("Failed to deserialize servo telemetry: {}", e);
+                                        tracing::error!(
+                                            "Failed to deserialize servo telemetry: {}",
+                                            e
+                                        );
                                     }
                                 }
                             }
@@ -1638,18 +1747,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let transcription_data = binary_array.value(0);
 
                                 // Deserialize SpeechTranscription
-                                match serde_json::from_slice::<SpeechTranscription>(transcription_data) {
+                                match serde_json::from_slice::<SpeechTranscription>(
+                                    transcription_data,
+                                ) {
                                     Ok(transcription) => {
-                                        tracing::info!("Transcription received: \"{}\" (confidence: {:.2})",
-                                            transcription.text, transcription.confidence);
+                                        tracing::info!(
+                                            "Transcription received: \"{}\" (confidence: {:.2})",
+                                            transcription.text,
+                                            transcription.confidence
+                                        );
 
                                         // Forward transcription to all connected clients
                                         if let Some(ref io) = *io_for_video.lock().unwrap() {
-                                            let _ = io.of("/").unwrap().emit("transcription", serde_json::to_value(&transcription).unwrap());
+                                            let _ = io.of("/").unwrap().emit(
+                                                "transcription",
+                                                serde_json::to_value(&transcription).unwrap(),
+                                            );
                                         }
                                     }
                                     Err(e) => {
-                                        tracing::error!("Failed to deserialize transcription: {}", e);
+                                        tracing::error!(
+                                            "Failed to deserialize transcription: {}",
+                                            e
+                                        );
                                     }
                                 }
                             }
@@ -1658,10 +1778,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "performance_metrics" => {
                         // Handle performance metrics from performance_monitor
                         // Only forward if monitoring is enabled
-                        let monitoring_enabled = *state_for_video.performance_monitoring_enabled.lock().unwrap();
+                        let monitoring_enabled = *state_for_video
+                            .performance_monitoring_enabled
+                            .lock()
+                            .unwrap();
 
                         if monitoring_enabled {
-                            if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>()
+                            {
                                 if binary_array.len() > 0 {
                                     let metrics_data = binary_array.value(0);
 
@@ -1678,11 +1802,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                             // Forward metrics to all connected clients
                                             if let Some(ref io) = *io_for_video.lock().unwrap() {
-                                                let _ = io.of("/").unwrap().emit("performance_metrics", serde_json::to_value(&metrics).unwrap());
+                                                let _ = io.of("/").unwrap().emit(
+                                                    "performance_metrics",
+                                                    serde_json::to_value(&metrics).unwrap(),
+                                                );
                                             }
                                         }
                                         Err(e) => {
-                                            tracing::error!("Failed to deserialize performance metrics: {}", e);
+                                            tracing::error!(
+                                                "Failed to deserialize performance metrics: {}",
+                                                e
+                                            );
                                         }
                                     }
                                 }
@@ -1790,7 +1920,9 @@ fn convert_web_command_to_audio_command(web_cmd: &WebAudioCommand) -> Option<Aud
     }
 }
 
-fn convert_web_command_to_tracking_command(web_cmd: &WebTrackingCommand) -> Option<TrackingCommand> {
+fn convert_web_command_to_tracking_command(
+    web_cmd: &WebTrackingCommand,
+) -> Option<TrackingCommand> {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -1803,9 +1935,15 @@ fn convert_web_command_to_tracking_command(web_cmd: &WebTrackingCommand) -> Opti
         "disable" => Some(TrackingCommand::Disable { timestamp }),
         "select_target" => {
             if let Some(tracking_id) = web_cmd.tracking_id {
-                Some(TrackingCommand::SelectTargetById { tracking_id, timestamp })
+                Some(TrackingCommand::SelectTargetById {
+                    tracking_id,
+                    timestamp,
+                })
             } else if let Some(detection_index) = web_cmd.detection_index {
-                Some(TrackingCommand::SelectTarget { detection_index, timestamp })
+                Some(TrackingCommand::SelectTarget {
+                    detection_index,
+                    timestamp,
+                })
             } else {
                 None
             }

@@ -88,20 +88,21 @@ fn main() -> Result<()> {
     let audio_buffer = Arc::new(Mutex::new(AudioBuffer::new(buffer_capacity)));
 
     // Try to initialize audio output device — degrade gracefully if unavailable
-    let _stream: Option<Stream> = match init_audio_stream(sample_rate, channels, audio_buffer.clone()) {
-        Ok(stream) => {
-            tracing::info!("Audio playback stream started");
-            Some(stream)
-        }
-        Err(e) => {
-            tracing::warn!(
-                "Audio output unavailable ({}), running in silent mode. \
+    let _stream: Option<Stream> =
+        match init_audio_stream(sample_rate, channels, audio_buffer.clone()) {
+            Ok(stream) => {
+                tracing::info!("Audio playback stream started");
+                Some(stream)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Audio output unavailable ({}), running in silent mode. \
                  Audio data will be received but not played back.",
-                e
-            );
-            None
-        }
-    };
+                    e
+                );
+                None
+            }
+        };
 
     // Initialize Dora node (must happen even in silent mode to avoid cascade crash)
     let (_node, mut events) = DoraNode::init_from_env()?;
@@ -238,9 +239,7 @@ fn parse_audio_data(data: &dyn Array) -> Result<Vec<f32>> {
             if bytes.len() % 4 == 0 {
                 let samples: Vec<f32> = bytes
                     .chunks_exact(4)
-                    .map(|chunk| {
-                        f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
-                    })
+                    .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                     .collect();
                 return Ok(samples);
             }

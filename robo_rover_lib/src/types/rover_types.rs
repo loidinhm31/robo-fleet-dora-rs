@@ -19,9 +19,9 @@ pub enum RoverCommand {
     /// Modern velocity command for omnidirectional Mecanum wheel control
     /// Based on Modern Robotics body twist: (ω_z, v_x, v_y)
     Velocity {
-        omega_z: f64,  // Angular velocity about z-axis (rad/s)
-        v_x: f64,      // Linear velocity in x direction (m/s)
-        v_y: f64,      // Linear velocity in y direction (m/s)
+        omega_z: f64, // Angular velocity about z-axis (rad/s)
+        v_x: f64,     // Linear velocity in x direction (m/s)
+        v_y: f64,     // Linear velocity in y direction (m/s)
         timestamp: u64,
         command_id: String,
     },
@@ -29,18 +29,15 @@ pub enum RoverCommand {
     /// Direct joint position command for 3 mecanum wheels
     /// Positions are in radians
     JointPositions {
-        wheel1: f64,  // ST3215_Servo_Motor-v1-2_Revolute-60
-        wheel2: f64,  // ST3215_Servo_Motor-v1-1_Revolute-62
-        wheel3: f64,  // ST3215_Servo_Motor-v1_Revolute-64
+        wheel1: f64, // ST3215_Servo_Motor-v1-2_Revolute-60
+        wheel2: f64, // ST3215_Servo_Motor-v1-1_Revolute-62
+        wheel3: f64, // ST3215_Servo_Motor-v1_Revolute-64
         timestamp: u64,
         command_id: String,
     },
 
     /// Stop command
-    Stop {
-        timestamp: u64,
-        command_id: String,
-    },
+    Stop { timestamp: u64, command_id: String },
 }
 
 impl RoverCommand {
@@ -105,19 +102,19 @@ pub struct RoverTelemetry {
     pub entity_id: Option<String>,
 
     // Position and orientation
-    pub position: (f64, f64),  // (x, y) in meters
-    pub yaw: f64,              // Rotation about z-axis (rad)
-    pub pitch: f64,            // Rotation about y-axis (rad)
-    pub roll: f64,             // Rotation about x-axis (rad)
+    pub position: (f64, f64), // (x, y) in meters
+    pub yaw: f64,             // Rotation about z-axis (rad)
+    pub pitch: f64,           // Rotation about y-axis (rad)
+    pub roll: f64,            // Rotation about x-axis (rad)
 
     // Velocity
-    pub velocity: f64,         // Linear velocity magnitude (m/s)
-    pub velocity_x: Option<f64>,   // X-component of velocity
-    pub velocity_y: Option<f64>,   // Y-component of velocity
-    pub angular_velocity: Option<f64>,  // Angular velocity about z
+    pub velocity: f64,                 // Linear velocity magnitude (m/s)
+    pub velocity_x: Option<f64>,       // X-component of velocity
+    pub velocity_y: Option<f64>,       // Y-component of velocity
+    pub angular_velocity: Option<f64>, // Angular velocity about z
 
     // Wheel states (for 3 mecanum wheels)
-    pub wheel_positions: Option<[f64; 3]>,  // Current wheel angles (rad)
+    pub wheel_positions: Option<[f64; 3]>, // Current wheel angles (rad)
     pub wheel_velocities: Option<[f64; 3]>, // Current wheel speeds (rad/s)
 
     // Navigation sensors (if available)
@@ -152,6 +149,6 @@ impl RoverTelemetry {
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct RoverCommandWithMetadata {
-   pub command: RoverCommand,
-   pub metadata: CommandMetadata,
+    pub command: RoverCommand,
+    pub metadata: CommandMetadata,
 }

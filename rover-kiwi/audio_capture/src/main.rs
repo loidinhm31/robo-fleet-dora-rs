@@ -32,13 +32,14 @@ fn main() -> Result<()> {
 
     tracing::info!(
         "Audio configuration: {}Hz, {} channels, {} samples per chunk",
-        sample_rate, channels, chunk_size
+        sample_rate,
+        channels,
+        chunk_size
     );
 
     // Initialize Dora node first — so a failed audio init never cascades to other nodes
     let (mut node, mut events) = DoraNode::init_from_env()?;
     let output_id = DataId::from("audio".to_owned());
-
 
     // Create ring buffer for audio samples (larger buffer to prevent underruns)
     let ring = HeapRb::<f32>::new(chunk_size * 10);
@@ -92,9 +93,18 @@ fn main() -> Result<()> {
 
                             // Create metadata
                             let mut metadata = MetadataParameters::default();
-                            metadata.insert("sample_rate".to_string(), Parameter::Integer(sample_rate as i64));
-                            metadata.insert("channels".to_string(), Parameter::Integer(channels as i64));
-                            metadata.insert("format".to_string(), Parameter::String("f32le".to_string()));
+                            metadata.insert(
+                                "sample_rate".to_string(),
+                                Parameter::Integer(sample_rate as i64),
+                            );
+                            metadata.insert(
+                                "channels".to_string(),
+                                Parameter::Integer(channels as i64),
+                            );
+                            metadata.insert(
+                                "format".to_string(),
+                                Parameter::String("f32le".to_string()),
+                            );
 
                             // Send to Dora
                             node.send_output(output_id.clone(), metadata, audio_array)?;
@@ -121,7 +131,10 @@ fn main() -> Result<()> {
                             if let Ok(audio_control) =
                                 serde_json::from_slice::<AudioControl>(control_bytes)
                             {
-                                tracing::info!("Audio control received: {:?}", audio_control.command);
+                                tracing::info!(
+                                    "Audio control received: {:?}",
+                                    audio_control.command
+                                );
                                 match audio_control.command {
                                     AudioAction::Start => {
                                         if stream_opt.is_none() {

@@ -30,8 +30,7 @@ use tracing_subscriber::EnvFilter;
 pub fn init_tracing() -> DefaultGuard {
     use tracing_subscriber::layer::SubscriberExt;
 
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_target(false)

@@ -1,9 +1,9 @@
-use dora_node_api::{self, arrow::array::BinaryArray, dora_core::config::DataId, DoraNode, Event};
 use dora_node_api::arrow::array::Array;
+use dora_node_api::{self, arrow::array::BinaryArray, dora_core::config::DataId, DoraNode, Event};
 use eyre::Result;
 use robo_rover_lib::{
-    init_tracing, BoundingBox, ControlMode, ControlOutput, RoverCommand, RoverCommandWithMetadata,
-    TrackingTelemetry, TrackingState, CommandMetadata, InputSource, CommandPriority,
+    init_tracing, BoundingBox, CommandMetadata, CommandPriority, ControlMode, ControlOutput,
+    InputSource, RoverCommand, RoverCommandWithMetadata, TrackingState, TrackingTelemetry,
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
@@ -13,19 +13,19 @@ use pid::PIDController;
 
 /// Camera and mounting configuration
 struct CameraConfig {
-    focal_length_pixels: f32,  // Focal length in pixels (calibrated)
+    focal_length_pixels: f32, // Focal length in pixels (calibrated)
     image_width: u32,
     image_height: u32,
-    camera_height: f32,  // Camera mounting height above ground (meters)
+    camera_height: f32, // Camera mounting height above ground (meters)
 }
 
 impl Default for CameraConfig {
     fn default() -> Self {
         Self {
-            focal_length_pixels: 500.0,  // Typical for 640x480 webcam (needs calibration)
+            focal_length_pixels: 500.0, // Typical for 640x480 webcam (needs calibration)
             image_width: 640,
             image_height: 480,
-            camera_height: 0.5,  // 50cm above ground
+            camera_height: 0.5, // 50cm above ground
         }
     }
 }
@@ -43,13 +43,13 @@ struct ServoConfig {
     longitudinal_kd: f64,
 
     // Safety and physical constraints
-    min_distance: f32,  // Minimum safe distance (meters)
-    max_velocity: f64,  // Maximum linear velocity (m/s)
-    max_angular_velocity: f64,  // Maximum angular velocity (rad/s)
+    min_distance: f32,         // Minimum safe distance (meters)
+    max_velocity: f64,         // Maximum linear velocity (m/s)
+    max_angular_velocity: f64, // Maximum angular velocity (rad/s)
 
     // Control parameters
-    target_bbox_height: f32,  // Target size for distance control (normalized)
-    dead_zone: f32,  // Dead zone for centering (normalized coordinates)
+    target_bbox_height: f32, // Target size for distance control (normalized)
+    dead_zone: f32,          // Dead zone for centering (normalized coordinates)
 
     // Typical object heights for distance estimation (meters)
     person_height: f32,
@@ -77,8 +77,8 @@ impl Default for ServoConfig {
             max_angular_velocity: 1.0,
 
             // Control parameters
-            target_bbox_height: 0.3,  // Target 30% of frame height
-            dead_zone: 0.05,  // 5% dead zone
+            target_bbox_height: 0.3, // Target 30% of frame height
+            dead_zone: 0.05,         // 5% dead zone
 
             // Object heights for distance estimation
             person_height: 1.7,
@@ -153,8 +153,14 @@ impl ServoController {
         let config = ServoConfig::from_env();
 
         info!("Visual Servo Controller Configuration:");
-        info!("  Lateral PID: Kp={}, Ki={}, Kd={}", config.lateral_kp, config.lateral_ki, config.lateral_kd);
-        info!("  Longitudinal PID: Kp={}, Ki={}, Kd={}", config.longitudinal_kp, config.longitudinal_ki, config.longitudinal_kd);
+        info!(
+            "  Lateral PID: Kp={}, Ki={}, Kd={}",
+            config.lateral_kp, config.lateral_ki, config.lateral_kd
+        );
+        info!(
+            "  Longitudinal PID: Kp={}, Ki={}, Kd={}",
+            config.longitudinal_kp, config.longitudinal_ki, config.longitudinal_kd
+        );
         info!("  Min Distance: {}m", config.min_distance);
         info!("  Max Velocity: {}m/s", config.max_velocity);
         info!("  Target BBox Height: {}", config.target_bbox_height);
@@ -196,7 +202,7 @@ impl ServoController {
 
         // Avoid division by zero
         if bbox_height_pixels < 1.0 {
-            return 10.0;  // Return large distance if bbox too small
+            return 10.0; // Return large distance if bbox too small
         }
 
         // Distance = (real_height * focal_length) / image_height
@@ -207,7 +213,11 @@ impl ServoController {
     }
 
     /// Process tracking telemetry and generate servo command + enhanced telemetry
-    fn process_tracking(&mut self, telemetry: TrackingTelemetry, dt: f64) -> (Option<RoverCommandWithMetadata>, TrackingTelemetry) {
+    fn process_tracking(
+        &mut self,
+        telemetry: TrackingTelemetry,
+        dt: f64,
+    ) -> (Option<RoverCommandWithMetadata>, TrackingTelemetry) {
         // Only generate commands when actively tracking a target
         if telemetry.state != TrackingState::Tracking {
             // Reset PIDs when not tracking
@@ -257,21 +267,29 @@ impl ServoController {
         let error_size = self.config.target_bbox_height - current_bbox_height;
 
         // Compute PID outputs
-        let omega_z = -self.lateral_pid.update(error_x as f64, dt);  // Negative for correct rotation direction
+        let omega_z = -self.lateral_pid.update(error_x as f64, dt); // Negative for correct rotation direction
         let mut v_x = self.longitudinal_pid.update(error_size as f64, dt);
 
         // Safety: Don't move forward if too close
         if estimated_distance < self.config.min_distance {
-            v_x = v_x.min(0.0);  // Only allow backward motion
-            warn!("Target too close ({}m < {}m), limiting forward motion", estimated_distance, self.config.min_distance);
+            v_x = v_x.min(0.0); // Only allow backward motion
+            warn!(
+                "Target too close ({}m < {}m), limiting forward motion",
+                estimated_distance, self.config.min_distance
+            );
         }
 
         // Apply velocity limits
         let v_x = v_x.clamp(-self.config.max_velocity, self.config.max_velocity);
-        let omega_z = omega_z.clamp(-self.config.max_angular_velocity, self.config.max_angular_velocity);
+        let omega_z = omega_z.clamp(
+            -self.config.max_angular_velocity,
+            self.config.max_angular_velocity,
+        );
 
-        debug!("Servo: error_x={:.3}, error_size={:.3}, distance={:.2}m, omega_z={:.3}, v_x={:.3}",
-              error_x, error_size, estimated_distance, omega_z, v_x);
+        debug!(
+            "Servo: error_x={:.3}, error_size={:.3}, distance={:.2}m, omega_z={:.3}, v_x={:.3}",
+            error_x, error_size, estimated_distance, omega_z, v_x
+        );
 
         // Create enhanced telemetry with distance and mode
         let control_output = ControlOutput::new(omega_z, v_x, error_x, error_size);
@@ -297,7 +315,10 @@ impl ServoController {
 
         self.last_command_time = Some(SystemTime::now());
 
-        (Some(RoverCommandWithMetadata { command, metadata }), enhanced_telemetry)
+        (
+            Some(RoverCommandWithMetadata { command, metadata }),
+            enhanced_telemetry,
+        )
     }
 }
 
@@ -313,7 +334,11 @@ fn main() -> Result<()> {
 
     while let Some(event) = events.recv() {
         match event {
-            Event::Input { id, data, metadata: _ } => {
+            Event::Input {
+                id,
+                data,
+                metadata: _,
+            } => {
                 match id.as_str() {
                     "tracking_telemetry" => {
                         // Parse tracking telemetry
@@ -333,29 +358,36 @@ fn main() -> Result<()> {
 
                             // Calculate time delta
                             let dt = match controller.last_command_time {
-                                Some(last_time) => {
-                                    SystemTime::now()
-                                        .duration_since(last_time)
-                                        .unwrap_or(Duration::from_millis(100))
-                                        .as_secs_f64()
-                                }
-                                None => 0.1,  // Default 100ms
+                                Some(last_time) => SystemTime::now()
+                                    .duration_since(last_time)
+                                    .unwrap_or(Duration::from_millis(100))
+                                    .as_secs_f64(),
+                                None => 0.1, // Default 100ms
                             };
 
                             // Process tracking and generate servo command + enhanced telemetry
-                            let (command_opt, enhanced_telemetry) = controller.process_tracking(telemetry, dt);
+                            let (command_opt, enhanced_telemetry) =
+                                controller.process_tracking(telemetry, dt);
 
                             // Send servo command if generated
                             if let Some(command_with_metadata) = command_opt {
                                 let serialized = serde_json::to_vec(&command_with_metadata)?;
                                 let arrow_data = BinaryArray::from_vec(vec![serialized.as_slice()]);
-                                node.send_output(servo_cmd_output.clone(), Default::default(), arrow_data)?;
+                                node.send_output(
+                                    servo_cmd_output.clone(),
+                                    Default::default(),
+                                    arrow_data,
+                                )?;
                             }
 
                             // Always send enhanced telemetry (with distance and mode)
                             let serialized = serde_json::to_vec(&enhanced_telemetry)?;
                             let arrow_data = BinaryArray::from_vec(vec![serialized.as_slice()]);
-                            node.send_output(servo_telem_output.clone(), Default::default(), arrow_data)?;
+                            node.send_output(
+                                servo_telem_output.clone(),
+                                Default::default(),
+                                arrow_data,
+                            )?;
                         }
                     }
                     other => {

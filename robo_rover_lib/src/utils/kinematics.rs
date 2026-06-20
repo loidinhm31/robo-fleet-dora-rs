@@ -23,7 +23,9 @@ impl ForwardKinematics {
 
     pub fn compute_end_effector_pose(&self, joint_angles: &[f64]) -> Result<[f64; 6]> {
         if joint_angles.len() != self.dh_params.len() {
-            return Err(eyre::eyre!("Joint angles count doesn't match DH parameters"));
+            return Err(eyre::eyre!(
+                "Joint angles count doesn't match DH parameters"
+            ));
         }
 
         let mut transform = Matrix4::identity();
@@ -60,10 +62,22 @@ impl ForwardKinematics {
         let sin_alpha = alpha.sin();
 
         Matrix4::new(
-            cos_theta, -sin_theta * cos_alpha,  sin_theta * sin_alpha, a * cos_theta,
-            sin_theta,  cos_theta * cos_alpha, -cos_theta * sin_alpha, a * sin_theta,
-            0.0,        sin_alpha,              cos_alpha,             d,
-            0.0,        0.0,                    0.0,                   1.0,
+            cos_theta,
+            -sin_theta * cos_alpha,
+            sin_theta * sin_alpha,
+            a * cos_theta,
+            sin_theta,
+            cos_theta * cos_alpha,
+            -cos_theta * sin_alpha,
+            a * sin_theta,
+            0.0,
+            sin_alpha,
+            cos_alpha,
+            d,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
         )
     }
 
@@ -111,7 +125,8 @@ impl ForwardKinematics {
 
         for i in 0..n_joints {
             let transform = &transforms[i];
-            let joint_position = Vector3::new(transform[(0, 3)], transform[(1, 3)], transform[(2, 3)]);
+            let joint_position =
+                Vector3::new(transform[(0, 3)], transform[(1, 3)], transform[(2, 3)]);
             let joint_axis = Vector3::new(transform[(0, 2)], transform[(1, 2)], transform[(2, 2)]);
 
             let linear_contrib = joint_axis.cross(&(ee_position - joint_position));

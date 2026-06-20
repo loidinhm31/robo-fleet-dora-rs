@@ -28,10 +28,10 @@ pub struct KinematicsConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DHParameter {
-    pub a: f64,      // link length
-    pub alpha: f64,  // link twist
-    pub d: f64,      // link offset
-    pub theta: f64,  // joint angle offset
+    pub a: f64,     // link length
+    pub alpha: f64, // link twist
+    pub d: f64,     // link offset
+    pub theta: f64, // joint angle offset
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

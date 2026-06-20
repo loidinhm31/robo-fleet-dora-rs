@@ -1,5 +1,5 @@
-mod vision_pipeline;
 mod pipeline_metrics;
+mod vision_pipeline;
 
 use dora_node_api::{
     self,
@@ -10,11 +10,16 @@ use dora_node_api::{
 use kornia_io::gstreamer::{CameraCapture, RTSPCameraConfig, V4L2CameraConfig};
 use object_detector::DetectorConfig;
 use object_tracker::TrackerConfig;
-use reid_extractor::ReIdConfig;
-use robo_rover_lib::{init_tracing, types::TrackingCommand, CameraAction, CameraControl, MetricWindow};
-use std::{env, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
-use vision_pipeline::{PipelineOutput, ProcessedPipelineOutput, VisionPipeline};
 use pipeline_metrics::PipelineMetricWindows;
+use reid_extractor::ReIdConfig;
+use robo_rover_lib::{
+    init_tracing, types::TrackingCommand, CameraAction, CameraControl, MetricWindow,
+};
+use std::{
+    env,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+use vision_pipeline::{PipelineOutput, ProcessedPipelineOutput, VisionPipeline};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _guard = init_tracing();
@@ -79,8 +84,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let height = frame.size().height as u32;
                     frame_id = frame_id.saturating_add(1);
                     let capture_timestamp_ms = unix_timestamp_ms()?;
-                    let capture_interval = last_capture.replace(Instant::now())
-                        .map(|previous| previous.elapsed()).unwrap_or_default();
+                    let capture_interval = last_capture
+                        .replace(Instant::now())
+                        .map(|previous| previous.elapsed())
+                        .unwrap_or_default();
                     if !capture_interval.is_zero() {
                         capture_interval_metrics.record(capture_interval, 0);
                     }
@@ -90,7 +97,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     params.insert("height".into(), Parameter::Integer(height as i64));
                     params.insert("width".into(), Parameter::Integer(width as i64));
                     params.insert("frame_id".into(), Parameter::Integer(frame_id as i64));
-                    params.insert("capture_timestamp_ms".into(), Parameter::Integer(capture_timestamp_ms as i64));
+                    params.insert(
+                        "capture_timestamp_ms".into(),
+                        Parameter::Integer(capture_timestamp_ms as i64),
+                    );
 
                     // Always send raw frame for video streaming
                     node.send_output_bytes(
@@ -103,38 +113,77 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Vision pipeline — conditionally sends tracked_detections + tracking_telemetry
                     let vision_started = Instant::now();
                     let timings = send_pipeline_output(
-                        &mut pipeline, frame_id, frame.as_slice(), width, height, &mut node,
+                        &mut pipeline,
+                        frame_id,
+                        frame.as_slice(),
+                        width,
+                        height,
+                        &mut node,
                     )?;
                     pipeline_metrics.record(frame_id, timings);
                     vision_metrics.record(vision_started.elapsed(), frame.numel());
                     capture_metrics.record(capture_duration, frame.numel());
                     if let Some(snapshot) = capture_metrics.snapshot_if_due() {
-                        tracing::info!(metric="video_pipeline", stage="capture", frame_id,
-                            count=snapshot.count, bytes=snapshot.bytes, drops=snapshot.drops,
-                            errors=snapshot.errors, p50_us=snapshot.p50_us, p95_us=snapshot.p95_us,
-                            p99_us=snapshot.p99_us, max_us=snapshot.max_us);
+                        tracing::info!(
+                            metric = "video_pipeline",
+                            stage = "capture",
+                            frame_id,
+                            count = snapshot.count,
+                            bytes = snapshot.bytes,
+                            drops = snapshot.drops,
+                            errors = snapshot.errors,
+                            p50_us = snapshot.p50_us,
+                            p95_us = snapshot.p95_us,
+                            p99_us = snapshot.p99_us,
+                            max_us = snapshot.max_us
+                        );
                     }
                     if let Some(snapshot) = capture_interval_metrics.snapshot_if_due() {
-                        tracing::info!(metric="video_pipeline", stage="capture_interval", frame_id,
-                            count=snapshot.count, bytes=snapshot.bytes, drops=snapshot.drops,
-                            errors=snapshot.errors, p50_us=snapshot.p50_us, p95_us=snapshot.p95_us,
-                            p99_us=snapshot.p99_us, max_us=snapshot.max_us);
+                        tracing::info!(
+                            metric = "video_pipeline",
+                            stage = "capture_interval",
+                            frame_id,
+                            count = snapshot.count,
+                            bytes = snapshot.bytes,
+                            drops = snapshot.drops,
+                            errors = snapshot.errors,
+                            p50_us = snapshot.p50_us,
+                            p95_us = snapshot.p95_us,
+                            p99_us = snapshot.p99_us,
+                            max_us = snapshot.max_us
+                        );
                     }
                     if let Some(snapshot) = vision_metrics.snapshot_if_due() {
-                        tracing::info!(metric="video_pipeline", stage="vision_total", frame_id,
-                            count=snapshot.count, bytes=snapshot.bytes, drops=snapshot.drops,
-                            errors=snapshot.errors, p50_us=snapshot.p50_us, p95_us=snapshot.p95_us,
-                            p99_us=snapshot.p99_us, max_us=snapshot.max_us);
+                        tracing::info!(
+                            metric = "video_pipeline",
+                            stage = "vision_total",
+                            frame_id,
+                            count = snapshot.count,
+                            bytes = snapshot.bytes,
+                            drops = snapshot.drops,
+                            errors = snapshot.errors,
+                            p50_us = snapshot.p50_us,
+                            p95_us = snapshot.p95_us,
+                            p99_us = snapshot.p99_us,
+                            max_us = snapshot.max_us
+                        );
                     }
                 }
                 "camera_control" | "camera_control_voice" => {
-                    let source = if id.as_str() == "camera_control_voice" { "voice" } else { "web" };
+                    let source = if id.as_str() == "camera_control_voice" {
+                        "voice"
+                    } else {
+                        "web"
+                    };
 
                     if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
                         if binary_array.len() > 0 {
                             match serde_json::from_slice::<CameraControl>(binary_array.value(0)) {
                                 Ok(ctrl) => {
-                                    tracing::info!("Camera control from {source}: {:?}", ctrl.command);
+                                    tracing::info!(
+                                        "Camera control from {source}: {:?}",
+                                        ctrl.command
+                                    );
                                     match ctrl.command {
                                         CameraAction::Start => {
                                             if camera_opt.is_none() {
@@ -208,7 +257,10 @@ fn build_camera(
 }
 
 fn unix_timestamp_ms() -> Result<u64, Box<dyn std::error::Error>> {
-    Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis().try_into()?)
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_millis()
+        .try_into()?)
 }
 
 fn build_pipeline() -> Result<VisionPipeline, Box<dyn std::error::Error>> {
@@ -287,11 +339,16 @@ fn send_pipeline_output(
     height: u32,
     node: &mut DoraNode,
 ) -> Result<vision_pipeline::PipelineTimings, Box<dyn std::error::Error>> {
-    let ProcessedPipelineOutput { output, mut timings } =
-        pipeline.process_frame(frame_id, frame_data, width, height)?;
+    let ProcessedPipelineOutput {
+        output,
+        mut timings,
+    } = pipeline.process_frame(frame_id, frame_data, width, height)?;
     let serialization_started = Instant::now();
     match output {
-        PipelineOutput::DetectionOnly { detections, tracking_telemetry } => {
+        PipelineOutput::DetectionOnly {
+            detections,
+            tracking_telemetry,
+        } => {
             let det_json = serde_json::to_vec(&detections)?;
             node.send_output(
                 DataId::from("detections".to_owned()),
@@ -306,7 +363,10 @@ fn send_pipeline_output(
                 BinaryArray::from_vec(vec![tel_json.as_slice()]),
             )?;
         }
-        PipelineOutput::FullTracking { tracked_detections, tracking_telemetry } => {
+        PipelineOutput::FullTracking {
+            tracked_detections,
+            tracking_telemetry,
+        } => {
             let det_json = serde_json::to_vec(&tracked_detections)?;
             node.send_output(
                 DataId::from("tracked_detections".to_owned()),

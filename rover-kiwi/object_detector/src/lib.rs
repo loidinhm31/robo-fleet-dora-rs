@@ -7,16 +7,85 @@ use std::sync::Arc;
 use tracing::{debug, info};
 
 const YOLO_CLASSES: &[&str] = &[
-    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
-    "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat",
-    "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack",
-    "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball",
-    "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket",
-    "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
-    "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair",
-    "couch", "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse",
-    "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink",
-    "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier",
+    "person",
+    "bicycle",
+    "car",
+    "motorcycle",
+    "airplane",
+    "bus",
+    "train",
+    "truck",
+    "boat",
+    "traffic light",
+    "fire hydrant",
+    "stop sign",
+    "parking meter",
+    "bench",
+    "bird",
+    "cat",
+    "dog",
+    "horse",
+    "sheep",
+    "cow",
+    "elephant",
+    "bear",
+    "zebra",
+    "giraffe",
+    "backpack",
+    "umbrella",
+    "handbag",
+    "tie",
+    "suitcase",
+    "frisbee",
+    "skis",
+    "snowboard",
+    "sports ball",
+    "kite",
+    "baseball bat",
+    "baseball glove",
+    "skateboard",
+    "surfboard",
+    "tennis racket",
+    "bottle",
+    "wine glass",
+    "cup",
+    "fork",
+    "knife",
+    "spoon",
+    "bowl",
+    "banana",
+    "apple",
+    "sandwich",
+    "orange",
+    "broccoli",
+    "carrot",
+    "hot dog",
+    "pizza",
+    "donut",
+    "cake",
+    "chair",
+    "couch",
+    "potted plant",
+    "bed",
+    "dining table",
+    "toilet",
+    "tv",
+    "laptop",
+    "mouse",
+    "remote",
+    "keyboard",
+    "cell phone",
+    "microwave",
+    "oven",
+    "toaster",
+    "sink",
+    "refrigerator",
+    "book",
+    "clock",
+    "vase",
+    "scissors",
+    "teddy bear",
+    "hair drier",
     "toothbrush",
 ];
 
@@ -94,10 +163,19 @@ impl YoloDetector {
     fn preprocess_image(&self, img: &DynamicImage) -> Result<Array<f32, IxDyn>> {
         let (target_width, target_height) = self.input_size;
 
-        let resized = img.resize_exact(target_width, target_height, image::imageops::FilterType::Triangle);
+        let resized = img.resize_exact(
+            target_width,
+            target_height,
+            image::imageops::FilterType::Triangle,
+        );
         let rgb_image = resized.to_rgb8();
 
-        let mut array = Array::zeros(IxDyn(&[1, 3, target_height as usize, target_width as usize]));
+        let mut array = Array::zeros(IxDyn(&[
+            1,
+            3,
+            target_height as usize,
+            target_width as usize,
+        ]));
 
         for (x, y, pixel) in rgb_image.enumerate_pixels() {
             array[[0, 0, y as usize, x as usize]] = pixel[0] as f32 / 255.0;
@@ -165,7 +243,12 @@ impl YoloDetector {
                     y2.clamp(0.0, 1.0),
                 );
 
-                raw_detections.push(DetectionResult::new(bbox, max_class_id, class_name, max_score));
+                raw_detections.push(DetectionResult::new(
+                    bbox,
+                    max_class_id,
+                    class_name,
+                    max_score,
+                ));
             }
         }
 

@@ -1,12 +1,12 @@
+use byteorder::{ByteOrder, LittleEndian};
 use dora_node_api::{
     arrow::array::{Array, Float32Array},
     DoraNode, Event,
 };
-use eyre::{Result, eyre};
-use std::env;
-use tracing::{info, error, debug, warn};
-use byteorder::{ByteOrder, LittleEndian};
+use eyre::{eyre, Result};
 use robo_rover_lib::init_tracing;
+use std::env;
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Clone, Copy)]
 struct AudioConfig {
@@ -17,8 +17,8 @@ struct AudioConfig {
 
 #[derive(Debug, Clone, Copy)]
 enum OutputFormat {
-    Int16LE,  // S16LE (16-bit signed PCM, little-endian)
-    Float32,  // F32LE (32-bit float PCM)
+    Int16LE, // S16LE (16-bit signed PCM, little-endian)
+    Float32, // F32LE (32-bit float PCM)
 }
 
 impl Default for AudioConfig {
@@ -38,7 +38,10 @@ impl AudioConfig {
             "int16" | "s16le" => OutputFormat::Int16LE,
             "float32" | "f32le" => OutputFormat::Float32,
             _ => {
-                warn!("Unknown OUTPUT_FORMAT '{}', defaulting to int16", format_str);
+                warn!(
+                    "Unknown OUTPUT_FORMAT '{}', defaulting to int16",
+                    format_str
+                );
                 OutputFormat::Int16LE
             }
         };
@@ -173,24 +176,28 @@ fn main() -> Result<()> {
                                     match config.output_format {
                                         OutputFormat::Int16LE => "S16LE",
                                         OutputFormat::Float32 => "F32LE",
-                                    }.to_string()
-                                )
+                                    }
+                                    .to_string(),
+                                ),
                             );
                             output_metadata.parameters.insert(
                                 "sample_rate".to_string(),
-                                dora_node_api::Parameter::Integer(config.sample_rate as i64)
+                                dora_node_api::Parameter::Integer(config.sample_rate as i64),
                             );
                             output_metadata.parameters.insert(
                                 "channels".to_string(),
-                                dora_node_api::Parameter::Integer(config.channels as i64)
+                                dora_node_api::Parameter::Integer(config.channels as i64),
                             );
                             output_metadata.parameters.insert(
                                 "size".to_string(),
-                                dora_node_api::Parameter::Integer(converted_data.len() as i64)
+                                dora_node_api::Parameter::Integer(converted_data.len() as i64),
                             );
 
                             // Send converted audio
-                            let binary_data = dora_node_api::arrow::array::BinaryArray::from_vec(vec![converted_data.as_slice()]);
+                            let binary_data =
+                                dora_node_api::arrow::array::BinaryArray::from_vec(vec![
+                                    converted_data.as_slice(),
+                                ]);
                             node.send_output(
                                 "audio_output".to_owned().into(),
                                 output_metadata.parameters,

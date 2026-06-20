@@ -16,7 +16,8 @@ use tokio::sync::Mutex;
 use zenoh::Config;
 
 // Type alias for Zenoh subscriber (default handler)
-type ZenohSubscriber = zenoh::pubsub::Subscriber<zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>>;
+type ZenohSubscriber =
+    zenoh::pubsub::Subscriber<zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>>;
 
 /// Subscriptions for a single rover
 struct RoverSubscriptions {
@@ -42,55 +43,64 @@ async fn subscribe_to_rover(
     tracing::info!("Subscribing to rover: {}", entity_id);
 
     let video_topic = format!("rover/{}/video/raw", entity_id);
-    let video_sub = session.declare_subscriber(&video_topic)
+    let video_sub = session
+        .declare_subscriber(&video_topic)
         .await
         .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", video_topic, e))?;
     tracing::info!("{}", video_topic);
 
     let audio_topic = format!("rover/{}/audio/raw", entity_id);
-    let audio_sub = session.declare_subscriber(&audio_topic)
+    let audio_sub = session
+        .declare_subscriber(&audio_topic)
         .await
         .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", audio_topic, e))?;
     tracing::info!("{}", audio_topic);
 
     let rover_telemetry_topic = format!("rover/{}/telemetry/rover", entity_id);
-    let rover_telemetry_sub = session.declare_subscriber(&rover_telemetry_topic)
+    let rover_telemetry_sub = session
+        .declare_subscriber(&rover_telemetry_topic)
         .await
         .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", rover_telemetry_topic, e))?;
     tracing::info!("{}", rover_telemetry_topic);
 
     let arm_telemetry_topic = format!("rover/{}/telemetry/arm", entity_id);
-    let arm_telemetry_sub = session.declare_subscriber(&arm_telemetry_topic)
+    let arm_telemetry_sub = session
+        .declare_subscriber(&arm_telemetry_topic)
         .await
         .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", arm_telemetry_topic, e))?;
     tracing::info!("{}", arm_telemetry_topic);
 
     let servo_telemetry_topic = format!("rover/{}/telemetry/servo", entity_id);
-    let servo_telemetry_sub = session.declare_subscriber(&servo_telemetry_topic)
+    let servo_telemetry_sub = session
+        .declare_subscriber(&servo_telemetry_topic)
         .await
         .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", servo_telemetry_topic, e))?;
     tracing::info!("{}", servo_telemetry_topic);
 
     let detections_topic = format!("rover/{}/video/detections_only", entity_id);
-    let detections_sub = session.declare_subscriber(&detections_topic)
+    let detections_sub = session
+        .declare_subscriber(&detections_topic)
         .await
         .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", detections_topic, e))?;
     tracing::info!("{}", detections_topic);
 
     let tracked_detections_topic = format!("rover/{}/video/detections", entity_id);
-    let tracked_detections_sub = session.declare_subscriber(&tracked_detections_topic)
+    let tracked_detections_sub = session
+        .declare_subscriber(&tracked_detections_topic)
         .await
         .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", tracked_detections_topic, e))?;
     tracing::info!("{}", tracked_detections_topic);
 
     let tracking_telemetry_topic = format!("rover/{}/telemetry/tracking", entity_id);
-    let tracking_telemetry_sub = session.declare_subscriber(&tracking_telemetry_topic)
+    let tracking_telemetry_sub = session
+        .declare_subscriber(&tracking_telemetry_topic)
         .await
         .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", tracking_telemetry_topic, e))?;
     tracing::info!("{}", tracking_telemetry_topic);
 
     let metrics_topic = format!("rover/{}/metrics", entity_id);
-    let metrics_sub = session.declare_subscriber(&metrics_topic)
+    let metrics_sub = session
+        .declare_subscriber(&metrics_topic)
         .await
         .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", metrics_topic, e))?;
     tracing::info!("{}", metrics_topic);
@@ -151,7 +161,8 @@ async fn handle_fleet_subscription_command(
                     tracing::info!("Setting active rovers: {:?}", entity_ids);
 
                     // Remove rovers not in new list
-                    let to_remove: Vec<String> = active_rovers.keys()
+                    let to_remove: Vec<String> = active_rovers
+                        .keys()
                         .filter(|k| !entity_ids.contains(k))
                         .cloned()
                         .collect();
@@ -174,7 +185,10 @@ async fn handle_fleet_subscription_command(
                 }
             }
 
-            tracing::info!("Active rovers: {:?}", active_rovers.keys().collect::<Vec<_>>());
+            tracing::info!(
+                "Active rovers: {:?}",
+                active_rovers.keys().collect::<Vec<_>>()
+            );
         }
     }
 
@@ -192,8 +206,8 @@ async fn main() -> Result<()> {
     tracing::info!("Orchestra ID: {}", entity_id);
 
     // Get initial active rovers from environment
-    let active_rovers_env = std::env::var("ACTIVE_ROVERS")
-        .unwrap_or_else(|_| "rover-kiwi".to_string());
+    let active_rovers_env =
+        std::env::var("ACTIVE_ROVERS").unwrap_or_else(|_| "rover-kiwi".to_string());
     let initial_rovers: Vec<String> = active_rovers_env
         .split(',')
         .map(|s| s.trim().to_string())
@@ -212,7 +226,11 @@ async fn main() -> Result<()> {
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(480);
 
-    tracing::info!("Expected video frame dimensions: {}x{}", frame_width, frame_height);
+    tracing::info!(
+        "Expected video frame dimensions: {}x{}",
+        frame_width,
+        frame_height
+    );
 
     // Audio configuration
     let audio_sample_rate = std::env::var("AUDIO_SAMPLE_RATE")
@@ -224,7 +242,11 @@ async fn main() -> Result<()> {
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(1);
 
-    tracing::info!("Expected audio format: {}Hz, {} channels", audio_sample_rate, audio_channels);
+    tracing::info!(
+        "Expected audio format: {}Hz, {} channels",
+        audio_sample_rate,
+        audio_channels
+    );
 
     // Initialize Dora node
     let (mut node, mut events) = DoraNode::init_from_env()?;
@@ -247,13 +269,17 @@ async fn main() -> Result<()> {
         tracing::warn!("Config file not found at {}", config_path);
         tracing::warn!("Using default config with peer mode");
         let mut config = Config::default();
-        config.insert_json5("mode", "\"peer\"")
+        config
+            .insert_json5("mode", "\"peer\"")
             .map_err(|e| eyre::eyre!("Failed to set Zenoh mode: {}", e))?;
         config
     };
 
-    let session = Arc::new(zenoh::open(config).await
-        .map_err(|e| eyre::eyre!("Failed to open Zenoh session: {}", e))?);
+    let session = Arc::new(
+        zenoh::open(config)
+            .await
+            .map_err(|e| eyre::eyre!("Failed to open Zenoh session: {}", e))?,
+    );
 
     tracing::info!("Zenoh session ID: {}", session.zid());
 
@@ -677,7 +703,10 @@ fn forward_telemetry_with_entity_id(
     if let Ok(mut telemetry_json) = serde_json::from_slice::<serde_json::Value>(&payload) {
         // Add entity_id field to the telemetry JSON
         if let Some(obj) = telemetry_json.as_object_mut() {
-            obj.insert("entity_id".to_string(), serde_json::Value::String(entity_id));
+            obj.insert(
+                "entity_id".to_string(),
+                serde_json::Value::String(entity_id),
+            );
         }
 
         // Re-serialize with entity_id included

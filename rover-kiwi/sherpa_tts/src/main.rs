@@ -2,10 +2,10 @@ use dora_node_api::arrow::array::{Array, BinaryArray};
 use dora_node_api::{DoraNode, Event};
 use eyre::Result;
 use robo_rover_lib::{init_tracing, TtsCommand};
+use rodio::{OutputStream, Sink};
 use sherpa_rs::tts::{CommonTtsConfig, VitsTts, VitsTtsConfig};
 use sherpa_rs::OnnxConfig;
 use std::env;
-use rodio::{OutputStream, Sink};
 
 fn main() -> Result<()> {
     let _guard = init_tracing();
@@ -14,14 +14,13 @@ fn main() -> Result<()> {
     tracing::info!("Using VITS model for lightweight speech synthesis on edge device");
 
     // Get configuration from environment variables
-    let model_dir = env::var("TTS_MODEL_DIR")
-        .unwrap_or_else(|_| {
-            dirs::home_dir()
-                .unwrap()
-                .join(".cache/sherpa-onnx/vits-piper-en_US-lessac-medium")
-                .to_string_lossy()
-                .to_string()
-        });
+    let model_dir = env::var("TTS_MODEL_DIR").unwrap_or_else(|_| {
+        dirs::home_dir()
+            .unwrap()
+            .join(".cache/sherpa-onnx/vits-piper-en_US-lessac-medium")
+            .to_string_lossy()
+            .to_string()
+    });
 
     let volume = env::var("TTS_VOLUME")
         .ok()
@@ -33,7 +32,12 @@ fn main() -> Result<()> {
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(1.0);
 
-    tracing::info!("TTS configuration: model_dir={}, volume={}, speed={}", model_dir, volume, speed);
+    tracing::info!(
+        "TTS configuration: model_dir={}, volume={}, speed={}",
+        model_dir,
+        volume,
+        speed
+    );
 
     // Initialize VITS TTS configuration
     tracing::info!("Initializing Sherpa-ONNX VITS TTS engine...");
@@ -56,9 +60,9 @@ fn main() -> Result<()> {
 
     let vits_config = VitsTtsConfig {
         model: format!("{}/model.onnx", model_dir),
-        lexicon: String::new(),  // VITS-Piper doesn't use lexicon
+        lexicon: String::new(), // VITS-Piper doesn't use lexicon
         tokens: format!("{}/tokens.txt", model_dir),
-        data_dir: format!("{}/espeak-ng-data", model_dir),  // espeak-ng-data for phoneme processing
+        data_dir: format!("{}/espeak-ng-data", model_dir), // espeak-ng-data for phoneme processing
         dict_dir: String::new(),
         length_scale: 1.0,
         noise_scale: 0.667,
@@ -101,8 +105,14 @@ fn main() -> Result<()> {
                     if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
                         if binary_array.len() > 0 {
                             let command_bytes = binary_array.value(0);
-                            if let Ok(tts_command) = serde_json::from_slice::<TtsCommand>(command_bytes) {
-                                tracing::info!("TTS command received from {}: '{}'", id, tts_command.text);
+                            if let Ok(tts_command) =
+                                serde_json::from_slice::<TtsCommand>(command_bytes)
+                            {
+                                tracing::info!(
+                                    "TTS command received from {}: '{}'",
+                                    id,
+                                    tts_command.text
+                                );
 
                                 // Synthesize the text
                                 match tts.create(&tts_command.text, 0, speed) {
@@ -115,8 +125,14 @@ fn main() -> Result<()> {
                                         );
 
                                         // Play the audio if output is available
-                                        if let Some((ref _stream, ref stream_handle)) = audio_output {
-                                            if let Err(e) = play_audio(stream_handle, &audio.samples, audio.sample_rate, volume) {
+                                        if let Some((ref _stream, ref stream_handle)) = audio_output
+                                        {
+                                            if let Err(e) = play_audio(
+                                                stream_handle,
+                                                &audio.samples,
+                                                audio.sample_rate,
+                                                volume,
+                                            ) {
                                                 tracing::error!("Failed to play audio: {}", e);
                                             } else {
                                                 tracing::info!("TTS playback completed");

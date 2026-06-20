@@ -106,10 +106,7 @@ impl FleetRosterUpdate {
             .unwrap()
             .as_millis() as u64;
 
-        Self {
-            rovers,
-            timestamp,
-        }
+        Self { rovers, timestamp }
     }
 }
 
@@ -117,15 +114,9 @@ impl FleetRosterUpdate {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FleetSubscriptionCommand {
     /// Activate subscription to a specific rover
-    ActivateRover {
-        entity_id: String,
-        timestamp: u64,
-    },
+    ActivateRover { entity_id: String, timestamp: u64 },
     /// Deactivate subscription to a specific rover
-    DeactivateRover {
-        entity_id: String,
-        timestamp: u64,
-    },
+    DeactivateRover { entity_id: String, timestamp: u64 },
     /// Set the complete list of active rovers (replaces current subscriptions)
     SetActiveRovers {
         entity_ids: Vec<String>,

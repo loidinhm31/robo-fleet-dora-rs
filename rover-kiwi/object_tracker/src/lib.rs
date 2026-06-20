@@ -4,8 +4,8 @@ pub mod tracked_object;
 
 use cmc::CameraMotionCompensator;
 use std::collections::{HashMap, HashSet};
-use tracked_object::TrackedObject;
 use tracing::{debug, info, warn};
+use tracked_object::TrackedObject;
 
 use robo_rover_lib::types::{DetectionResult, TrackingCommand, TrackingState, TrackingTelemetry};
 
@@ -78,7 +78,8 @@ impl ObjectTracker {
 
         debug!(
             "Two-stage matching: {} high-conf, {} low-conf",
-            high_conf_dets.len(), low_conf_dets.len()
+            high_conf_dets.len(),
+            low_conf_dets.len()
         );
 
         let mut matched_tracks: HashSet<u32> = HashSet::new();
@@ -87,8 +88,10 @@ impl ObjectTracker {
         // Stage 1: high-confidence detections with IoU + ReID
         if !high_conf_dets.is_empty() {
             let hc_indices: Vec<usize> = high_conf_dets.iter().map(|(idx, _)| *idx).collect();
-            let hc_subset: Vec<DetectionResult> =
-                hc_indices.iter().map(|&idx| detections[idx].clone()).collect();
+            let hc_subset: Vec<DetectionResult> = hc_indices
+                .iter()
+                .map(|&idx| detections[idx].clone())
+                .collect();
 
             for (subset_idx, track_id) in self.associate_detections_to_tracks(&hc_subset, true) {
                 let det_idx = hc_indices[subset_idx];
@@ -108,8 +111,10 @@ impl ObjectTracker {
                 .filter(|idx| !matched_detections.contains(idx))
                 .collect();
 
-            let lc_subset: Vec<DetectionResult> =
-                lc_indices.iter().map(|&idx| detections[idx].clone()).collect();
+            let lc_subset: Vec<DetectionResult> = lc_indices
+                .iter()
+                .map(|&idx| detections[idx].clone())
+                .collect();
 
             for (subset_idx, track_id) in self.associate_detections_to_tracks(&lc_subset, false) {
                 let det_idx = lc_indices[subset_idx];
@@ -166,10 +171,19 @@ impl ObjectTracker {
                 self.tracking_enabled = false;
                 self.selected_target_id = None;
             }
-            TrackingCommand::SelectTarget { detection_index, timestamp } => {
-                warn!("SelectTarget by index not supported (idx: {}, ts: {})", detection_index, timestamp);
+            TrackingCommand::SelectTarget {
+                detection_index,
+                timestamp,
+            } => {
+                warn!(
+                    "SelectTarget by index not supported (idx: {}, ts: {})",
+                    detection_index, timestamp
+                );
             }
-            TrackingCommand::SelectTargetById { tracking_id, timestamp } => {
+            TrackingCommand::SelectTargetById {
+                tracking_id,
+                timestamp,
+            } => {
                 if self.tracks.contains_key(&tracking_id) {
                     info!("Selected target ID {} at {}", tracking_id, timestamp);
                     self.selected_target_id = Some(tracking_id);

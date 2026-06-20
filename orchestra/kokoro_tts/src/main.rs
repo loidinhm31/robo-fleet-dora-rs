@@ -7,7 +7,6 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let _guard = init_tracing();
@@ -22,7 +21,11 @@ async fn main() -> Result<()> {
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(0.8);
 
-    tracing::info!("TTS configuration: voice={}, volume={}", default_voice, volume);
+    tracing::info!(
+        "TTS configuration: voice={}, volume={}",
+        default_voice,
+        volume
+    );
 
     // Initialize Kokoro TTS engine
     // If models are in cache, this will be instant
@@ -51,13 +54,22 @@ async fn main() -> Result<()> {
                     if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
                         if binary_array.len() > 0 {
                             let command_bytes = binary_array.value(0);
-                            if let Ok(tts_command) = serde_json::from_slice::<TtsCommand>(command_bytes) {
-                                tracing::info!("TTS command received from {}: '{}'", id, tts_command.text);
+                            if let Ok(tts_command) =
+                                serde_json::from_slice::<TtsCommand>(command_bytes)
+                            {
+                                tracing::info!(
+                                    "TTS command received from {}: '{}'",
+                                    id,
+                                    tts_command.text
+                                );
 
                                 // Synthesize and play the text
                                 match tts.synthesize(&tts_command.text, Some(&default_voice)) {
                                     Ok(audio) => {
-                                        tracing::debug!("Audio synthesized, {} samples", audio.len());
+                                        tracing::debug!(
+                                            "Audio synthesized, {} samples",
+                                            audio.len()
+                                        );
 
                                         // Play the audio with configured volume
                                         if let Err(e) = tts.play(&audio, volume) {

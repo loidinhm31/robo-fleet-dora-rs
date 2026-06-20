@@ -2,7 +2,7 @@ use dora_node_api::arrow::array::{Array, BinaryArray, Float32Array};
 use dora_node_api::dora_core::config::DataId;
 use dora_node_api::{DoraNode, Event};
 use eyre::Result;
-use robo_rover_lib::{SpeechTranscription, init_tracing};
+use robo_rover_lib::{init_tracing, SpeechTranscription};
 use std::env;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -18,8 +18,8 @@ fn main() -> Result<()> {
     tracing::info!("Starting speech recognizer node...");
 
     // Read configuration from environment variables
-    let model_path = env::var("WHISPER_MODEL_PATH")
-        .unwrap_or_else(|_| "models/ggml-tiny.bin".to_string());
+    let model_path =
+        env::var("WHISPER_MODEL_PATH").unwrap_or_else(|_| "models/ggml-tiny.bin".to_string());
 
     let sample_rate: u32 = env::var("SAMPLE_RATE")
         .ok()
@@ -99,9 +99,11 @@ fn main() -> Result<()> {
                     let has_energy = calculate_energy(&audio_buffer) > energy_threshold;
 
                     if should_process && has_energy {
-                        tracing::debug!("Processing {} samples ({:.2}s of audio)...",
+                        tracing::debug!(
+                            "Processing {} samples ({:.2}s of audio)...",
                             audio_buffer.len(),
-                            audio_buffer.len() as f32 / sample_rate as f32);
+                            audio_buffer.len() as f32 / sample_rate as f32
+                        );
 
                         let start_time = Instant::now();
 
@@ -110,8 +112,12 @@ fn main() -> Result<()> {
                             Ok((text, confidence)) => {
                                 let processing_time = start_time.elapsed().as_millis() as f32;
 
-                                tracing::info!("Transcription: \"{}\" (confidence: {:.2}, time: {:.0}ms)",
-                                    text, confidence, processing_time);
+                                tracing::info!(
+                                    "Transcription: \"{}\" (confidence: {:.2}, time: {:.0}ms)",
+                                    text,
+                                    confidence,
+                                    processing_time
+                                );
 
                                 // Update statistics
                                 total_transcriptions += 1;
@@ -124,11 +130,13 @@ fn main() -> Result<()> {
                                         text: text.clone(),
                                         confidence,
                                         language: "en".to_string(),
-                                        duration_ms: (audio_buffer.len() as u64 * 1000) / sample_rate as u64,
+                                        duration_ms: (audio_buffer.len() as u64 * 1000)
+                                            / sample_rate as u64,
                                         timestamp: std::time::SystemTime::now()
                                             .duration_since(std::time::UNIX_EPOCH)
                                             .unwrap()
-                                            .as_millis() as i64,
+                                            .as_millis()
+                                            as i64,
                                     };
 
                                     // Send transcription via Dora
@@ -140,9 +148,11 @@ fn main() -> Result<()> {
                                         array,
                                     )?;
 
-                                    tracing::debug!("Sent transcription (avg conf: {:.2}, avg time: {:.0}ms)",
+                                    tracing::debug!(
+                                        "Sent transcription (avg conf: {:.2}, avg time: {:.0}ms)",
                                         total_confidence / total_transcriptions as f32,
-                                        total_processing_time_ms / total_transcriptions as f32);
+                                        total_processing_time_ms / total_transcriptions as f32
+                                    );
                                 } else {
                                     tracing::debug!("Skipped: low confidence or empty text");
                                 }
@@ -166,8 +176,14 @@ fn main() -> Result<()> {
                 tracing::info!("Statistics:");
                 tracing::info!("Total transcriptions: {}", total_transcriptions);
                 if total_transcriptions > 0 {
-                    tracing::info!("Average confidence: {:.2}", total_confidence / total_transcriptions as f32);
-                    tracing::info!("Average processing time: {:.0}ms", total_processing_time_ms / total_transcriptions as f32);
+                    tracing::info!(
+                        "Average confidence: {:.2}",
+                        total_confidence / total_transcriptions as f32
+                    );
+                    tracing::info!(
+                        "Average processing time: {:.0}ms",
+                        total_processing_time_ms / total_transcriptions as f32
+                    );
                 }
                 break;
             }
@@ -222,15 +238,18 @@ fn transcribe_audio(
     params.set_print_timestamps(false);
 
     // Create a mutable state for Whisper
-    let mut state = ctx.create_state()
+    let mut state = ctx
+        .create_state()
         .map_err(|e| eyre::eyre!("Failed to create Whisper state: {}", e))?;
 
     // Run inference
-    state.full(params, &audio_16k)
+    state
+        .full(params, &audio_16k)
         .map_err(|e| eyre::eyre!("Whisper inference failed: {}", e))?;
 
     // Get transcription
-    let num_segments = state.full_n_segments()
+    let num_segments = state
+        .full_n_segments()
         .map_err(|e| eyre::eyre!("Failed to get segment count: {}", e))?;
 
     let mut full_text = String::new();

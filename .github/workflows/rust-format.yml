@@ -1,0 +1,19 @@
+name: Rust format
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  rustfmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install pinned Rust formatter
+        run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt
+      - name: Check workspace formatting
+        run: cargo +1.88.0 fmt --all -- --check

@@ -4,10 +4,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Bounding box in normalized coordinates [0.0, 1.0]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BoundingBox {
-    pub x1: f32,  // Top-left x
-    pub y1: f32,  // Top-left y
-    pub x2: f32,  // Bottom-right x
-    pub y2: f32,  // Bottom-right y
+    pub x1: f32, // Top-left x
+    pub y1: f32, // Top-left y
+    pub x2: f32, // Bottom-right x
+    pub y2: f32, // Bottom-right y
 }
 
 impl BoundingBox {
@@ -74,11 +74,11 @@ pub struct DetectionResult {
     pub class_id: usize,
     pub class_name: String,
     pub confidence: f32,
-    pub tracking_id: Option<u32>,  // Assigned by tracker
+    pub tracking_id: Option<u32>, // Assigned by tracker
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reid_features: Option<Vec<f32>>,  // Re-identification feature embeddings (e.g., 128-dim from OSNet)
+    pub reid_features: Option<Vec<f32>>, // Re-identification feature embeddings (e.g., 128-dim from OSNet)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub predicted_trajectory: Option<Vec<BoundingBox>>,  // Future predicted positions
+    pub predicted_trajectory: Option<Vec<BoundingBox>>, // Future predicted positions
 }
 
 impl DetectionResult {
@@ -160,7 +160,7 @@ pub struct TrackingTarget {
     pub bbox: BoundingBox,
     pub last_seen: u64,
     pub confidence: f32,
-    pub lost_frames: u32,  // Number of consecutive frames target was lost
+    pub lost_frames: u32, // Number of consecutive frames target was lost
 }
 
 impl TrackingTarget {
@@ -189,36 +189,23 @@ impl TrackingTarget {
 #[serde(tag = "type")]
 pub enum TrackingCommand {
     /// Enable detection-only mode (YOLO, no ReID/tracking)
-    EnableDetection {
-        timestamp: u64,
-    },
+    EnableDetection { timestamp: u64 },
     /// Disable detection — returns to camera-only mode.
     /// Also disables tracking because detection is a prerequisite for tracking.
-    DisableDetection {
-        timestamp: u64,
-    },
+    DisableDetection { timestamp: u64 },
     /// Enable full tracking mode (YOLO + ReID + BoTSORT)
-    Enable {
-        timestamp: u64,
-    },
+    Enable { timestamp: u64 },
     /// Disable tracking mode
-    Disable {
-        timestamp: u64,
-    },
+    Disable { timestamp: u64 },
     /// Select a target by detection index in current frame
     SelectTarget {
         detection_index: usize,
         timestamp: u64,
     },
     /// Select a target by tracking ID
-    SelectTargetById {
-        tracking_id: u32,
-        timestamp: u64,
-    },
+    SelectTargetById { tracking_id: u32, timestamp: u64 },
     /// Clear current target
-    ClearTarget {
-        timestamp: u64,
-    },
+    ClearTarget { timestamp: u64 },
 }
 
 impl TrackingCommand {
@@ -301,20 +288,20 @@ pub enum TrackingState {
 /// Control mode for rover
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ControlMode {
-    Manual,      // Manual control from web UI
-    Autonomous,  // Autonomous tracking/following
+    Manual,     // Manual control from web UI
+    Autonomous, // Autonomous tracking/following
 }
 
 /// Telemetry data sent to web UI about tracking status
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackingTelemetry {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub entity_id: Option<String>,  // Source rover entity ID (for multi-rover support)
+    pub entity_id: Option<String>, // Source rover entity ID (for multi-rover support)
     pub state: TrackingState,
     pub target: Option<TrackingTarget>,
-    pub distance_estimate: Option<f32>,  // Distance in meters (from visual servo)
+    pub distance_estimate: Option<f32>, // Distance in meters (from visual servo)
     pub control_output: Option<ControlOutput>,
-    pub control_mode: ControlMode,  // Current control mode
+    pub control_mode: ControlMode, // Current control mode
     pub timestamp: u64,
 }
 
@@ -326,7 +313,7 @@ impl TrackingTelemetry {
             target,
             distance_estimate: None,
             control_output: None,
-            control_mode: ControlMode::Manual,  // Default to manual
+            control_mode: ControlMode::Manual, // Default to manual
             timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -353,10 +340,10 @@ impl TrackingTelemetry {
 /// Control outputs for debugging
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlOutput {
-    pub omega_z: f64,  // Angular velocity command
-    pub v_x: f64,      // Linear velocity command
-    pub error_x: f32,  // Horizontal error (pixels or normalized)
-    pub error_size: f32,  // Size error for distance
+    pub omega_z: f64,    // Angular velocity command
+    pub v_x: f64,        // Linear velocity command
+    pub error_x: f32,    // Horizontal error (pixels or normalized)
+    pub error_size: f32, // Size error for distance
 }
 
 impl ControlOutput {

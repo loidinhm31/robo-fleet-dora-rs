@@ -6,7 +6,7 @@
 
 .PHONY: help models build-orchestra build-rover build-all up-orchestra up-rover \
         up-rover-direct down logs-orchestra logs-rover shell-orchestra shell-rover \
-        status clean build-rover-cross
+        status clean build-rover-cross format format-check format-file
 
 # Default target
 .DEFAULT_GOAL := help
@@ -49,6 +49,12 @@ help:
 	@echo ""
 	@echo "Cleanup:"
 	@echo "  make clean           - Remove containers, images, and volumes"
+	@echo ""
+	@echo "Rust formatting:"
+	@echo "  make format          - Format the full Rust workspace"
+	@echo "  make format-check    - Check formatting without modifying files"
+	@echo "  make format-file FILE=path/to/file.rs - Format one Rust file safely"
+	@echo "  Note: cargo fmt -- <paths> does not restrict formatting to those paths."
 	@echo ""
 	@echo "Environment Variables:"
 	@echo "  MONGODB_URI          - MongoDB connection string (default: mongodb://localhost:27017)"
@@ -188,6 +194,18 @@ ps:
 # =============================================================================
 # Development Helpers
 # =============================================================================
+format:
+	cargo fmt --all
+
+format-check:
+	cargo fmt --all -- --check
+
+# Use rustfmt directly for one file. `cargo fmt -- <paths>` forwards paths to
+# rustfmt for every workspace target and does not limit Cargo's target selection.
+format-file:
+	@test -n "$(FILE)" || (echo "Usage: make format-file FILE=path/to/file.rs" && exit 2)
+	rustfmt --edition 2021 "$(FILE)"
+
 validate-compose:
 	@echo "Validating docker-compose.yml..."
 	$(COMPOSE) config > /dev/null

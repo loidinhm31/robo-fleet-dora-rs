@@ -1,8 +1,8 @@
 /// Simple PID controller implementation
 pub struct PIDController {
-    kp: f64,  // Proportional gain
-    ki: f64,  // Integral gain
-    kd: f64,  // Derivative gain
+    kp: f64, // Proportional gain
+    ki: f64, // Integral gain
+    kd: f64, // Derivative gain
 
     // Output limits
     output_min: f64,
@@ -139,6 +139,6 @@ mod tests {
 
         // After reset, should behave as if first update
         let output = pid.update(5.0, 0.1);
-        assert_eq!(output, 5.5);  // P + I terms only (no D on first update)
+        assert_eq!(output, 5.5); // P + I terms only (no D on first update)
     }
 }

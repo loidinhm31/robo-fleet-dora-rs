@@ -1,9 +1,12 @@
-use governor::{Quota, RateLimiter, clock::DefaultClock, state::{InMemoryState, NotKeyed}};
+use governor::{
+    clock::DefaultClock,
+    state::{InMemoryState, NotKeyed},
+    Quota, RateLimiter,
+};
 use mongodb::{
-    Collection, Database,
     bson::doc,
-    options::{IndexOptions, ClientOptions},
-    IndexModel,
+    options::{ClientOptions, IndexOptions},
+    Collection, Database, IndexModel,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -16,7 +19,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Rate limiter for authentication attempts (per socket ID)
 pub struct AuthRateLimiter {
-    limiters: Arc<Mutex<HashMap<String, (RateLimiter<NotKeyed, InMemoryState, DefaultClock>, Instant)>>>,
+    limiters:
+        Arc<Mutex<HashMap<String, (RateLimiter<NotKeyed, InMemoryState, DefaultClock>, Instant)>>>,
     max_attempts: u32,
 }
 
@@ -37,7 +41,8 @@ impl AuthRateLimiter {
         let mut limiters = self.limiters.lock().unwrap();
 
         let now = Instant::now();
-        limiters.retain(|_, (_, last_seen)| now.duration_since(*last_seen) < Duration::from_secs(300));
+        limiters
+            .retain(|_, (_, last_seen)| now.duration_since(*last_seen) < Duration::from_secs(300));
 
         let (limiter, last_seen) = limiters.entry(client_id.to_string()).or_insert_with(|| {
             let quota = Quota::per_minute(NonZeroU32::new(self.max_attempts).unwrap());
@@ -56,7 +61,8 @@ impl AuthRateLimiter {
 
 /// Rate limiter for authentication attempts (per IP address)
 pub struct IpRateLimiter {
-    limiters: Arc<Mutex<HashMap<String, (RateLimiter<NotKeyed, InMemoryState, DefaultClock>, Instant)>>>,
+    limiters:
+        Arc<Mutex<HashMap<String, (RateLimiter<NotKeyed, InMemoryState, DefaultClock>, Instant)>>>,
     max_attempts: u32,
 }
 
@@ -77,7 +83,8 @@ impl IpRateLimiter {
         let mut limiters = self.limiters.lock().unwrap();
 
         let now = Instant::now();
-        limiters.retain(|_, (_, last_seen)| now.duration_since(*last_seen) < Duration::from_secs(300));
+        limiters
+            .retain(|_, (_, last_seen)| now.duration_since(*last_seen) < Duration::from_secs(300));
 
         let (limiter, last_seen) = limiters.entry(ip.to_string()).or_insert_with(|| {
             let quota = Quota::per_minute(NonZeroU32::new(self.max_attempts).unwrap());
@@ -91,7 +98,8 @@ impl IpRateLimiter {
 
 /// Rate limiter for commands (per socket ID)
 pub struct CommandRateLimiter {
-    limiters: Arc<Mutex<HashMap<String, (RateLimiter<NotKeyed, InMemoryState, DefaultClock>, Instant)>>>,
+    limiters:
+        Arc<Mutex<HashMap<String, (RateLimiter<NotKeyed, InMemoryState, DefaultClock>, Instant)>>>,
     max_commands: u32,
 }
 
@@ -112,7 +120,8 @@ impl CommandRateLimiter {
         let mut limiters = self.limiters.lock().unwrap();
 
         let now = Instant::now();
-        limiters.retain(|_, (_, last_seen)| now.duration_since(*last_seen) < Duration::from_secs(300));
+        limiters
+            .retain(|_, (_, last_seen)| now.duration_since(*last_seen) < Duration::from_secs(300));
 
         let (limiter, last_seen) = limiters.entry(client_id.to_string()).or_insert_with(|| {
             let quota = Quota::per_second(NonZeroU32::new(self.max_commands).unwrap());
@@ -162,8 +171,8 @@ pub async fn seed_admin_user(collection: &Collection<User>) -> Result<bool, mong
         return Ok(false);
     }
 
-    let hash = bcrypt::hash("password", bcrypt::DEFAULT_COST)
-        .expect("bcrypt hash failed during seed");
+    let hash =
+        bcrypt::hash("password", bcrypt::DEFAULT_COST).expect("bcrypt hash failed during seed");
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -191,7 +200,9 @@ pub async fn find_user(
     collection: &Collection<User>,
     username: &str,
 ) -> Result<Option<User>, mongodb::error::Error> {
-    collection.find_one(doc! { "username": username }, None).await
+    collection
+        .find_one(doc! { "username": username }, None)
+        .await
 }
 
 /// CPU-bound bcrypt verify; call via tokio::task::spawn_blocking.
@@ -225,8 +236,7 @@ impl AuthErrorReason {
 
 pub mod jwt {
     use jsonwebtoken::{
-        decode, encode, DecodingKey, EncodingKey, Header, Validation,
-        errors::Error as JwtError,
+        decode, encode, errors::Error as JwtError, DecodingKey, EncodingKey, Header, Validation,
     };
     use serde::{Deserialize, Serialize};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -296,7 +306,10 @@ impl SessionRegistry {
     }
 
     pub fn register(&self, socket_id: &str, claims: jwt::Claims) {
-        self.inner.lock().unwrap().insert(socket_id.to_string(), claims);
+        self.inner
+            .lock()
+            .unwrap()
+            .insert(socket_id.to_string(), claims);
     }
 
     pub fn is_valid(&self, socket_id: &str) -> bool {
@@ -361,8 +374,13 @@ pub async fn authenticate_and_issue_token(
                 return Err(AuthErrorReason::AccountDisabled);
             }
 
-            return jwt::generate_token(&old_claims.sub, &old_claims.role, jwt_secret, session_ttl_secs)
-                .map_err(|_| AuthErrorReason::InvalidCredentials);
+            return jwt::generate_token(
+                &old_claims.sub,
+                &old_claims.role,
+                jwt_secret,
+                session_ttl_secs,
+            )
+            .map_err(|_| AuthErrorReason::InvalidCredentials);
         }
         // Invalid/expired token → fall through to password auth
     }
@@ -419,7 +437,10 @@ pub mod validation {
             return Err("Wheel velocity must be a finite number".to_string());
         }
         if velocity.abs() > max_velocity {
-            return Err(format!("Wheel velocity {} exceeds limit {}", velocity, max_velocity));
+            return Err(format!(
+                "Wheel velocity {} exceeds limit {}",
+                velocity, max_velocity
+            ));
         }
         Ok(())
     }
@@ -434,7 +455,11 @@ pub mod validation {
             return Err("TTS text cannot be empty".to_string());
         }
         if text.len() > max_length {
-            return Err(format!("TTS text length {} exceeds limit {}", text.len(), max_length));
+            return Err(format!(
+                "TTS text length {} exceeds limit {}",
+                text.len(),
+                max_length
+            ));
         }
         Ok(())
     }
@@ -449,7 +474,11 @@ pub mod validation {
             return Err("Audio data cannot be empty".to_string());
         }
         if samples.len() > max_samples {
-            return Err(format!("Audio sample count {} exceeds limit {}", samples.len(), max_samples));
+            return Err(format!(
+                "Audio sample count {} exceeds limit {}",
+                samples.len(),
+                max_samples
+            ));
         }
 
         for (i, &sample) in samples.iter().enumerate() {
@@ -462,7 +491,10 @@ pub mod validation {
 
     pub fn validate_detection_index(index: usize, max: usize) -> Result<(), String> {
         if index >= max {
-            return Err(format!("Detection index {} out of bounds (max: {})", index, max));
+            return Err(format!(
+                "Detection index {} out of bounds (max: {})",
+                index, max
+            ));
         }
         Ok(())
     }
@@ -689,10 +721,7 @@ mod tests {
     #[test]
     fn test_extract_ip_forwarded_for_trust_proxy() {
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert(
-            "x-forwarded-for",
-            "1.2.3.4, 5.6.7.8".parse().unwrap(),
-        );
+        headers.insert("x-forwarded-for", "1.2.3.4, 5.6.7.8".parse().unwrap());
         assert_eq!(extract_client_ip(&headers, true), "1.2.3.4");
     }
 

@@ -1,11 +1,13 @@
 use dora_node_api::{
     arrow::array::{Array, AsArray, BinaryArray},
     dora_core::config::DataId,
-    DoraNode,
-    Event
+    DoraNode, Event,
 };
 use eyre::Result;
-use robo_rover_lib::{init_tracing, ArmCommand, ArmCommandWithMetadata, CommandMetadata, CommandPriority, InputSource, RoverCommand, RoverCommandWithMetadata};
+use robo_rover_lib::{
+    init_tracing, ArmCommand, ArmCommandWithMetadata, CommandMetadata, CommandPriority,
+    InputSource, RoverCommand, RoverCommandWithMetadata,
+};
 use std::error::Error;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid;
@@ -39,7 +41,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     while let Some(event) = events.recv() {
         match event {
-            Event::Input { id, metadata: _, data } => {
+            Event::Input {
+                id,
+                metadata: _,
+                data,
+            } => {
                 if id.as_str() == "keyboard" {
                     if let Some(string_array) = data.as_string_opt::<i32>() {
                         if string_array.len() > 0 {
@@ -61,12 +67,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         };
 
                                         let serialized = serde_json::to_vec(&cmd_with_metadata)?;
-                                        let arrow_data = BinaryArray::from_vec(vec![serialized.as_slice()]);
+                                        let arrow_data =
+                                            BinaryArray::from_vec(vec![serialized.as_slice()]);
 
                                         node.send_output(
                                             arm_command_output.clone(),
                                             Default::default(),
-                                            arrow_data
+                                            arrow_data,
                                         )?;
 
                                         tracing::debug!("Sent ARM command: {:?}", arm_cmd);
@@ -78,12 +85,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         };
 
                                         let serialized = serde_json::to_vec(&cmd_with_metadata)?;
-                                        let arrow_data = BinaryArray::from_vec(vec![serialized.as_slice()]);
+                                        let arrow_data =
+                                            BinaryArray::from_vec(vec![serialized.as_slice()]);
 
                                         node.send_output(
                                             rover_command_output.clone(),
                                             Default::default(),
-                                            arrow_data
+                                            arrow_data,
                                         )?;
                                     }
                                 }
@@ -121,7 +129,7 @@ struct RoverState {
     throttle: f64,
     brake: f64,
     steering_angle: f64,
-    is_reverse: bool,  // Track if we're in reverse mode
+    is_reverse: bool, // Track if we're in reverse mode
 }
 
 impl Default for RoverState {
@@ -138,9 +146,9 @@ impl Default for RoverState {
 impl KeyboardDispatcher {
     fn new() -> Self {
         Self {
-            move_scale: 0.01,        // 1cm for arm movements
-            steer_scale: 5.0,        // 5 degrees for steering
-            throttle_scale: 0.2,     // 20% throttle increment
+            move_scale: 0.01,    // 1cm for arm movements
+            steer_scale: 5.0,    // 5 degrees for steering
+            throttle_scale: 0.2, // 20% throttle increment
             current_rover_state: RoverState::default(),
         }
     }
@@ -154,41 +162,60 @@ impl KeyboardDispatcher {
                 // Throttle forward (clear reverse and increase forward throttle)
                 self.current_rover_state.brake = 0.0;
                 self.current_rover_state.is_reverse = false;
-                self.current_rover_state.throttle = (self.current_rover_state.throttle + self.throttle_scale).min(1.0);
+                self.current_rover_state.throttle =
+                    (self.current_rover_state.throttle + self.throttle_scale).min(1.0);
                 let rover_cmd = self.create_rover_command();
                 let metadata = self.create_metadata();
                 commands.push(DispatchedCommand::Rover(rover_cmd, metadata));
-                tracing::debug!("ROVER: Throttle forward ({:.2})", self.current_rover_state.throttle);
+                tracing::debug!(
+                    "ROVER: Throttle forward ({:.2})",
+                    self.current_rover_state.throttle
+                );
             }
             "s" => {
                 // Throttle backward (Unity uses negative throttle for reverse)
-                self.current_rover_state.throttle = (self.current_rover_state.throttle - self.throttle_scale).max(-1.0);
-                self.current_rover_state.brake = 0.0;  // Clear brakes for movement
+                self.current_rover_state.throttle =
+                    (self.current_rover_state.throttle - self.throttle_scale).max(-1.0);
+                self.current_rover_state.brake = 0.0; // Clear brakes for movement
                 self.current_rover_state.is_reverse = self.current_rover_state.throttle < 0.0;
                 let rover_cmd = self.create_rover_command();
                 let metadata = self.create_metadata();
                 commands.push(DispatchedCommand::Rover(rover_cmd, metadata));
                 if self.current_rover_state.is_reverse {
-                    tracing::debug!("ROVER: Reverse movement (throttle: {:.2})", self.current_rover_state.throttle);
+                    tracing::debug!(
+                        "ROVER: Reverse movement (throttle: {:.2})",
+                        self.current_rover_state.throttle
+                    );
                 } else {
-                    tracing::debug!("ROVER: Slowing down (throttle: {:.2})", self.current_rover_state.throttle);
+                    tracing::debug!(
+                        "ROVER: Slowing down (throttle: {:.2})",
+                        self.current_rover_state.throttle
+                    );
                 }
             }
             "a" => {
                 // Steer left (positive steering angle)
-                self.current_rover_state.steering_angle = (self.current_rover_state.steering_angle + self.steer_scale).min(15.0);
+                self.current_rover_state.steering_angle =
+                    (self.current_rover_state.steering_angle + self.steer_scale).min(15.0);
                 let rover_cmd = self.create_rover_command();
                 let metadata = self.create_metadata();
                 commands.push(DispatchedCommand::Rover(rover_cmd, metadata));
-                tracing::debug!("ROVER: Steer left ({:.1} degrees)", self.current_rover_state.steering_angle);
+                tracing::debug!(
+                    "ROVER: Steer left ({:.1} degrees)",
+                    self.current_rover_state.steering_angle
+                );
             }
             "d" => {
                 // Steer right (negative steering angle)
-                self.current_rover_state.steering_angle = (self.current_rover_state.steering_angle - self.steer_scale).max(-15.0);
+                self.current_rover_state.steering_angle =
+                    (self.current_rover_state.steering_angle - self.steer_scale).max(-15.0);
                 let rover_cmd = self.create_rover_command();
                 let metadata = self.create_metadata();
                 commands.push(DispatchedCommand::Rover(rover_cmd, metadata));
-                tracing::debug!("ROVER: Steer right ({:.1} degrees)", self.current_rover_state.steering_angle);
+                tracing::debug!(
+                    "ROVER: Steer right ({:.1} degrees)",
+                    self.current_rover_state.steering_angle
+                );
             }
             "q" => {
                 // Emergency brake (stop everything)

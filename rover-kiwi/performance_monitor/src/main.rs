@@ -1,9 +1,4 @@
-use dora_node_api::{
-    arrow::array::BinaryArray,
-    dora_core::config::DataId,
-    DoraNode,
-    Event,
-};
+use dora_node_api::{arrow::array::BinaryArray, dora_core::config::DataId, DoraNode, Event};
 use eyre::Result;
 use robo_rover_lib::init_tracing;
 use robo_rover_lib::types::{NodeMetrics, SystemMetrics};
@@ -206,8 +201,10 @@ fn main() -> Result<()> {
                     // Collect system-wide metrics
                     system_metrics.total_cpu_percent = sys.global_cpu_usage();
                     system_metrics.total_memory_mb = (sys.used_memory() as f32) / 1024.0 / 1024.0;
-                    system_metrics.available_memory_mb = (sys.available_memory() as f32) / 1024.0 / 1024.0;
-                    system_metrics.total_system_memory_mb = (sys.total_memory() as f32) / 1024.0 / 1024.0;
+                    system_metrics.available_memory_mb =
+                        (sys.available_memory() as f32) / 1024.0 / 1024.0;
+                    system_metrics.total_system_memory_mb =
+                        (sys.total_memory() as f32) / 1024.0 / 1024.0;
 
                     // Collect battery information if available
                     let (battery_level, battery_voltage) = read_battery_info();
@@ -224,12 +221,7 @@ fn main() -> Result<()> {
                                 let name_str = p.name().to_string_lossy().to_lowercase();
                                 name_str.contains(&node_name.replace("-", "_"))
                             })
-                            .map(|(_, p)| {
-                                (
-                                    p.cpu_usage(),
-                                    (p.memory() as f32) / 1024.0 / 1024.0,
-                                )
-                            })
+                            .map(|(_, p)| (p.cpu_usage(), (p.memory() as f32) / 1024.0 / 1024.0))
                             .unwrap_or((0.0, 0.0));
 
                         let metrics = tracker.calculate_metrics(cpu_percent, memory_mb);
@@ -241,7 +233,12 @@ fn main() -> Result<()> {
 
                     // Estimate end-to-end latency (sum of avg processing times in vision pipeline)
                     // For rover-kiwi: camera -> detector -> tracker -> zenoh-bridge
-                    let vision_pipeline = ["gst-camera", "object-detector", "object-tracker", "zenoh-bridge"];
+                    let vision_pipeline = [
+                        "gst-camera",
+                        "object-detector",
+                        "object-tracker",
+                        "zenoh-bridge",
+                    ];
                     system_metrics.end_to_end_latency_ms = vision_pipeline
                         .iter()
                         .filter_map(|node| system_metrics.node_metrics.get(*node))
@@ -254,16 +251,19 @@ fn main() -> Result<()> {
                     node.send_output(
                         DataId::from("metrics".to_owned()),
                         Default::default(),
-                        arrow_data
+                        arrow_data,
                     )?;
 
                     // Log metrics with battery info if available
-                    let battery_info = match (system_metrics.battery_level, system_metrics.battery_voltage) {
-                        (Some(level), Some(voltage)) => format!(", Battery: {:.1}% ({:.2}V)", level, voltage),
-                        (Some(level), None) => format!(", Battery: {:.1}%", level),
-                        (None, Some(voltage)) => format!(", Battery: {:.2}V", voltage),
-                        (None, None) => String::new(),
-                    };
+                    let battery_info =
+                        match (system_metrics.battery_level, system_metrics.battery_voltage) {
+                            (Some(level), Some(voltage)) => {
+                                format!(", Battery: {:.1}% ({:.2}V)", level, voltage)
+                            }
+                            (Some(level), None) => format!(", Battery: {:.1}%", level),
+                            (None, Some(voltage)) => format!(", Battery: {:.2}V", voltage),
+                            (None, None) => String::new(),
+                        };
 
                     tracing::debug!(
                         "System metrics - CPU: {:.1}%, Memory: {:.0}MB/{:.0}MB, Dataflow FPS: {:.1}, Latency: {:.1}ms{}",

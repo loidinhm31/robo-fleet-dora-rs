@@ -1,13 +1,13 @@
 use dora_node_api::{
-    arrow::array::{Array, BinaryArray, UInt8Array, Float32Array},
+    arrow::array::{Array, BinaryArray, Float32Array, UInt8Array},
     dora_core::config::DataId,
     DoraNode, Event,
 };
 use eyre::Result;
 use robo_rover_lib::{
-    capture_age_ms, init_tracing, FrameSequenceTracker, MetricWindow, RawVideoFramePacket,
-    VideoFrameMetadata,
-    types::{RoverCommandWithMetadata, ArmCommandWithMetadata, InputSource},
+    capture_age_ms, init_tracing,
+    types::{ArmCommandWithMetadata, InputSource, RoverCommandWithMetadata},
+    FrameSequenceTracker, MetricWindow, RawVideoFramePacket, VideoFrameMetadata,
 };
 use std::time::{Duration, Instant};
 use zenoh::Config;
@@ -43,12 +43,14 @@ async fn main() -> Result<()> {
         tracing::warn!("Config file not found at {}", config_path);
         tracing::warn!("Using default config with peer mode");
         let mut config = Config::default();
-        config.insert_json5("mode", "\"peer\"")
+        config
+            .insert_json5("mode", "\"peer\"")
             .map_err(|e| eyre::eyre!("Failed to set Zenoh mode: {}", e))?;
         config
     };
 
-    let session = zenoh::open(config).await
+    let session = zenoh::open(config)
+        .await
         .map_err(|e| eyre::eyre!("Failed to open Zenoh session: {}", e))?;
 
     tracing::info!("Zenoh session ID: {}", session.zid());
@@ -75,7 +77,13 @@ async fn main() -> Result<()> {
     let rover_telemetry_pub = session
         .declare_publisher(&rover_telemetry_topic)
         .await
-        .map_err(|e| eyre::eyre!("Failed to declare publisher {}: {}", rover_telemetry_topic, e))?;
+        .map_err(|e| {
+            eyre::eyre!(
+                "Failed to declare publisher {}: {}",
+                rover_telemetry_topic,
+                e
+            )
+        })?;
     tracing::info!("Publisher: {}", rover_telemetry_topic);
 
     let arm_telemetry_topic = format!("rover/{}/telemetry/arm", entity_id);
@@ -89,7 +97,13 @@ async fn main() -> Result<()> {
     let servo_telemetry_pub = session
         .declare_publisher(&servo_telemetry_topic)
         .await
-        .map_err(|e| eyre::eyre!("Failed to declare publisher {}: {}", servo_telemetry_topic, e))?;
+        .map_err(|e| {
+            eyre::eyre!(
+                "Failed to declare publisher {}: {}",
+                servo_telemetry_topic,
+                e
+            )
+        })?;
     tracing::info!("Publisher: {}", servo_telemetry_topic);
 
     let metrics_topic = format!("rover/{}/metrics", entity_id);
@@ -112,14 +126,26 @@ async fn main() -> Result<()> {
     let tracked_detections_pub = session
         .declare_publisher(&tracked_detections_topic)
         .await
-        .map_err(|e| eyre::eyre!("Failed to declare publisher {}: {}", tracked_detections_topic, e))?;
+        .map_err(|e| {
+            eyre::eyre!(
+                "Failed to declare publisher {}: {}",
+                tracked_detections_topic,
+                e
+            )
+        })?;
     tracing::info!("Publisher: {}", tracked_detections_topic);
 
     let tracking_telemetry_topic = format!("rover/{}/telemetry/tracking", entity_id);
     let tracking_telemetry_pub = session
         .declare_publisher(&tracking_telemetry_topic)
         .await
-        .map_err(|e| eyre::eyre!("Failed to declare publisher {}: {}", tracking_telemetry_topic, e))?;
+        .map_err(|e| {
+            eyre::eyre!(
+                "Failed to declare publisher {}: {}",
+                tracking_telemetry_topic,
+                e
+            )
+        })?;
     tracing::info!("Publisher: {}", tracking_telemetry_topic);
 
     // =========================================================================
@@ -423,14 +449,23 @@ async fn main() -> Result<()> {
 fn frame_metadata(
     parameters: &std::collections::BTreeMap<String, dora_node_api::Parameter>,
 ) -> Result<VideoFrameMetadata, String> {
-    let integer = |key: &str| parameters.get(key).and_then(|value| match value {
-        dora_node_api::Parameter::Integer(value) => u64::try_from(*value).ok(),
-        _ => None,
-    }).ok_or_else(|| format!("missing or invalid {key}"));
+    let integer = |key: &str| {
+        parameters
+            .get(key)
+            .and_then(|value| match value {
+                dora_node_api::Parameter::Integer(value) => u64::try_from(*value).ok(),
+                _ => None,
+            })
+            .ok_or_else(|| format!("missing or invalid {key}"))
+    };
     Ok(VideoFrameMetadata {
         frame_id: integer("frame_id")?,
         capture_timestamp_ms: integer("capture_timestamp_ms")?,
-        width: integer("width")?.try_into().map_err(|_| "width exceeds u32")?,
-        height: integer("height")?.try_into().map_err(|_| "height exceeds u32")?,
+        width: integer("width")?
+            .try_into()
+            .map_err(|_| "width exceeds u32")?,
+        height: integer("height")?
+            .try_into()
+            .map_err(|_| "height exceeds u32")?,
     })
 }
