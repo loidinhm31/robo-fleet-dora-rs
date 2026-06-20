@@ -7,7 +7,7 @@ use eyre::Result;
 use robo_rover_lib::{
     ArmCommand, ArmCommandWithMetadata, AudioAction, AudioControl, CameraAction, CameraControl,
     CommandMetadata, CommandPriority, InputSource, RoverCommand, RoverCommandWithMetadata,
-    init_tracing,
+    capture_age_ms, init_tracing, FrameSequenceTracker, MetricWindow,
 };
 use robo_rover_lib::types::{DetectionFrame, TrackingCommand, TrackingTelemetry, SpeechTranscription, SystemMetrics, FleetStatus, FleetSelectCommand, FleetSubscriptionCommand, ActiveRoversStatus};
 use serde::{Deserialize, Serialize};
@@ -1334,6 +1334,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state_for_video = shared_state.clone();
     let io_for_video = io_handle.clone();
     let mut frame_counter = 0u64;
+    let mut video_emit_metrics = MetricWindow::new(Duration::from_secs(5));
+    let mut video_age_metrics = MetricWindow::new(Duration::from_secs(5));
+    let mut video_sequence = FrameSequenceTracker::default();
 
     loop {
         if let Some(event) = events.recv() {
@@ -1415,8 +1418,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     "video_frame" => {
-                        frame_counter += 1;
-
                         // Extract metadata (added by video-encoder)
                         let width = metadata.parameters.get("width")
                             .and_then(|v| match v {
@@ -1439,14 +1440,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             })
                             .unwrap_or_else(|| "jpeg".to_string());
 
+                        let capture_frame_id = metadata.parameters.get("frame_id")
+                            .and_then(|value| match value {
+                                dora_node_api::Parameter::Integer(value) => u64::try_from(*value).ok(),
+                                _ => None,
+                            });
+                        let capture_timestamp_ms = metadata.parameters.get("capture_timestamp_ms")
+                            .and_then(|value| match value {
+                                dora_node_api::Parameter::Integer(value) => u64::try_from(*value).ok(),
+                                _ => None,
+                            });
+
                         // Get pre-encoded JPEG data from video-encoder (sent as BinaryArray)
                         if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
                             if binary_array.len() > 0 {
+                                let emit_started = Instant::now();
                                 let jpeg_data = binary_array.value(0).to_vec();
+
+                                let (Some(capture_frame_id), Some(capture_timestamp_ms)) =
+                                    (capture_frame_id, capture_timestamp_ms) else {
+                                    video_emit_metrics.record_error();
+                                    tracing::error!("video frame missing capture identity");
+                                    continue;
+                                };
+                                match video_sequence.observe(capture_frame_id) {
+                                    Ok(missing) => video_emit_metrics.record_drops(missing),
+                                    Err(()) => video_emit_metrics.record_error(),
+                                }
+                                let frame_age_ms = capture_age_ms(capture_timestamp_ms)
+                                    .unwrap_or_else(|| {
+                                        video_emit_metrics.record_error();
+                                        0
+                                    });
+                                video_age_metrics.record(Duration::from_millis(frame_age_ms), 0);
 
                                 tracing::debug!(
                                     "Received pre-encoded frame {}: {}x{} {} ({} bytes)",
-                                    frame_counter, width, height, codec, jpeg_data.len()
+                                    capture_frame_id, width, height, codec, jpeg_data.len()
                                 );
 
                                 // Send pre-encoded JPEG to all connected clients
@@ -1454,14 +1484,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     for client in clients.iter() {
                                         if client.should_send_video() {
                                             if let Some(ref io) = *io_for_video.lock().unwrap() {
-                                                let timestamp = SystemTime::now()
-                                                    .duration_since(UNIX_EPOCH)
-                                                    .unwrap()
-                                                    .as_millis() as u64;
-
                                                 let frame_data = serde_json::json!({
-                                                    "timestamp": timestamp,
-                                                    "frame_id": frame_counter,
+                                                    "timestamp": capture_timestamp_ms,
+                                                    "capture_timestamp_ms": capture_timestamp_ms,
+                                                    "frame_id": capture_frame_id,
                                                     "width": width,
                                                     "height": height,
                                                     "codec": codec,
@@ -1473,14 +1499,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     .unwrap()
                                                     .get_socket((&client.socket_id).parse().unwrap())
                                                 {
-                                                    let _ = socket.emit("video_frame", frame_data);
-                                                    client.mark_video_sent();
+                                                    match socket.emit("video_frame", frame_data) {
+                                                        Ok(_) => {
+                                                            client.mark_video_sent();
+                                                            video_emit_metrics.record(
+                                                                emit_started.elapsed(), jpeg_data.len(),
+                                                            );
+                                                        }
+                                                        Err(error) => {
+                                                            video_emit_metrics.record_error();
+                                                            tracing::warn!(%error, "video frame emit failed");
+                                                        }
+                                                    }
                                                 }
                                             }
                                         } else {
                                             client.mark_frame_dropped();
+                                            video_emit_metrics.record_drop();
                                         }
                                     }
+                                }
+                                if let Some(snapshot) = video_emit_metrics.snapshot_if_due() {
+                                    let frame_age_ms = capture_age_ms(capture_timestamp_ms)
+                                        .unwrap_or_else(|| {
+                                            video_emit_metrics.record_error();
+                                            0
+                                        });
+                                    tracing::info!(metric="video_pipeline", stage="web_emit",
+                                        frame_id=capture_frame_id, frame_age_ms,
+                                        count=snapshot.count, bytes=snapshot.bytes,
+                                        drops=snapshot.drops, errors=snapshot.errors,
+                                        p50_us=snapshot.p50_us, p95_us=snapshot.p95_us,
+                                        p99_us=snapshot.p99_us, max_us=snapshot.max_us);
+                                }
+                                if let Some(snapshot) = video_age_metrics.snapshot_if_due() {
+                                    tracing::info!(metric="video_pipeline", stage="web_receive_age",
+                                        count=snapshot.count, p50_us=snapshot.p50_us,
+                                        p95_us=snapshot.p95_us, p99_us=snapshot.p99_us,
+                                        max_us=snapshot.max_us);
                                 }
                             }
                         } else {

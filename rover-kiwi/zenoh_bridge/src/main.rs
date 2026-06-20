@@ -5,9 +5,11 @@ use dora_node_api::{
 };
 use eyre::Result;
 use robo_rover_lib::{
-    init_tracing,
+    capture_age_ms, init_tracing, FrameSequenceTracker, MetricWindow, RawVideoFramePacket,
+    VideoFrameMetadata,
     types::{RoverCommandWithMetadata, ArmCommandWithMetadata, InputSource},
 };
+use std::time::{Duration, Instant};
 use zenoh::Config;
 
 #[tokio::main]
@@ -189,6 +191,9 @@ async fn main() -> Result<()> {
     let mut video_count: u64 = 0;
     let mut telemetry_count: u64 = 0;
     let mut cmd_count: u64 = 0;
+    let mut video_metrics = MetricWindow::new(Duration::from_secs(5));
+    let mut video_age_metrics = MetricWindow::new(Duration::from_secs(5));
+    let mut video_sequence = FrameSequenceTracker::default();
 
     // Create channel to bridge Dora's sync events to async
     let (dora_tx, dora_rx) = flume::unbounded();
@@ -213,17 +218,61 @@ async fn main() -> Result<()> {
             // Handle Dora events (data FROM local dataflow TO publish to Zenoh)
             Ok(event) = dora_rx.recv_async() => {
                 match event {
-                    Event::Input { id, data, .. } => {
+                    Event::Input { id, data, metadata } => {
                         match id.as_str() {
                             "video_frame" => {
                                 // Video frames are UInt8Array (raw RGB8 bytes)
                                 if let Some(uint8_array) = data.as_any().downcast_ref::<UInt8Array>() {
                                     if uint8_array.len() > 0 {
+                                        let started = Instant::now();
                                         let bytes = uint8_array.values().as_ref();
-                                        let _ = video_pub.put(bytes).await;
-                                        video_count += 1;
-                                        if video_count % 30 == 0 {
-                                            tracing::info!("Published {} video frames", video_count);
+                                        match frame_metadata(&metadata.parameters).and_then(|metadata| {
+                                            match video_sequence.observe(metadata.frame_id) {
+                                                Ok(missing) => video_metrics.record_drops(missing),
+                                                Err(()) => {
+                                                    video_metrics.record_error();
+                                                    return Err("duplicate or regressed frame_id".into());
+                                                }
+                                            }
+                                            let age_ms = capture_age_ms(metadata.capture_timestamp_ms)
+                                                .unwrap_or_else(|| {
+                                                    video_metrics.record_error();
+                                                    0
+                                                });
+                                            video_age_metrics.record(Duration::from_millis(age_ms), 0);
+                                            RawVideoFramePacket { metadata, payload: bytes }.encode()
+                                        }) {
+                                            Ok(packet) => match video_pub.put(&packet).await {
+                                                Ok(_) => {
+                                                    video_count += 1;
+                                                    video_metrics.record(started.elapsed(), packet.len());
+                                                }
+                                                Err(error) => {
+                                                    video_metrics.record_error();
+                                                    tracing::error!(%error, "failed to publish video frame");
+                                                }
+                                            },
+                                            Err(error) => {
+                                                video_metrics.record_error();
+                                                tracing::error!(%error, "invalid video frame metadata");
+                                            }
+                                        }
+                                        if let Some(snapshot) = video_metrics.snapshot_if_due() {
+                                            let capture_timestamp_ms = frame_metadata(&metadata.parameters)
+                                                .map(|value| value.capture_timestamp_ms).unwrap_or_default();
+                                            let frame_age_ms = capture_age_ms(capture_timestamp_ms)
+                                                .unwrap_or_default();
+                                            tracing::info!(metric="video_pipeline", stage="rover_zenoh_publish",
+                                                frame_age_ms, count=snapshot.count, bytes=snapshot.bytes,
+                                                drops=snapshot.drops, errors=snapshot.errors,
+                                                p50_us=snapshot.p50_us, p95_us=snapshot.p95_us,
+                                                p99_us=snapshot.p99_us, max_us=snapshot.max_us);
+                                        }
+                                        if let Some(snapshot) = video_age_metrics.snapshot_if_due() {
+                                            tracing::info!(metric="video_pipeline", stage="rover_zenoh_publish_age",
+                                                count=snapshot.count, p50_us=snapshot.p50_us,
+                                                p95_us=snapshot.p95_us, p99_us=snapshot.p99_us,
+                                                max_us=snapshot.max_us);
                                         }
                                     }
                                 }
@@ -369,4 +418,19 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn frame_metadata(
+    parameters: &std::collections::BTreeMap<String, dora_node_api::Parameter>,
+) -> Result<VideoFrameMetadata, String> {
+    let integer = |key: &str| parameters.get(key).and_then(|value| match value {
+        dora_node_api::Parameter::Integer(value) => u64::try_from(*value).ok(),
+        _ => None,
+    }).ok_or_else(|| format!("missing or invalid {key}"));
+    Ok(VideoFrameMetadata {
+        frame_id: integer("frame_id")?,
+        capture_timestamp_ms: integer("capture_timestamp_ms")?,
+        width: integer("width")?.try_into().map_err(|_| "width exceeds u32")?,
+        height: integer("height")?.try_into().map_err(|_| "height exceeds u32")?,
+    })
 }

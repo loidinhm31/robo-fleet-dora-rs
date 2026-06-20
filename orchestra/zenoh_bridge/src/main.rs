@@ -4,11 +4,14 @@ use dora_node_api::{
     DoraNode, Event, Parameter,
 };
 use eyre::Result;
-use robo_rover_lib::{init_tracing, FleetSelectCommand, FleetSubscriptionCommand};
+use robo_rover_lib::{
+    capture_age_ms, init_tracing, FleetSelectCommand, FleetSubscriptionCommand,
+    FrameSequenceTracker, MetricWindow, RawVideoFramePacket,
+};
 use serde_json;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use zenoh::Config;
 
@@ -296,6 +299,9 @@ async fn main() -> Result<()> {
     // Statistics per rover
     let video_counts: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
     let audio_counts: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+    let mut video_metrics = MetricWindow::new(Duration::from_secs(5));
+    let mut video_age_metrics = MetricWindow::new(Duration::from_secs(5));
+    let mut video_sequences: HashMap<String, FrameSequenceTracker> = HashMap::new();
 
     // Create channel to bridge Dora's sync events to async
     let (dora_tx, dora_rx) = flume::unbounded();
@@ -445,27 +451,56 @@ async fn main() -> Result<()> {
             // Receive from all active rovers' video subscriptions
             result = receive_from_rovers(&active_rovers, |subs| &subs.video_sub) => {
                 if let Some((entity_id, sample)) = result {
+                    let receive_started = Instant::now();
                     let payload = sample.payload().to_bytes();
-
-                    // Forward raw RGB8 data as UInt8Array with entity_id in metadata
-                    let video_array = UInt8Array::from(payload.to_vec());
-
-                    // Add entity_id and video metadata to parameters
-                    let mut params = BTreeMap::new();
-                    params.insert("entity_id".to_owned(), Parameter::String(entity_id.clone()));
-                    params.insert("width".to_owned(), Parameter::Integer(frame_width));
-                    params.insert("height".to_owned(), Parameter::Integer(frame_height));
-                    params.insert("encoding".to_owned(), Parameter::String("rgb8".to_string()));
-                    params.insert("timestamp".to_owned(),
-                        Parameter::Integer(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64)
-                    );
-
-                    let _ = node.send_output(video_frame_output.clone(), params, video_array);
-
-                    let mut counts = video_counts.lock().await;
-                    *counts.entry(entity_id).or_insert(0) += 1;
-                    if counts.values().sum::<u64>() % 30 == 0 {
-                        tracing::debug!("Video frames: {:?}", counts);
+                    match RawVideoFramePacket::decode(payload.as_ref()) {
+                        Ok(frame) => {
+                            match video_sequences.entry(entity_id.clone()).or_default()
+                                .observe(frame.metadata.frame_id) {
+                                Ok(missing) => video_metrics.record_drops(missing),
+                                Err(()) => video_metrics.record_error(),
+                            }
+                            let frame_age_ms = capture_age_ms(frame.metadata.capture_timestamp_ms)
+                                .unwrap_or_else(|| {
+                                    video_metrics.record_error();
+                                    0
+                                });
+                            video_age_metrics.record(Duration::from_millis(frame_age_ms), 0);
+                            let video_array = UInt8Array::from(frame.payload.to_vec());
+                            let mut params = BTreeMap::new();
+                            params.insert("entity_id".to_owned(), Parameter::String(entity_id.clone()));
+                            params.insert("width".to_owned(), Parameter::Integer(frame.metadata.width as i64));
+                            params.insert("height".to_owned(), Parameter::Integer(frame.metadata.height as i64));
+                            params.insert("encoding".to_owned(), Parameter::String("RGB8".to_string()));
+                            params.insert("frame_id".to_owned(), Parameter::Integer(frame.metadata.frame_id as i64));
+                            params.insert("capture_timestamp_ms".to_owned(),
+                                Parameter::Integer(frame.metadata.capture_timestamp_ms as i64));
+                            if let Err(error) = node.send_output(video_frame_output.clone(), params, video_array) {
+                                video_metrics.record_error();
+                                tracing::error!(%error, "failed to forward video frame to Dora");
+                            } else {
+                                video_metrics.record(receive_started.elapsed(), payload.len());
+                                let mut counts = video_counts.lock().await;
+                                *counts.entry(entity_id).or_insert(0) += 1;
+                            }
+                            if let Some(snapshot) = video_metrics.snapshot_if_due() {
+                                tracing::info!(metric="video_pipeline", stage="orchestra_zenoh_receive",
+                                    frame_id=frame.metadata.frame_id, frame_age_ms,
+                                    count=snapshot.count, bytes=snapshot.bytes, drops=snapshot.drops,
+                                    errors=snapshot.errors, p50_us=snapshot.p50_us,
+                                    p95_us=snapshot.p95_us, p99_us=snapshot.p99_us, max_us=snapshot.max_us);
+                            }
+                            if let Some(snapshot) = video_age_metrics.snapshot_if_due() {
+                                tracing::info!(metric="video_pipeline", stage="orchestra_zenoh_receive_age",
+                                    count=snapshot.count, p50_us=snapshot.p50_us,
+                                    p95_us=snapshot.p95_us, p99_us=snapshot.p99_us,
+                                    max_us=snapshot.max_us);
+                            }
+                        }
+                        Err(error) => {
+                            video_metrics.record_error();
+                            tracing::warn!(%error, entity_id, "rejected invalid raw video packet");
+                        }
                     }
                 }
             }

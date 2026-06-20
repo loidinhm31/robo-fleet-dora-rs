@@ -69,18 +69,18 @@ nodes:
     env:
       # Camera
       SOURCE_TYPE: "webcam"
-      SOURCE_URI: "/dev/video0"
+      SOURCE_URI: "${ROVER_CAMERA_URI:-/dev/video0}"
       IMAGE_COLS: "640"
       IMAGE_ROWS: "480"
       SOURCE_FPS: "30"
       # YOLO detector (lazy-loaded on first TrackingCommand::Enable)
-      MODEL_PATH: "${HOME}/.cache/yolo/yolo12n.onnx"
+      MODEL_PATH: "${ROVER_YOLO_MODEL_PATH:-models/.cache/yolo/yolo12n.onnx}"
       CONFIDENCE_THRESHOLD: "0.5"
       NMS_THRESHOLD: "0.4"
       TARGET_CLASSES: ""
-      ORT_DYLIB_PATH: "/usr/local/lib/libonnxruntime.so"
+      ORT_DYLIB_PATH: "${ROVER_ORT_DYLIB_PATH:-/usr/local/lib/libonnxruntime.so}"
       # ReID extractor
-      REID_MODEL_PATH: "${HOME}/.cache/reid/osnet_x0_25.onnx"
+      REID_MODEL_PATH: "${ROVER_REID_MODEL_PATH:-models/.cache/reid/osnet_x0_25.onnx}"
       MIN_BBOX_SIZE: "32"
       # BoTSORT tracker
       MAX_TRACKING_AGE: "50"
@@ -94,7 +94,7 @@ nodes:
     build: cargo build --release -p visual_servo_controller
     path: ../target/release/visual_servo_controller
     inputs:
-      tracking_telemetry: gst-camera/tracking_telemetry  # Previously from object-tracker
+      tracking_telemetry: gst-camera/tracking_telemetry
     outputs:
       - servo_command
       - servo_telemetry
@@ -177,4 +177,4 @@ nodes:
       RUST_LOG: info
       ZENOH_MODE: "peer"
       ENTITY_ID: "rover-kiwi"
-      ZENOH_CONFIG: "${HOME}/ws/sharing/robo-fleet-dora-rs/rover-kiwi/zenoh_bridge/zenoh_config.json5"
+      ZENOH_CONFIG: "${ROVER_ZENOH_CONFIG:-zenoh_bridge/zenoh_config.json5}"

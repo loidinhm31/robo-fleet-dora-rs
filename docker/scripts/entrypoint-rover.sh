@@ -224,9 +224,6 @@ sed -i 's|MODEL_PATH: "${HOME}/.cache/yolo/yolo12n.onnx"|MODEL_PATH: "/models/yo
 sed -i 's|REID_MODEL_PATH: "${HOME}/.cache/reid/osnet_x0_25.onnx"|REID_MODEL_PATH: "/models/reid/osnet_x0_25.onnx"|g' "$DATAFLOW_TMP"
 sed -i 's|TTS_MODEL_DIR: "${HOME}/.cache/sherpa-onnx/vits-piper-en_US-lessac-medium"|TTS_MODEL_DIR: "/models/sherpa-onnx/vits-piper-en_US-lessac-medium"|g' "$DATAFLOW_TMP"
 
-# Update Zenoh config path
-sed -i 's|ZENOH_CONFIG: "${HOME}/ws/robo-fleet-dora-rs/rover-kiwi/zenoh_bridge/zenoh_config.json5"|ZENOH_CONFIG: "/app/config/zenoh_config.json5"|g' "$DATAFLOW_TMP"
-
 # Update LD_LIBRARY_PATH
 sed -i 's|LD_LIBRARY_PATH: "${HOME}/ws/robo-fleet-dora-rs/target/release"|LD_LIBRARY_PATH: "/usr/local/lib:/app/bin"|g' "$DATAFLOW_TMP"
 

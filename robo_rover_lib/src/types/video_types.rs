@@ -1,5 +1,120 @@
 use serde::{Deserialize, Serialize};
 
+const RAW_FRAME_MAGIC: &[u8; 4] = b"RFRM";
+const RAW_FRAME_VERSION: u8 = 1;
+const RAW_FRAME_HEADER_LEN: usize = 36;
+const MAX_RAW_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
+/// Capture identity that must remain unchanged through the video pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoFrameMetadata {
+    pub frame_id: u64,
+    pub capture_timestamp_ms: u64,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Versioned envelope used to preserve capture metadata on the current raw Zenoh topic.
+pub struct RawVideoFramePacket<'a> {
+    pub metadata: VideoFrameMetadata,
+    pub payload: &'a [u8],
+}
+
+impl<'a> RawVideoFramePacket<'a> {
+    pub fn encode(&self) -> Result<Vec<u8>, String> {
+        validate_raw_frame(self.metadata, self.payload.len())?;
+        let payload_len = u32::try_from(self.payload.len())
+            .map_err(|_| "raw frame payload exceeds u32".to_string())?;
+        let mut packet = Vec::with_capacity(RAW_FRAME_HEADER_LEN + self.payload.len());
+        packet.extend_from_slice(RAW_FRAME_MAGIC);
+        packet.push(RAW_FRAME_VERSION);
+        packet.extend_from_slice(&[0; 3]);
+        packet.extend_from_slice(&self.metadata.frame_id.to_le_bytes());
+        packet.extend_from_slice(&self.metadata.capture_timestamp_ms.to_le_bytes());
+        packet.extend_from_slice(&self.metadata.width.to_le_bytes());
+        packet.extend_from_slice(&self.metadata.height.to_le_bytes());
+        packet.extend_from_slice(&payload_len.to_le_bytes());
+        packet.extend_from_slice(self.payload);
+        Ok(packet)
+    }
+
+    pub fn decode(packet: &'a [u8]) -> Result<Self, String> {
+        if packet.len() < RAW_FRAME_HEADER_LEN {
+            return Err("raw frame packet is truncated".into());
+        }
+        if &packet[..4] != RAW_FRAME_MAGIC || packet[4] != RAW_FRAME_VERSION {
+            return Err("unsupported raw frame packet".into());
+        }
+        let frame_id = read_u64(packet, 8)?;
+        let capture_timestamp_ms = read_u64(packet, 16)?;
+        let width = read_u32(packet, 24)?;
+        let height = read_u32(packet, 28)?;
+        let payload_len = read_u32(packet, 32)? as usize;
+        let expected_len = RAW_FRAME_HEADER_LEN.checked_add(payload_len)
+            .ok_or_else(|| "raw frame packet length overflow".to_string())?;
+        if packet.len() != expected_len {
+            return Err("raw frame packet payload length mismatch".into());
+        }
+        let metadata = VideoFrameMetadata { frame_id, capture_timestamp_ms, width, height };
+        validate_raw_frame(metadata, payload_len)?;
+        Ok(Self { metadata, payload: &packet[RAW_FRAME_HEADER_LEN..] })
+    }
+}
+
+fn validate_raw_frame(metadata: VideoFrameMetadata, payload_len: usize) -> Result<(), String> {
+    if metadata.width == 0 || metadata.height == 0 {
+        return Err("raw frame dimensions must be non-zero".into());
+    }
+    let expected = (metadata.width as usize)
+        .checked_mul(metadata.height as usize)
+        .and_then(|pixels| pixels.checked_mul(3))
+        .ok_or_else(|| "raw frame dimensions overflow".to_string())?;
+    if expected > MAX_RAW_FRAME_BYTES || payload_len != expected {
+        return Err(format!("invalid raw RGB8 payload: expected {expected}, got {payload_len}"));
+    }
+    Ok(())
+}
+
+fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, String> {
+    bytes.get(offset..offset + 8).and_then(|v| v.try_into().ok())
+        .map(u64::from_le_bytes).ok_or_else(|| "truncated u64 field".into())
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, String> {
+    bytes.get(offset..offset + 4).and_then(|v| v.try_into().ok())
+        .map(u32::from_le_bytes).ok_or_else(|| "truncated u32 field".into())
+}
+
+#[cfg(test)]
+mod raw_frame_tests {
+    use super::*;
+
+    #[test]
+    fn raw_frame_packet_round_trips_identity_and_payload() {
+        let payload = vec![7; 2 * 3 * 3];
+        let metadata = VideoFrameMetadata {
+            frame_id: 42, capture_timestamp_ms: 1_700_000_000_123, width: 2, height: 3,
+        };
+        let encoded = RawVideoFramePacket { metadata, payload: &payload }.encode().unwrap();
+        let decoded = RawVideoFramePacket::decode(&encoded).unwrap();
+        assert_eq!(decoded.metadata, metadata);
+        assert_eq!(decoded.payload, payload);
+    }
+
+    #[test]
+    fn raw_frame_packet_rejects_bad_lengths_and_headers() {
+        assert!(RawVideoFramePacket::decode(b"RFRM").is_err());
+        let payload = vec![0; 3];
+        let metadata = VideoFrameMetadata {
+            frame_id: 1, capture_timestamp_ms: 2, width: 1, height: 1,
+        };
+        let mut encoded = RawVideoFramePacket { metadata, payload: &payload }.encode().unwrap();
+        encoded[4] = 9;
+        assert!(RawVideoFramePacket::decode(&encoded).is_err());
+        assert!(RawVideoFramePacket { metadata, payload: &[] }.encode().is_err());
+    }
+}
+
 /// Raw audio frame data from microphone
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioFrame {

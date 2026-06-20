@@ -5,9 +5,9 @@ use dora_node_api::{
 use eyre::{Result, eyre};
 use image::{ImageBuffer, Rgb, codecs::jpeg::JpegEncoder};
 use std::io::Cursor;
-use std::env;
+use std::{env, time::Duration};
 use tracing::{info, error, debug};
-use robo_rover_lib::init_tracing;
+use robo_rover_lib::{capture_age_ms, init_tracing, FrameSequenceTracker, MetricWindow};
 
 #[derive(Debug, Clone, Copy)]
 struct EncoderConfig {
@@ -100,6 +100,9 @@ fn main() -> Result<()> {
     let mut frames_encoded = 0u64;
     let mut encoding_errors = 0u64;
     let mut total_encoding_time_ms = 0u64;
+    let mut encode_metrics = MetricWindow::new(Duration::from_secs(5));
+    let mut encode_age_metrics = MetricWindow::new(Duration::from_secs(5));
+    let mut frame_sequence = FrameSequenceTracker::default();
 
     info!("video_encoder node ready, waiting for video frames...");
 
@@ -125,6 +128,32 @@ fn main() -> Result<()> {
                             })
                             .unwrap_or(config.height);
 
+                        let frame_id = metadata.parameters.get("frame_id")
+                            .and_then(|value| match value {
+                                dora_node_api::Parameter::Integer(value) => u64::try_from(*value).ok(),
+                                _ => None,
+                            });
+                        let capture_timestamp_ms = metadata.parameters.get("capture_timestamp_ms")
+                            .and_then(|value| match value {
+                                dora_node_api::Parameter::Integer(value) => u64::try_from(*value).ok(),
+                                _ => None,
+                            });
+                        let (Some(frame_id), Some(capture_timestamp_ms)) =
+                            (frame_id, capture_timestamp_ms) else {
+                            encode_metrics.record_error();
+                            error!("Video frame missing capture identity");
+                            continue;
+                        };
+                        match frame_sequence.observe(frame_id) {
+                            Ok(missing) => encode_metrics.record_drops(missing),
+                            Err(()) => encode_metrics.record_error(),
+                        }
+                        let frame_age_ms = capture_age_ms(capture_timestamp_ms).unwrap_or_else(|| {
+                            encode_metrics.record_error();
+                            0
+                        });
+                        encode_age_metrics.record(Duration::from_millis(frame_age_ms), 0);
+
                         // Extract RGB8 data
                         if let Some(rgb_array) = data.as_any().downcast_ref::<UInt8Array>() {
                             let rgb_bytes = rgb_array.values().as_ref();
@@ -135,6 +164,7 @@ fn main() -> Result<()> {
                                     let encoding_time = start_time.elapsed();
                                     total_encoding_time_ms += encoding_time.as_millis() as u64;
                                     frames_encoded += 1;
+                                    encode_metrics.record(encoding_time, jpeg_data.len());
 
                                     // Calculate compression ratio
                                     let compression_ratio = rgb_bytes.len() as f32 / jpeg_data.len() as f32;
@@ -150,13 +180,19 @@ fn main() -> Result<()> {
                                         encoding_time.as_secs_f32() * 1000.0
                                     );
 
-                                    // Log performance stats every 100 frames
-                                    if frames_encoded % 100 == 0 {
-                                        let avg_encoding_time = total_encoding_time_ms as f32 / frames_encoded as f32;
-                                        debug!(
-                                            "Performance: {} frames encoded, avg {:.1}ms/frame, {} errors",
-                                            frames_encoded, avg_encoding_time, encoding_errors
-                                        );
+                                    if let Some(snapshot) = encode_metrics.snapshot_if_due() {
+                                        info!(metric="video_pipeline", stage="jpeg_encode",
+                                            frame_id, frame_age_ms, count=snapshot.count,
+                                            bytes=snapshot.bytes, drops=snapshot.drops,
+                                            errors=snapshot.errors, p50_us=snapshot.p50_us,
+                                            p95_us=snapshot.p95_us, p99_us=snapshot.p99_us,
+                                            max_us=snapshot.max_us);
+                                    }
+                                    if let Some(snapshot) = encode_age_metrics.snapshot_if_due() {
+                                        info!(metric="video_pipeline", stage="jpeg_encode_age",
+                                            count=snapshot.count, p50_us=snapshot.p50_us,
+                                            p95_us=snapshot.p95_us, p99_us=snapshot.p99_us,
+                                            max_us=snapshot.max_us);
                                     }
 
                                     // Create output metadata with encoding info
@@ -184,12 +220,14 @@ fn main() -> Result<()> {
                                 }
                                 Err(e) => {
                                     encoding_errors += 1;
+                                    encode_metrics.record_error();
                                     error!("Encoding error (frame {}): {}", frames_encoded + 1, e);
                                 }
                             }
                         } else {
                             error!("Invalid video frame data type (expected UInt8Array)");
                             encoding_errors += 1;
+                            encode_metrics.record_error();
                         }
                     }
                     other => {
