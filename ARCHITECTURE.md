@@ -162,11 +162,22 @@ ZENOH_MODE=peer
    - YOLOv12n detection
    - OSNet ReID feature extraction (512-dim appearance features)
    - BoTSORT tracking with CMC (Camera Motion Compensation)
+   - `kornia_capture` now feeds a dedicated vision worker only while detection/tracking is enabled
+   - worker uses a capacity-one latest-frame slot, so unprocessed frames are replaced, not queued
+   - worker results older than 150ms are dropped before servo/tracking publish
+   - worker config keeps ORT intra-op threads explicit; rover dataflows set `DETECTOR_INTRA_THREADS=2` and `REID_INTRA_THREADS=1`
 3. **JPEG view stream, audio, telemetry & detections** -> `rover/{entity_id}/*` topics via Zenoh
 4. **Orchestra receives** and forwards:
    - JPEG -> web-bridge (already encoded on rover)
    - Float32 audio → speech-recognizer → command-parser
    - Tracked detections with ReID features → web-bridge (for web UI display)
+
+### `kornia_capture` runtime notes
+
+- main loop drains worker results each cycle and safe-disables tracking telemetry if the worker disconnects
+- disabled tracking telemetry is emitted on worker failure or disconnect, so UI state flips immediately to off
+- worker and latest-frame slot counters are logged at shutdown for submit, replace, take, stale-drop, and error counts
+- ReID fallback preserves the YOLO detections already computed, so recovery degrades to detection-only without re-running detection
 
 ### Orchestra → Rover (Commands)
 
@@ -300,7 +311,7 @@ Future: Orchestra processes MULTIPLE rovers in parallel with:
 
 - `SOURCE_FPS` sets the camera capture cadence.
 - `VIEW_STREAM_FPS` sets the rover-side JPEG publish cadence for `video/jpeg/v1`.
-- `kornia_capture` keeps ML, tracking, and servo processing on the capture cadence; only the view/video branch is throttled.
+- `kornia_capture` keeps capture cadence separate from the vision worker; view/video is throttled independently, while detection/tracking frames are only submitted when enabled.
 - Non-webcam sources use a monotonic token bucket to pace the published view stream.
 - Webcam sources use the source-frame ratio so the published cadence stays aligned with the camera.
 
@@ -344,7 +355,7 @@ Future: Orchestra processes MULTIPLE rovers in parallel with:
 
 **Tradeoff**: Increases rover CPU usage from ~35% to ~65%
 
-**Implementation**: Full detection/ReID/tracking/servo pipeline runs locally on rover
+**Implementation**: Full detection/ReID/tracking/servo pipeline runs locally on rover, with `kornia_capture` isolating vision work behind a dedicated worker and latest-frame slot
 
 **Benefits over SORT**:
 - BoTSORT provides robust tracking for moving cameras via CMC

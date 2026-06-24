@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::info;
 
+#[derive(Debug)]
 pub enum PipelineOutput {
     /// Camera running, ML pipeline disabled. Carries telemetry with state=Disabled
     /// so web UI badge updates immediately when detection is toggled off.
@@ -40,6 +41,12 @@ pub struct ProcessedPipelineOutput {
     pub timings: PipelineTimings,
 }
 
+pub struct VisionPipelineConfig {
+    pub detector: DetectorConfig,
+    pub reid: ReIdConfig,
+    pub tracker: TrackerConfig,
+}
+
 pub struct VisionPipeline {
     ort_env: Option<Arc<ort::Environment>>,
     detector: Option<YoloDetector>,
@@ -69,6 +76,10 @@ impl VisionPipeline {
             detector_config,
             reid_config,
         }
+    }
+
+    pub fn from_config(config: VisionPipelineConfig) -> Self {
+        Self::new(config.detector, config.reid, config.tracker)
     }
 
     /// Process one camera frame. State machine:
@@ -153,16 +164,15 @@ impl VisionPipeline {
         timings.reid_count = detection_frame.detections.len();
         let reid = self.reid.as_mut().unwrap();
         let reid_started = Instant::now();
+        let detection_only_fallback = detection_frame.clone();
         let enriched = match reid.process_detections(frame, w, h, detection_frame) {
             Ok(f) => f,
             Err(e) => {
                 tracing::error!("ReID failed: {:?} — falling back to detection-only", e);
                 self.tracking_enabled = false;
-                // Telemetry reflects degradation; detections lost for this frame (ReID consumed it).
-                // Acceptable trade-off: avoids re-running YOLO under persistent ReID failure.
                 return Ok(ProcessedPipelineOutput {
                     output: PipelineOutput::DetectionOnly {
-                        detections: DetectionFrame::new(0, w, h, vec![]),
+                        detections: detection_only_fallback,
                         tracking_telemetry: self.detection_only_telemetry(),
                     },
                     timings,

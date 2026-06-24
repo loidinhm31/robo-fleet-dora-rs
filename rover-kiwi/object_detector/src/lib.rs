@@ -95,6 +95,7 @@ pub struct DetectorConfig {
     pub confidence_threshold: f32,
     pub nms_threshold: f32,
     pub target_classes: Vec<String>,
+    pub intra_threads: i16,
 }
 
 pub struct YoloDetector {
@@ -112,7 +113,7 @@ impl YoloDetector {
 
         let session = SessionBuilder::new(&env)?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(4)?
+            .with_intra_threads(config.intra_threads)?
             .with_model_from_file(&config.model_path)?;
 
         info!("YOLO model loaded, running warmup...");

@@ -1,5 +1,7 @@
+mod latest_frame;
 mod pipeline_metrics;
 mod vision_pipeline;
+mod vision_worker;
 
 use dora_node_api::{
     self,
@@ -8,19 +10,26 @@ use dora_node_api::{
     DoraNode, Event, Parameter,
 };
 use kornia_io::gstreamer::{CameraCapture, RTSPCameraConfig, V4L2CameraConfig};
+use latest_frame::CapturedFrame;
 use object_detector::DetectorConfig;
 use object_tracker::TrackerConfig;
 use pipeline_metrics::PipelineMetricWindows;
 use reid_extractor::ReIdConfig;
 use robo_rover_lib::{
-    init_tracing, types::TrackingCommand, CameraAction, CameraControl, MetricWindow, StreamCommand,
-    StreamControl,
+    init_tracing,
+    types::{TrackingCommand, TrackingState, TrackingTelemetry},
+    CameraAction, CameraControl, MetricWindow, StreamCommand, StreamControl,
 };
 use std::{
     env,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use vision_pipeline::{PipelineOutput, ProcessedPipelineOutput, VisionPipeline};
+use vision_pipeline::{PipelineOutput, VisionPipelineConfig};
+use vision_worker::{
+    CommandSubmitStatus, DrainStatus, VisionWorker, WorkerMessage, WorkerPipelineResult,
+};
+
+const MAX_SERVO_FRAME_AGE: Duration = Duration::from_millis(150);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _guard = init_tracing();
@@ -55,7 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     camera_opt.as_ref().unwrap().start()?;
     tracing::info!("{source_type} camera started");
 
-    let mut pipeline = build_pipeline()?;
+    let pipeline_config = build_pipeline_config()?;
 
     let frame_output = DataId::from("frame".to_owned());
     let (mut node, mut events) = DoraNode::init_from_env()?;
@@ -77,8 +86,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut vision_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut view_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut pipeline_metrics = PipelineMetricWindows::new();
+    let mut worker_submit_metrics = MetricWindow::new(Duration::from_secs(5));
+    let mut worker_result_metrics = MetricWindow::new(Duration::from_secs(5));
+    let mut worker_stale_metrics = MetricWindow::new(Duration::from_secs(5));
+    let mut worker_error_metrics = MetricWindow::new(Duration::from_secs(5));
+    let mut vision_worker = Some(VisionWorker::start(pipeline_config));
+    let mut vision_submission = VisionSubmissionGate::default();
 
     while let Some(event) = events.recv() {
+        if let Some(worker) = &vision_worker {
+            let drain_status = drain_worker_results(
+                worker,
+                &mut node,
+                &mut pipeline_metrics,
+                &mut worker_result_metrics,
+                &mut worker_stale_metrics,
+                &mut worker_error_metrics,
+            )?;
+            if drain_status == DrainStatus::Disconnected {
+                handle_worker_disconnected(
+                    &mut vision_worker,
+                    &mut node,
+                    &mut worker_error_metrics,
+                    "result channel disconnected",
+                )?;
+                vision_submission.disable();
+            }
+        }
+
         match event {
             Event::Input { id, metadata, data } => match id.as_str() {
                 "tick" => {
@@ -128,18 +163,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         view_metrics.record_drop();
                     }
 
-                    // Vision pipeline — conditionally sends tracked_detections + tracking_telemetry
-                    let vision_started = Instant::now();
-                    let timings = send_pipeline_output(
-                        &mut pipeline,
-                        frame_id,
-                        frame.as_slice(),
-                        width,
-                        height,
-                        &mut node,
-                    )?;
-                    pipeline_metrics.record(frame_id, timings);
-                    vision_metrics.record(vision_started.elapsed(), frame.numel());
+                    if vision_submission.should_submit_frames() {
+                        let expected_len = width as usize * height as usize * 3;
+                        if frame.numel() == expected_len {
+                            if let Some(worker) = &vision_worker {
+                                let replaced = worker.submit_frame(CapturedFrame::new(
+                                    frame_id,
+                                    capture_started,
+                                    capture_timestamp_ms,
+                                    width,
+                                    height,
+                                    frame.as_slice().to_vec(),
+                                ));
+                                worker_submit_metrics.record(Duration::ZERO, frame.numel());
+                                if replaced {
+                                    worker_submit_metrics.record_drop();
+                                }
+                            }
+                        } else {
+                            tracing::error!(
+                                "Invalid RGB frame length for worker: frame_id={frame_id}, expected={expected_len}, actual={}",
+                                frame.numel()
+                            );
+                            worker_error_metrics.record_error();
+                        }
+                    }
+                    vision_metrics.record(capture_started.elapsed(), frame.numel());
+                    if let Some(worker) = &vision_worker {
+                        let drain_status = drain_worker_results(
+                            worker,
+                            &mut node,
+                            &mut pipeline_metrics,
+                            &mut worker_result_metrics,
+                            &mut worker_stale_metrics,
+                            &mut worker_error_metrics,
+                        )?;
+                        if drain_status == DrainStatus::Disconnected {
+                            handle_worker_disconnected(
+                                &mut vision_worker,
+                                &mut node,
+                                &mut worker_error_metrics,
+                                "result channel disconnected",
+                            )?;
+                            vision_submission.disable();
+                        }
+                    }
                     capture_metrics.record(capture_duration, frame.numel());
                     if let Some(snapshot) = capture_metrics.snapshot_if_due() {
                         tracing::info!(
@@ -174,7 +242,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Some(snapshot) = vision_metrics.snapshot_if_due() {
                         tracing::info!(
                             metric = "video_pipeline",
-                            stage = "vision_total",
+                            stage = "vision_submit",
                             frame_id,
                             count = snapshot.count,
                             bytes = snapshot.bytes,
@@ -186,6 +254,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             max_us = snapshot.max_us
                         );
                     }
+                    log_metric_snapshot(
+                        "vision_worker_submit",
+                        frame_id,
+                        worker_submit_metrics.snapshot_if_due(),
+                    );
+                    log_metric_snapshot(
+                        "vision_worker_result",
+                        frame_id,
+                        worker_result_metrics.snapshot_if_due(),
+                    );
+                    log_metric_snapshot(
+                        "vision_worker_stale_drop",
+                        frame_id,
+                        worker_stale_metrics.snapshot_if_due(),
+                    );
+                    log_metric_snapshot(
+                        "vision_worker_error",
+                        frame_id,
+                        worker_error_metrics.snapshot_if_due(),
+                    );
                     if let Some(snapshot) = view_metrics.snapshot_if_due() {
                         tracing::info!(
                             metric = "video_pipeline",
@@ -246,7 +334,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             match serde_json::from_slice::<TrackingCommand>(binary_array.value(0)) {
                                 Ok(cmd) => {
                                     tracing::info!("Tracking command: {:?}", cmd);
-                                    pipeline.handle_tracking_command(cmd);
+                                    if let Some(worker) = &vision_worker {
+                                        match worker.submit_command(cmd.clone()) {
+                                            CommandSubmitStatus::Accepted => {
+                                                vision_submission.apply_tracking_command(&cmd);
+                                                if matches!(
+                                                    cmd,
+                                                    TrackingCommand::DisableDetection { .. }
+                                                ) {
+                                                    send_disabled_tracking_telemetry(&mut node)?;
+                                                }
+                                            }
+                                            CommandSubmitStatus::Full => {
+                                                worker_error_metrics.record_error();
+                                            }
+                                            CommandSubmitStatus::Disconnected => {
+                                                handle_worker_disconnected(
+                                                    &mut vision_worker,
+                                                    &mut node,
+                                                    &mut worker_error_metrics,
+                                                    "command channel disconnected",
+                                                )?;
+                                                vision_submission.disable();
+                                            }
+                                        }
+                                    }
                                 }
                                 Err(e) => tracing::error!("Failed to parse TrackingCommand: {e}"),
                             }
@@ -277,11 +389,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(cam) = camera_opt.take() {
                     cam.close()?;
                 }
+                shutdown_worker(&mut vision_worker);
                 break;
             }
             other => tracing::debug!("Unexpected event: {:?}", other),
         }
     }
+
+    shutdown_worker(&mut vision_worker);
 
     Ok(())
 }
@@ -431,7 +546,39 @@ impl Default for ViewFrameCadence {
     }
 }
 
-fn build_pipeline() -> Result<VisionPipeline, Box<dyn std::error::Error>> {
+#[derive(Debug, Default)]
+struct VisionSubmissionGate {
+    submit_frames: bool,
+}
+
+impl VisionSubmissionGate {
+    fn should_submit_frames(&self) -> bool {
+        self.submit_frames
+    }
+
+    fn disable(&mut self) {
+        self.submit_frames = false;
+    }
+
+    fn apply_tracking_command(&mut self, command: &TrackingCommand) {
+        match command {
+            // This gate only avoids the camera-only RGB copy on the Dora hot path.
+            // The worker's VisionPipeline remains the authoritative tracking state.
+            TrackingCommand::EnableDetection { .. } | TrackingCommand::Enable { .. } => {
+                self.submit_frames = true;
+            }
+            TrackingCommand::DisableDetection { .. } => {
+                self.submit_frames = false;
+            }
+            TrackingCommand::Disable { .. }
+            | TrackingCommand::SelectTarget { .. }
+            | TrackingCommand::SelectTargetById { .. }
+            | TrackingCommand::ClearTarget { .. } => {}
+        }
+    }
+}
+
+fn build_pipeline_config() -> Result<VisionPipelineConfig, Box<dyn std::error::Error>> {
     let home = env::var("HOME").unwrap_or_default();
 
     let confidence_threshold = env::var("CONFIDENCE_THRESHOLD")
@@ -473,22 +620,28 @@ fn build_pipeline() -> Result<VisionPipeline, Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "true".into())
         .parse::<bool>()?;
 
-    Ok(VisionPipeline::new(
-        DetectorConfig {
+    Ok(VisionPipelineConfig {
+        detector: DetectorConfig {
             model_path: env::var("MODEL_PATH")
                 .unwrap_or_else(|_| format!("{home}/.cache/yolo/yolo12n.onnx")),
             confidence_threshold,
             nms_threshold,
             target_classes,
+            intra_threads: env::var("DETECTOR_INTRA_THREADS")
+                .unwrap_or_else(|_| "4".into())
+                .parse::<i16>()?,
         },
-        ReIdConfig {
+        reid: ReIdConfig {
             model_path: env::var("REID_MODEL_PATH")
                 .unwrap_or_else(|_| format!("{home}/.cache/reid/osnet_x0_25.onnx")),
             min_bbox_size: env::var("MIN_BBOX_SIZE")
                 .unwrap_or_else(|_| "32".into())
                 .parse::<u32>()?,
+            intra_threads: env::var("REID_INTRA_THREADS")
+                .unwrap_or_else(|_| "2".into())
+                .parse::<i16>()?,
         },
-        TrackerConfig {
+        tracker: TrackerConfig {
             max_age,
             min_hits,
             iou_threshold,
@@ -496,21 +649,116 @@ fn build_pipeline() -> Result<VisionPipeline, Box<dyn std::error::Error>> {
             reid_threshold,
             enable_cmc,
         },
-    ))
+    })
+}
+
+fn drain_worker_results(
+    worker: &VisionWorker,
+    node: &mut DoraNode,
+    pipeline_metrics: &mut PipelineMetricWindows,
+    result_metrics: &mut MetricWindow,
+    stale_metrics: &mut MetricWindow,
+    error_metrics: &mut MetricWindow,
+) -> Result<DrainStatus, Box<dyn std::error::Error>> {
+    let mut result = Ok(());
+    let drain_status = worker.drain_results(|message| {
+        if result.is_err() {
+            return;
+        }
+
+        match message {
+            WorkerMessage::Result(worker_result) => {
+                if let Err(error) = handle_worker_result(
+                    worker_result,
+                    node,
+                    pipeline_metrics,
+                    result_metrics,
+                    stale_metrics,
+                ) {
+                    result = Err(error);
+                }
+            }
+            WorkerMessage::Error(error) => {
+                tracing::error!(
+                    frame_id = error.frame_id,
+                    "Vision worker failed: {}",
+                    error.message
+                );
+                error_metrics.record_error();
+                if let Err(send_error) = send_disabled_tracking_telemetry(node) {
+                    result = Err(send_error);
+                }
+            }
+        }
+    });
+    result.map(|_| drain_status)
+}
+
+fn handle_worker_disconnected(
+    worker: &mut Option<VisionWorker>,
+    node: &mut DoraNode,
+    error_metrics: &mut MetricWindow,
+    reason: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    tracing::error!("Vision worker stopped: {reason}; disabling tracking telemetry");
+    error_metrics.record_error();
+    send_disabled_tracking_telemetry(node)?;
+    shutdown_worker(worker);
+    Ok(())
+}
+
+fn shutdown_worker(worker: &mut Option<VisionWorker>) {
+    if let Some(worker) = worker.take() {
+        let counters = worker.frame_slot().counters();
+        tracing::info!(
+            metric = "video_pipeline",
+            stage = "latest_frame_slot_final",
+            submitted = counters.submitted,
+            replaced = counters.replaced,
+            taken = counters.taken
+        );
+        worker.shutdown();
+    }
+}
+
+fn handle_worker_result(
+    WorkerPipelineResult {
+        frame_id,
+        captured_at,
+        capture_timestamp_ms,
+        output,
+        mut timings,
+    }: WorkerPipelineResult,
+    node: &mut DoraNode,
+    pipeline_metrics: &mut PipelineMetricWindows,
+    result_metrics: &mut MetricWindow,
+    stale_metrics: &mut MetricWindow,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let age = captured_at.elapsed();
+    if age > MAX_SERVO_FRAME_AGE {
+        tracing::warn!(
+            metric = "video_pipeline",
+            stage = "vision_stale_drop",
+            frame_id,
+            capture_timestamp_ms,
+            age_ms = age.as_millis() as u64,
+            max_age_ms = MAX_SERVO_FRAME_AGE.as_millis() as u64
+        );
+        stale_metrics.record_drop();
+        return Ok(());
+    }
+
+    result_metrics.record(age, 0);
+    timings = send_pipeline_output(output, timings, node)?;
+    pipeline_metrics.record(frame_id, timings);
+    Ok(())
 }
 
 fn send_pipeline_output(
-    pipeline: &mut VisionPipeline,
-    frame_id: u64,
-    frame_data: &[u8],
-    width: u32,
-    height: u32,
+    output: PipelineOutput,
+    mut timings: vision_pipeline::PipelineTimings,
     node: &mut DoraNode,
 ) -> Result<vision_pipeline::PipelineTimings, Box<dyn std::error::Error>> {
-    let ProcessedPipelineOutput {
-        output,
-        mut timings,
-    } = pipeline.process_frame(frame_id, frame_data, width, height)?;
     let serialization_started = Instant::now();
     match output {
         PipelineOutput::DetectionOnly {
@@ -563,10 +811,43 @@ fn send_pipeline_output(
     Ok(timings)
 }
 
+fn send_disabled_tracking_telemetry(node: &mut DoraNode) -> Result<(), Box<dyn std::error::Error>> {
+    let telemetry = TrackingTelemetry::new(TrackingState::Disabled, None);
+    let tel_json = serde_json::to_vec(&telemetry)?;
+    node.send_output(
+        DataId::from("tracking_telemetry".to_owned()),
+        Default::default(),
+        BinaryArray::from_vec(vec![tel_json.as_slice()]),
+    )?;
+    Ok(())
+}
+
+fn log_metric_snapshot(
+    stage: &str,
+    frame_id: u64,
+    snapshot: Option<robo_rover_lib::MetricSnapshot>,
+) {
+    if let Some(snapshot) = snapshot {
+        tracing::info!(
+            metric = "video_pipeline",
+            stage,
+            frame_id,
+            count = snapshot.count,
+            bytes = snapshot.bytes,
+            drops = snapshot.drops,
+            errors = snapshot.errors,
+            p50_us = snapshot.p50_us,
+            p95_us = snapshot.p95_us,
+            p99_us = snapshot.p99_us,
+            max_us = snapshot.max_us
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ViewFrameCadence, ViewOutputGate};
-    use robo_rover_lib::{StreamCommand, StreamControl};
+    use super::{ViewFrameCadence, ViewOutputGate, VisionSubmissionGate};
+    use robo_rover_lib::{StreamCommand, StreamControl, TrackingCommand};
     use std::time::{Duration, Instant};
 
     fn emitted_frames_for_capture_count(
@@ -601,6 +882,25 @@ mod tests {
             quality: None,
             target_fps: Some(15),
         }
+    }
+
+    #[test]
+    fn vision_submission_gate_skips_frames_until_detection_or_tracking_enabled() {
+        let mut gate = VisionSubmissionGate::default();
+
+        assert!(!gate.should_submit_frames());
+
+        gate.apply_tracking_command(&TrackingCommand::EnableDetection { timestamp: 1 });
+        assert!(gate.should_submit_frames());
+
+        gate.apply_tracking_command(&TrackingCommand::Disable { timestamp: 2 });
+        assert!(gate.should_submit_frames());
+
+        gate.apply_tracking_command(&TrackingCommand::DisableDetection { timestamp: 3 });
+        assert!(!gate.should_submit_frames());
+
+        gate.apply_tracking_command(&TrackingCommand::Enable { timestamp: 4 });
+        assert!(gate.should_submit_frames());
     }
 
     #[test]

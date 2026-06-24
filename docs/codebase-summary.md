@@ -12,13 +12,17 @@ Snapshot date: 2026-06-24
 
 ## Current Architecture
 
-- Rover keeps ML and servo processing on capture cadence.
+- Rover keeps capture, ML, and servo local; `kornia_capture` now isolates vision work in a dedicated worker.
+- Main loop submits frames only when detection/tracking is enabled.
+- Latest-frame slot is capacity-one, so fresh frames replace stale unprocessed frames.
+- Worker results older than 150ms are dropped before publish.
 - View/video output is throttled separately with `SOURCE_FPS` and `VIEW_STREAM_FPS`.
 - Published video topic is `rover/{entity_id}/video/jpeg/v1`.
 - Web UI receives `video_frame` as metadata plus binary JPEG bytes.
 - Web UI emits authenticated, rate-limited `stream_control` demand.
 - Web bridge aggregates demand and only forwards 0->1 / 1->0 transitions upstream.
-- `kornia_capture` gates only view publication; local capture, ML, and tracking continue.
+- `kornia_capture` gates view publication plus worker frame submission; local capture continues even when ML/tracking is disabled.
+- Rover dataflows set `DETECTOR_INTRA_THREADS=2` and `REID_INTRA_THREADS=1`.
 
 ## Documentation Notes
 
@@ -32,3 +36,4 @@ Snapshot date: 2026-06-24
 - Phase 2 rover JPEG / Zenoh cutover completed.
 - Native split benchmark: 600s, 8986 encoded frames, 7.3ms average encode cost, 0 errors, 14.98 FPS.
 - Final hybrid cadence not rerun under constrained 3 CPU / 4 GiB container profile; native split passed and was approved.
+- Phase 4 vision worker isolation added latest-frame replacement, bounded command/result queues, stale-result rejection, and disabled telemetry on worker disconnect.

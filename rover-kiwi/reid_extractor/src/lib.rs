@@ -13,6 +13,7 @@ const REID_INPUT_WIDTH: u32 = 128;
 pub struct ReIdConfig {
     pub model_path: String,
     pub min_bbox_size: u32,
+    pub intra_threads: i16,
 }
 
 pub struct ReIdExtractor {
@@ -26,7 +27,7 @@ impl ReIdExtractor {
 
         let session = SessionBuilder::new(&env)?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(2)?
+            .with_intra_threads(config.intra_threads)?
             .with_model_from_file(&config.model_path)?;
 
         info!("ReID model loaded");
