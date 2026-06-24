@@ -15,7 +15,10 @@ Snapshot date: 2026-06-24
 - Rover keeps ML and servo processing on capture cadence.
 - View/video output is throttled separately with `SOURCE_FPS` and `VIEW_STREAM_FPS`.
 - Published video topic is `rover/{entity_id}/video/jpeg/v1`.
-- Orchestra decodes and forwards JPEG to the web bridge.
+- Web UI receives `video_frame` as metadata plus binary JPEG bytes.
+- Web UI emits authenticated, rate-limited `stream_control` demand.
+- Web bridge aggregates demand and only forwards 0->1 / 1->0 transitions upstream.
+- `kornia_capture` gates only view publication; local capture, ML, and tracking continue.
 
 ## Documentation Notes
 

@@ -59,6 +59,7 @@ nodes:
     inputs:
       tick: dora/timer/millis/33  # ~30 FPS
       camera_control: web-bridge/camera_command
+      stream_control: web-bridge/stream_command
       tracking_command: web-bridge/tracking_command
     outputs:
       - frame                  # 15 FPS raw RGB8 view branch for local JPEG encoding
@@ -175,6 +176,7 @@ nodes:
       - arm_command
       - camera_command
       - audio_command
+      - stream_command
       - tracking_command
       - tts_command
       - audio_stream

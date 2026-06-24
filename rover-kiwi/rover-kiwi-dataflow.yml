@@ -60,6 +60,7 @@ nodes:
     inputs:
       tick: dora/timer/millis/33           # ~30 FPS
       camera_control: zenoh-bridge/camera_command
+      stream_control: zenoh-bridge/stream_command  # Gates only operator view branch
       tracking_command: zenoh-bridge/tracking_command  # Gates detection/tracking pipeline
     outputs:
       - frame                  # 15 FPS raw RGB8 view branch for local JPEG encoding
@@ -186,6 +187,7 @@ nodes:
       - audio_command
       - rover_command
       - arm_command
+      - stream_command     # Routed to gst-camera (gates view output only)
       - tracking_command    # Routed to gst-camera (gates vision pipeline)
       - tts_command
       - audio_stream

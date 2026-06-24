@@ -138,7 +138,7 @@ The system uses **two separate zenoh_bridge implementations** for clean separati
   - `rover/{selected_entity}/metrics` - Performance data
 
 - **Publishes TO Zenoh**: Commands to rover
-  - `rover/{selected_entity}/cmd/*` - All command types (movement, arm, camera, tracking, etc.)
+  - `rover/{selected_entity}/cmd/*` - All command types (movement, arm, camera, tracking, stream control, etc.)
 
 ### Environment Variables
 
@@ -300,9 +300,25 @@ Future: Orchestra processes MULTIPLE rovers in parallel with:
 
 - `SOURCE_FPS` sets the camera capture cadence.
 - `VIEW_STREAM_FPS` sets the rover-side JPEG publish cadence for `video/jpeg/v1`.
-- `kornia_capture` keeps ML and servo processing on the capture cadence; only the view/video branch is throttled.
+- `kornia_capture` keeps ML, tracking, and servo processing on the capture cadence; only the view/video branch is throttled.
 - Non-webcam sources use a monotonic token bucket to pace the published view stream.
 - Webcam sources use the source-frame ratio so the published cadence stays aligned with the camera.
+
+### Phase 3 Binary Browser Delivery
+
+**Decision**: Web UI receives `video_frame` as metadata plus binary JPEG attachment, not JSON byte arrays.
+
+**Rationale**:
+- Socket.IO metadata stays small and stable while the JPEG payload moves as binary.
+- The UI can build `Blob` URLs directly from `ArrayBuffer` or `Uint8Array` payloads.
+- Object URLs are revoked after frame swaps, limiting browser memory growth during long sessions.
+- Stream demand is explicit: the UI emits authenticated, rate-limited `stream_control` start/stop requests instead of inferring demand from frame render state.
+
+**Demand control**:
+- The web bridge aggregates demand across active UI sessions.
+- Upstream `stream_control` transitions are sent only on `0 -> 1` and `1 -> 0`.
+- Disconnects, session expiry, and idle sweeps also clear demand.
+- `kornia_capture` gates only view-frame publication; local capture plus ML/tracking continue.
 
 ### Phase 2 Benchmark
 

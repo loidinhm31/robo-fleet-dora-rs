@@ -13,7 +13,8 @@ use object_tracker::TrackerConfig;
 use pipeline_metrics::PipelineMetricWindows;
 use reid_extractor::ReIdConfig;
 use robo_rover_lib::{
-    init_tracing, types::TrackingCommand, CameraAction, CameraControl, MetricWindow,
+    init_tracing, types::TrackingCommand, CameraAction, CameraControl, MetricWindow, StreamCommand,
+    StreamControl,
 };
 use std::{
     env,
@@ -70,6 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .clamp(1, 240);
     let mut view_frame_cadence =
         ViewFrameCadence::new(view_stream_fps, &source_type, view_source_fps);
+    let mut view_output = ViewOutputGate::default();
     let mut capture_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut capture_interval_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut vision_metrics = MetricWindow::new(Duration::from_secs(5));
@@ -113,7 +115,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Parameter::Integer(capture_timestamp_ms as i64),
                     );
 
-                    if view_frame_cadence.should_emit_at(Instant::now()) {
+                    if view_output.is_enabled() && view_frame_cadence.should_emit_at(Instant::now())
+                    {
                         node.send_output_bytes(
                             frame_output.clone(),
                             params.clone(),
@@ -250,6 +253,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
+                "stream_control" => {
+                    if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                        if binary_array.len() > 0 {
+                            match serde_json::from_slice::<StreamControl>(binary_array.value(0)) {
+                                Ok(ctrl) => {
+                                    view_output.apply(&ctrl);
+                                    tracing::info!(
+                                        "Stream control: {:?}, view_enabled={}",
+                                        ctrl.command,
+                                        view_output.is_enabled()
+                                    );
+                                }
+                                Err(e) => tracing::error!("Failed to parse StreamControl: {e}"),
+                            }
+                        }
+                    }
+                }
                 other => tracing::warn!("Ignoring unexpected input: {other}"),
             },
             Event::Stop(_) => {
@@ -292,6 +312,25 @@ fn unix_timestamp_ms() -> Result<u64, Box<dyn std::error::Error>> {
         .duration_since(UNIX_EPOCH)?
         .as_millis()
         .try_into()?)
+}
+
+#[derive(Debug, Default)]
+struct ViewOutputGate {
+    enabled: bool,
+}
+
+impl ViewOutputGate {
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    fn apply(&mut self, control: &StreamControl) {
+        self.enabled = match control.command {
+            StreamCommand::Start | StreamCommand::Resume => control.video_enabled,
+            StreamCommand::Stop | StreamCommand::Pause => false,
+            StreamCommand::Configure => control.video_enabled,
+        };
+    }
 }
 
 #[derive(Debug)]
@@ -526,7 +565,8 @@ fn send_pipeline_output(
 
 #[cfg(test)]
 mod tests {
-    use super::ViewFrameCadence;
+    use super::{ViewFrameCadence, ViewOutputGate};
+    use robo_rover_lib::{StreamCommand, StreamControl};
     use std::time::{Duration, Instant};
 
     fn emitted_frames_for_capture_count(
@@ -551,6 +591,35 @@ mod tests {
 
     fn capture_frames_for_duration(duration_ms: u64, source_fps: u32) -> u64 {
         duration_ms * source_fps as u64 / 1_000
+    }
+
+    fn stream_control(command: StreamCommand, video_enabled: bool) -> StreamControl {
+        StreamControl {
+            command,
+            video_enabled,
+            audio_enabled: false,
+            quality: None,
+            target_fps: Some(15),
+        }
+    }
+
+    #[test]
+    fn view_output_gate_defaults_to_no_view_work() {
+        assert!(!ViewOutputGate::default().is_enabled());
+    }
+
+    #[test]
+    fn view_output_gate_follows_stream_demand_without_affecting_capture() {
+        let mut gate = ViewOutputGate::default();
+
+        gate.apply(&stream_control(StreamCommand::Start, true));
+        assert!(gate.is_enabled());
+
+        gate.apply(&stream_control(StreamCommand::Configure, true));
+        assert!(gate.is_enabled());
+
+        gate.apply(&stream_control(StreamCommand::Stop, false));
+        assert!(!gate.is_enabled());
     }
 
     #[test]

@@ -11,7 +11,8 @@ use robo_rover_lib::types::{
 use robo_rover_lib::{
     capture_age_ms, init_tracing, ArmCommand, ArmCommandWithMetadata, AudioAction, AudioControl,
     CameraAction, CameraControl, CommandMetadata, CommandPriority, FrameSequenceTracker,
-    InputSource, MetricWindow, RoverCommand, RoverCommandWithMetadata,
+    InputSource, MetricWindow, RoverCommand, RoverCommandWithMetadata, StreamCommand,
+    StreamControl,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
@@ -83,9 +84,9 @@ impl ClientState {
     fn new(socket_id: String) -> Self {
         Self {
             socket_id,
-            video_enabled: true,
+            video_enabled: false,
             audio_enabled: true,
-            target_fps: 30,
+            target_fps: 15,
             jpeg_quality: 80,
             last_video_sent: Arc::new(Mutex::new(SystemTime::now())),
             last_audio_sent: Arc::new(Mutex::new(SystemTime::now())),
@@ -139,6 +140,79 @@ fn touch_activity(clients: &Mutex<Vec<ClientState>>, socket_id: &str) {
     }
 }
 
+fn stream_control_for_video_demand(enabled: bool, target_fps: u8) -> StreamControl {
+    StreamControl {
+        command: if enabled {
+            StreamCommand::Start
+        } else {
+            StreamCommand::Stop
+        },
+        video_enabled: enabled,
+        audio_enabled: false,
+        quality: None,
+        target_fps: Some(target_fps),
+    }
+}
+
+fn update_client_video_demand(
+    clients: &Mutex<Vec<ClientState>>,
+    socket_id: &str,
+    enabled: bool,
+    target_fps: Option<u8>,
+) -> Option<StreamControl> {
+    let mut clients = clients.lock().ok()?;
+    let active_before = clients.iter().filter(|client| client.video_enabled).count();
+
+    let client = clients
+        .iter_mut()
+        .find(|client| client.socket_id == socket_id)?;
+    client.video_enabled = enabled;
+    if let Some(target_fps) = target_fps {
+        client.target_fps = target_fps.clamp(1, 120);
+    }
+    let effective_target_fps = client.target_fps;
+
+    let active_after = clients.iter().filter(|client| client.video_enabled).count();
+    match (active_before, active_after) {
+        (0, n) if n > 0 => Some(stream_control_for_video_demand(true, effective_target_fps)),
+        (n, 0) if n > 0 => Some(stream_control_for_video_demand(false, effective_target_fps)),
+        _ => None,
+    }
+}
+
+fn remove_client_and_stream_transition(
+    clients: &Mutex<Vec<ClientState>>,
+    socket_id: &str,
+) -> Option<StreamControl> {
+    let mut clients = clients.lock().ok()?;
+    let active_before = clients.iter().filter(|client| client.video_enabled).count();
+    clients.retain(|client| client.socket_id != socket_id);
+    let active_after = clients.iter().filter(|client| client.video_enabled).count();
+
+    if active_before > 0 && active_after == 0 {
+        Some(stream_control_for_video_demand(false, 15))
+    } else {
+        None
+    }
+}
+
+fn browser_video_frame_payload(
+    capture_timestamp_ms: u64,
+    frame_id: u64,
+    width: u32,
+    height: u32,
+    codec: &str,
+) -> Value {
+    serde_json::json!({
+        "timestamp": capture_timestamp_ms,
+        "capture_timestamp_ms": capture_timestamp_ms,
+        "frame_id": frame_id,
+        "width": width,
+        "height": height,
+        "codec": codec,
+    })
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WebCameraCommand {
     pub command: String, // "start" or "stop"
@@ -147,6 +221,14 @@ pub struct WebCameraCommand {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WebAudioCommand {
     pub command: String, // "start" or "stop"
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct WebStreamControlCommand {
+    pub command: String, // "start" or "stop"
+    pub video_enabled: Option<bool>,
+    pub audio_enabled: Option<bool>,
+    pub target_fps: Option<u8>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -186,6 +268,7 @@ struct SharedState {
     pub rover_command_queue: Arc<Mutex<Vec<WebRoverCommand>>>,
     pub camera_command_queue: Arc<Mutex<Vec<WebCameraCommand>>>,
     pub audio_command_queue: Arc<Mutex<Vec<WebAudioCommand>>>,
+    pub stream_command_queue: Arc<Mutex<Vec<StreamControl>>>,
     pub tracking_command_queue: Arc<Mutex<Vec<WebTrackingCommand>>>,
     pub tts_command_queue: Arc<Mutex<Vec<WebTtsCommand>>>,
     pub audio_stream_queue: Arc<Mutex<Vec<WebAudioStream>>>,
@@ -235,6 +318,7 @@ impl SharedState {
             rover_command_queue: Arc::new(Mutex::new(Vec::new())),
             camera_command_queue: Arc::new(Mutex::new(Vec::new())),
             audio_command_queue: Arc::new(Mutex::new(Vec::new())),
+            stream_command_queue: Arc::new(Mutex::new(Vec::new())),
             tracking_command_queue: Arc::new(Mutex::new(Vec::new())),
             tts_command_queue: Arc::new(Mutex::new(Vec::new())),
             audio_stream_queue: Arc::new(Mutex::new(Vec::new())),
@@ -446,6 +530,49 @@ fn setup_socketio(
                         .lock()
                         .unwrap()
                         .push(web_cmd);
+                }
+            },
+        );
+
+        let shared_state_clone = shared_state.clone();
+        let socket_id_clone = socket_id.clone();
+        socket.on(
+            "stream_control",
+            move |socket: SocketRef, Data::<Value>(data)| {
+                if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
+                    socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                    socket.disconnect().ok();
+                    return;
+                }
+                if !shared_state_clone.command_rate_limiter.check_command(&socket_id_clone) {
+                    log_rate_limit_exceeded(&socket_id_clone, "stream_control");
+                    return;
+                }
+                touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
+
+                if let Ok(web_cmd) = serde_json::from_value::<WebStreamControlCommand>(data) {
+                    let enabled = match web_cmd.command.as_str() {
+                        "start" | "resume" => true,
+                        "stop" | "pause" => false,
+                        _ => web_cmd.video_enabled.unwrap_or(false),
+                    };
+                    if let Some(command) = update_client_video_demand(
+                        &shared_state_clone.video_clients,
+                        &socket_id_clone,
+                        enabled,
+                        web_cmd.target_fps,
+                    ) {
+                        tracing::info!(
+                            "Video stream demand transition: {:?}, enabled={}",
+                            command.command,
+                            command.video_enabled
+                        );
+                        shared_state_clone
+                            .stream_command_queue
+                            .lock()
+                            .unwrap()
+                            .push(command);
+                    }
                 }
             },
         );
@@ -780,8 +907,15 @@ fn setup_socketio(
             let socket_id = socket.id.to_string();
             tracing::info!("Client disconnected: {}", socket_id);
 
-            if let Ok(mut clients) = shared_state_clone.video_clients.lock() {
-                clients.retain(|c| c.socket_id != socket_id);
+            if let Some(command) = remove_client_and_stream_transition(
+                &shared_state_clone.video_clients,
+                &socket_id,
+            ) {
+                shared_state_clone
+                    .stream_command_queue
+                    .lock()
+                    .unwrap()
+                    .push(command);
             }
             shared_state_clone.session_registry.remove(&socket_id);
         });
@@ -875,6 +1009,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rover_command_output = DataId::from("rover_command".to_owned());
     let camera_command_output = DataId::from("camera_command".to_owned());
     let audio_command_output = DataId::from("audio_command".to_owned());
+    let stream_command_output = DataId::from("stream_command".to_owned());
     let tracking_command_output = DataId::from("tracking_command".to_owned());
     let tts_command_output = DataId::from("tts_command".to_owned());
     let audio_stream_output = DataId::from("audio_stream".to_owned());
@@ -894,6 +1029,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Background sweep: disconnect sessions whose JWT has expired
     let sweep_registry = shared_state.session_registry.clone();
+    let sweep_clients = shared_state.video_clients.clone();
+    let sweep_stream_queue = shared_state.stream_command_queue.clone();
     let sweep_io = io.clone();
     tokio::spawn(async move {
         tracing::info!("Session sweep task started (interval: 60s)");
@@ -902,6 +1039,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let expired = sweep_registry.sweep_expired();
             for socket_id in expired {
                 tracing::debug!("Sweep: disconnecting expired session {}", socket_id);
+                if let Some(command) =
+                    remove_client_and_stream_transition(&sweep_clients, &socket_id)
+                {
+                    sweep_stream_queue.lock().unwrap().push(command);
+                }
                 if let Ok(sid) = socket_id.parse() {
                     if let Some(ns) = sweep_io.of("/") {
                         if let Some(socket) = ns.get_socket(sid) {
@@ -918,6 +1060,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Background sweep: disconnect idle clients exceeding IDLE_TIMEOUT_SECONDS
     let idle_clients = shared_state.video_clients.clone();
+    let idle_stream_queue = shared_state.stream_command_queue.clone();
     let idle_io = io.clone();
     tokio::spawn(async move {
         tracing::info!(
@@ -946,6 +1089,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             for socket_id in idle_ids {
                 tracing::info!("Idle sweep: disconnecting idle client {}", socket_id);
+                if let Some(command) =
+                    remove_client_and_stream_transition(&idle_clients, &socket_id)
+                {
+                    idle_stream_queue.lock().unwrap().push(command);
+                }
                 if let Ok(sid) = socket_id.parse() {
                     if let Some(ns) = idle_io.of("/") {
                         if let Some(socket) = ns.get_socket(sid) {
@@ -1029,6 +1177,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node_clone_rover = node_clone_arm.clone();
     let node_clone_camera = node_clone_arm.clone();
     let node_clone_audio = node_clone_arm.clone();
+    let node_clone_stream = node_clone_arm.clone();
     let node_clone_tracking = node_clone_arm.clone();
     let node_clone_tts = node_clone_arm.clone();
     let node_clone_audio_stream = node_clone_arm.clone();
@@ -1162,6 +1311,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+
+    // Process aggregate stream demand commands.
+    let state_clone_stream = shared_state.clone();
+    let _stream_command_processor = tokio::spawn(async move {
+        loop {
+            let next = state_clone_stream
+                .stream_command_queue
+                .lock()
+                .ok()
+                .and_then(|mut queue| {
+                    if queue.is_empty() {
+                        None
+                    } else {
+                        Some(queue.remove(0))
+                    }
+                });
+
+            if let Some(stream_control) = next {
+                if let Ok(serialized) = serde_json::to_vec(&stream_control) {
+                    let arrow_data = BinaryArray::from_vec(vec![serialized.as_slice()]);
+                    if let Ok(mut node_guard) = node_clone_stream.lock() {
+                        let _ = node_guard.send_output(
+                            stream_command_output.clone(),
+                            Default::default(),
+                            arrow_data,
+                        );
+                    }
+                }
+            }
+
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     });
@@ -1553,29 +1735,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     jpeg_data.len()
                                 );
 
-                                // Send pre-encoded JPEG to all connected clients
-                                if let Ok(clients) = state_for_video.video_clients.lock() {
-                                    for client in clients.iter() {
-                                        if client.should_send_video() {
-                                            if let Some(ref io) = *io_for_video.lock().unwrap() {
-                                                let frame_data = serde_json::json!({
-                                                    "timestamp": capture_timestamp_ms,
-                                                    "capture_timestamp_ms": capture_timestamp_ms,
-                                                    "frame_id": capture_frame_id,
-                                                    "width": width,
-                                                    "height": height,
-                                                    "codec": codec,
-                                                    "data": jpeg_data,  // Pre-encoded JPEG
-                                                });
+                                let eligible_socket_ids = {
+                                    if let Ok(clients) = state_for_video.video_clients.lock() {
+                                        clients
+                                            .iter()
+                                            .filter_map(|client| {
+                                                if client.should_send_video() {
+                                                    client.mark_video_sent();
+                                                    Some(client.socket_id.clone())
+                                                } else {
+                                                    client.mark_frame_dropped();
+                                                    video_emit_metrics.record_drop();
+                                                    None
+                                                }
+                                            })
+                                            .collect::<Vec<_>>()
+                                    } else {
+                                        Vec::new()
+                                    }
+                                };
 
+                                if !eligible_socket_ids.is_empty() {
+                                    let frame_data = browser_video_frame_payload(
+                                        capture_timestamp_ms,
+                                        capture_frame_id,
+                                        width,
+                                        height,
+                                        &codec,
+                                    );
+
+                                    for socket_id in eligible_socket_ids {
+                                        if let Some(ref io) = *io_for_video.lock().unwrap() {
+                                            if let Ok(parsed_socket_id) = socket_id.parse() {
                                                 if let Some(socket) =
-                                                    io.of("/").unwrap().get_socket(
-                                                        (&client.socket_id).parse().unwrap(),
-                                                    )
+                                                    io.of("/").unwrap().get_socket(parsed_socket_id)
                                                 {
-                                                    match socket.emit("video_frame", frame_data) {
+                                                    match socket
+                                                        .bin(vec![jpeg_data.clone()])
+                                                        .emit("video_frame", frame_data.clone())
+                                                    {
                                                         Ok(_) => {
-                                                            client.mark_video_sent();
                                                             video_emit_metrics.record(
                                                                 emit_started.elapsed(),
                                                                 jpeg_data.len(),
@@ -1588,9 +1787,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     }
                                                 }
                                             }
-                                        } else {
-                                            client.mark_frame_dropped();
-                                            video_emit_metrics.record_drop();
                                         }
                                     }
                                 }
@@ -1641,7 +1837,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 match serde_json::from_slice::<DetectionFrame>(detection_data) {
                                     Ok(detection_frame) => {
                                         // Forward detections to all connected clients
-                                        if let Ok(clients) = state_for_video.video_clients.lock() {
+                                        if let Ok(_clients) = state_for_video.video_clients.lock() {
                                             if let Some(ref io) = *io_for_video.lock().unwrap() {
                                                 // Emit to all clients via Socket.IO
                                                 let _ = io.of("/").unwrap().emit(
@@ -1950,6 +2146,56 @@ fn convert_web_command_to_tracking_command(
         }
         "clear_target" => Some(TrackingCommand::ClearTarget { timestamp }),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use socketioxide::packet::{Packet, PacketData};
+
+    #[test]
+    fn video_frame_packet_uses_binary_attachment_not_json_byte_array() {
+        let payload = browser_video_frame_payload(1_717_000_000_000, 42, 640, 480, "jpeg");
+        let jpeg = vec![0xff, 0xd8, 0xff, 0xd9];
+        let packet = Packet::bin_event("/", "video_frame", payload, vec![jpeg.clone()]);
+
+        match packet.inner {
+            PacketData::BinaryEvent(event, binary, None) => {
+                assert_eq!(event, "video_frame");
+                assert_eq!(binary.bin, vec![jpeg]);
+                assert_eq!(binary.data[0]["frame_id"], 42);
+                assert!(binary.data[0].get("data").is_none());
+                assert_eq!(binary.data[1]["_placeholder"], true);
+                assert_eq!(binary.data[1]["num"], 0);
+            }
+            other => panic!("expected binary event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_demand_only_emits_aggregate_transitions() {
+        let clients = Mutex::new(vec![
+            ClientState::new("a".to_owned()),
+            ClientState::new("b".to_owned()),
+        ]);
+
+        let start = update_client_video_demand(&clients, "a", true, Some(15)).unwrap();
+        assert!(start.video_enabled);
+        assert!(update_client_video_demand(&clients, "b", true, Some(15)).is_none());
+        assert!(update_client_video_demand(&clients, "a", false, Some(15)).is_none());
+        let stop = update_client_video_demand(&clients, "b", false, Some(15)).unwrap();
+        assert!(!stop.video_enabled);
+    }
+
+    #[test]
+    fn active_disconnect_stops_aggregate_demand() {
+        let clients = Mutex::new(vec![ClientState::new("a".to_owned())]);
+        assert!(update_client_video_demand(&clients, "a", true, Some(15)).is_some());
+
+        let stop = remove_client_and_stream_transition(&clients, "a").unwrap();
+        assert!(matches!(stop.command, StreamCommand::Stop));
+        assert!(!stop.video_enabled);
     }
 }
 

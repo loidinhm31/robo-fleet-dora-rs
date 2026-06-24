@@ -187,6 +187,13 @@ async fn main() -> Result<()> {
         .map_err(|e| eyre::eyre!("Failed to declare subscriber {}: {}", tracking_cmd_topic, e))?;
     tracing::info!("Subscriber: {}", tracking_cmd_topic);
 
+    let stream_cmd_topic = format!("rover/{}/cmd/stream/v1", entity_id);
+    let stream_cmd_sub = session
+        .declare_subscriber(&stream_cmd_topic)
+        .await
+        .map_err(|e| eyre::eyre!("Failed to declare subscriber {}: {}", stream_cmd_topic, e))?;
+    tracing::info!("Subscriber: {}", stream_cmd_topic);
+
     let tts_cmd_topic = format!("rover/{}/cmd/tts", entity_id);
     let tts_cmd_sub = session
         .declare_subscriber(&tts_cmd_topic)
@@ -209,6 +216,7 @@ async fn main() -> Result<()> {
     let arm_command_output = DataId::from("arm_command".to_owned());
     let camera_command_output = DataId::from("camera_command".to_owned());
     let audio_command_output = DataId::from("audio_command".to_owned());
+    let stream_command_output = DataId::from("stream_command".to_owned());
     let tracking_command_output = DataId::from("tracking_command".to_owned());
     let tts_command_output = DataId::from("tts_command".to_owned());
     let audio_stream_output = DataId::from("audio_stream".to_owned());
@@ -417,6 +425,12 @@ async fn main() -> Result<()> {
                 let payload = sample.payload().to_bytes();
                 let arrow_data = BinaryArray::from_vec(vec![payload.as_ref()]);
                 let _ = node.send_output(tracking_command_output.clone(), Default::default(), arrow_data);
+            }
+
+            Ok(sample) = stream_cmd_sub.recv_async() => {
+                let payload = sample.payload().to_bytes();
+                let arrow_data = BinaryArray::from_vec(vec![payload.as_ref()]);
+                let _ = node.send_output(stream_command_output.clone(), Default::default(), arrow_data);
             }
 
             Ok(sample) = tts_cmd_sub.recv_async() => {

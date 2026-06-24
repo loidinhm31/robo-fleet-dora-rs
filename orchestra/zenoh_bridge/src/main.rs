@@ -432,6 +432,9 @@ async fn main() -> Result<()> {
                                                     "audio_command_web" => {
                                                         Some(format!("rover/{}/cmd/audio", entity_id))
                                                     }
+                                                    "stream_command_web" => {
+                                                        Some(format!("rover/{}/cmd/stream/v1", entity_id))
+                                                    }
                                                     "tracking_command_web" | "tracking_command_parser" => {
                                                         Some(format!("rover/{}/cmd/tracking", entity_id))
                                                     }

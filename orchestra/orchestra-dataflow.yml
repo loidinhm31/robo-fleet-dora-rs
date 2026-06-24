@@ -55,6 +55,7 @@ nodes:
       tracking_command_web: web-bridge/tracking_command
       camera_command_web: web-bridge/camera_command
       audio_command_web: web-bridge/audio_command
+      stream_command_web: web-bridge/stream_command
       audio_stream_web: web-bridge/audio_stream
       voice_audio_web: web-bridge/voice_command_audio
       fleet_subscription_command: web-bridge/fleet_subscription_command
@@ -176,6 +177,7 @@ nodes:
       - tracking_command
       - camera_command
       - audio_command
+      - stream_command
       - tts_command
       - audio_stream          # Direct audio to rover speakers
       - voice_command_audio   # Audio for STT processing
