@@ -62,7 +62,7 @@ nodes:
       camera_control: zenoh-bridge/camera_command
       tracking_command: zenoh-bridge/tracking_command  # Gates detection/tracking pipeline
     outputs:
-      - frame                  # Raw RGB8 (always active, for video streaming)
+      - frame                  # 15 FPS raw RGB8 view branch for local JPEG encoding
       - detections             # DetectionFrame raw YOLO (detection-only mode)
       - tracked_detections     # DetectionFrame with tracking IDs (when full pipeline enabled)
       - tracking_telemetry     # TrackingTelemetry (when full pipeline enabled)
@@ -73,6 +73,7 @@ nodes:
       IMAGE_COLS: "640"
       IMAGE_ROWS: "480"
       SOURCE_FPS: "30"
+      VIEW_STREAM_FPS: "15"
       # YOLO detector (lazy-loaded on first TrackingCommand::Enable)
       MODEL_PATH: "${ROVER_YOLO_MODEL_PATH:-models/.cache/yolo/yolo12n.onnx}"
       CONFIDENCE_THRESHOLD: "0.5"
@@ -89,6 +90,21 @@ nodes:
       REID_WEIGHT: "0.8"
       REID_THRESHOLD: "0.5"
       ENABLE_CMC: "true"
+
+  # Rover-side JPEG compression for cross-machine viewing.
+  # Local ML continues to use raw camera frames inside gst-camera at capture cadence.
+  - id: video-encoder
+    build: cargo build --release -p video_encoder
+    path: ../target/release/video_encoder
+    inputs:
+      video_frame: gst-camera/frame
+    outputs:
+      - encoded_frame
+    env:
+      RUST_LOG: info
+      JPEG_QUALITY: "80"
+      IMAGE_WIDTH: "640"
+      IMAGE_HEIGHT: "480"
 
   - id: visual-servo-controller
     build: cargo build --release -p visual_servo_controller
@@ -156,7 +172,7 @@ nodes:
     build: cargo build --release -p rover_zenoh_bridge
     path: ../target/release/rover_zenoh_bridge
     inputs:
-      video_frame: gst-camera/frame
+      video_frame: video-encoder/encoded_frame
       audio_frame: audio-capture/audio
       # rover_telemetry: sim-interface/rover_telemetry
       # arm_telemetry: sim-interface/arm_telemetry

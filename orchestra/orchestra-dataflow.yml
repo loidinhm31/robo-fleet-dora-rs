@@ -61,7 +61,7 @@ nodes:
       fleet_select_command: web-bridge/fleet_select_command
     outputs:
       # Data FROM active rovers via Zenoh (subscribers)
-      - video_frame         # RGB8 frames from rover camera (with entity_id in metadata)
+      - video_frame         # JPEG frames from rover camera (with entity_id in metadata)
       - audio_frame         # Float32 audio from rover microphone (with entity_id in metadata)
       - rover_telemetry     # Rover position/velocity telemetry (with entity_id)
       - arm_telemetry       # Arm joint positions (with entity_id)
@@ -75,7 +75,7 @@ nodes:
       ZENOH_MODE: "peer"
       ENTITY_ID: "orchestra"                    # This node's ID
       ACTIVE_ROVERS: "rover-kiwi"               # Comma-separated list of rovers to subscribe to initially
-      ZENOH_CONFIG: "/home/loidinh/ws/robo-fleet-dora-rs/orchestra/zenoh_bridge/zenoh_config.json5"
+      ZENOH_CONFIG: "${ORCHESTRA_ZENOH_CONFIG:-zenoh_bridge/zenoh_config.json5}"
       VIDEO_WIDTH: "640"
       VIDEO_HEIGHT: "480"
       AUDIO_SAMPLE_RATE: "16000"
@@ -140,27 +140,13 @@ nodes:
       SAMPLE_RATE: "16000"
       CHANNELS: "1"
 
-  # Video encoder - RGB8 to JPEG (for web streaming)
-  - id: video-encoder
-    build: cargo build --release -p video_encoder
-    path: ../target/release/video_encoder
-    inputs:
-      video_frame: orchestra-bridge/video_frame  # RGB8 from rover
-    outputs:
-      - encoded_frame  # JPEG binary data
-    env:
-      RUST_LOG: info
-      JPEG_QUALITY: "80"
-      IMAGE_WIDTH: "640"
-      IMAGE_HEIGHT: "480"
-
   # Web bridge - Fleet control with entity selection
   - id: web-bridge
     build: cargo build --release -p web_bridge
     path: ../target/release/web_bridge
     inputs:
       # Media streams (encoded data for web clients)
-      video_frame: video-encoder/encoded_frame     # JPEG from video-encoder
+      video_frame: orchestra-bridge/video_frame    # JPEG from rover-side encoder
       audio_frame: audio-converter/audio_output    # Int16LE PCM from audio-converter
 
       # ========================================================================

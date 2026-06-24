@@ -13,6 +13,8 @@ services:
     privileged: true
     cpus: 3.0
     mem_limit: 4g
+    # Map any host camera path, including /dev/v4l/by-id/... stable symlinks, to
+    # the container's /dev/video0 because the dataflow runs inside the container.
     devices:
       - "${ROVER_CAMERA_URI:-/dev/video0}:/dev/video0"
     volumes:
@@ -29,11 +31,12 @@ services:
       ROVER_CAMERA_URI: /dev/video0
       ROVER_YOLO_MODEL_PATH: /models/yolo/yolo12n.onnx
       ROVER_REID_MODEL_PATH: /models/reid/osnet_x0_25.onnx
-      ROVER_ORT_DYLIB_PATH: /usr/local/lib/libonnxruntime.so
+      ROVER_ORT_DYLIB_PATH: "${ROVER_ORT_DYLIB_PATH:-/usr/local/lib/libonnxruntime.so}"
       SOURCE_URI: /dev/video0
+      VIEW_STREAM_FPS: "15"
       MODEL_PATH: /models/yolo/yolo12n.onnx
       REID_MODEL_PATH: /models/reid/osnet_x0_25.onnx
-      ORT_DYLIB_PATH: /usr/local/lib/libonnxruntime.so
+      ORT_DYLIB_PATH: "${ROVER_ORT_DYLIB_PATH:-/usr/local/lib/libonnxruntime.so}"
       MONGODB_URI: "${WORKSTATION_MONGODB_URI:-mongodb://localhost:27017}"
       MONGODB_DATABASE: "${WORKSTATION_MONGODB_DATABASE:-gleanOak}"
       ALLOW_DEFAULT_CREDENTIALS: "${WORKSTATION_ALLOW_DEFAULT_CREDENTIALS:-false}"

@@ -25,3 +25,15 @@ ctl.!default {
 }
 EOF
 ```
+
+Provide permission
+```shell
+groups
+sudo usermod -aG video ${USER}
+newgrp video
+```
+
+Runtime note:
+- `SOURCE_FPS` controls capture cadence.
+- `VIEW_STREAM_FPS` controls rover-side JPEG publish cadence.
+- Keep `SOURCE_FPS` aligned with the camera and set `VIEW_STREAM_FPS` for the desired viewer rate.

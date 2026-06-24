@@ -56,11 +56,6 @@ services:
       # SAMPLE_RATE: "16000"  # Already set
       # CHANNELS: "1"  # Set via AUDIO_CHANNELS
 
-      # Video encoder
-      JPEG_QUALITY: "80"
-      IMAGE_WIDTH: "640"
-      IMAGE_HEIGHT: "480"
-
       # Web bridge
       MODE: orchestra
       ZENOH_ENABLED: "false"
@@ -177,13 +172,14 @@ services:
       IMAGE_COLS: "640"
       IMAGE_ROWS: "480"
       SOURCE_FPS: "30"
+      VIEW_STREAM_FPS: "15"
 
       # Object detection (YOLO)
       MODEL_PATH: /models/yolo/yolo12n.onnx
       CONFIDENCE_THRESHOLD: ${YOLO_CONFIDENCE:-0.5}
       NMS_THRESHOLD: "0.4"
       TARGET_CLASSES: ""
-      ORT_DYLIB_PATH: /usr/local/lib/libonnxruntime.so
+      ORT_DYLIB_PATH: ${ROVER_ORT_DYLIB_PATH:-/usr/local/lib/libonnxruntime.so}
 
       # ReID feature extraction (OSNet)
       REID_MODEL_PATH: /models/reid/osnet_x0_25.onnx

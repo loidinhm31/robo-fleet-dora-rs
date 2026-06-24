@@ -60,9 +60,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut node, mut events) = DoraNode::init_from_env()?;
     let mut frame_id = 0u64;
     let mut last_capture = None;
+    let view_stream_fps = env::var("VIEW_STREAM_FPS")
+        .unwrap_or_else(|_| "15".into())
+        .parse::<u32>()?
+        .clamp(1, 120);
+    let view_source_fps = env::var("SOURCE_FPS")
+        .unwrap_or_else(|_| "30".into())
+        .parse::<u32>()?
+        .clamp(1, 240);
+    let mut view_frame_cadence =
+        ViewFrameCadence::new(view_stream_fps, &source_type, view_source_fps);
     let mut capture_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut capture_interval_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut vision_metrics = MetricWindow::new(Duration::from_secs(5));
+    let mut view_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut pipeline_metrics = PipelineMetricWindows::new();
 
     while let Some(event) = events.recv() {
@@ -102,13 +113,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Parameter::Integer(capture_timestamp_ms as i64),
                     );
 
-                    // Always send raw frame for video streaming
-                    node.send_output_bytes(
-                        frame_output.clone(),
-                        params,
-                        frame.numel(),
-                        frame.as_slice(),
-                    )?;
+                    if view_frame_cadence.should_emit_at(Instant::now()) {
+                        node.send_output_bytes(
+                            frame_output.clone(),
+                            params.clone(),
+                            frame.numel(),
+                            frame.as_slice(),
+                        )?;
+                        view_metrics.record(capture_started.elapsed(), frame.numel());
+                    } else {
+                        view_metrics.record_drop();
+                    }
 
                     // Vision pipeline — conditionally sends tracked_detections + tracking_telemetry
                     let vision_started = Instant::now();
@@ -157,6 +172,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         tracing::info!(
                             metric = "video_pipeline",
                             stage = "vision_total",
+                            frame_id,
+                            count = snapshot.count,
+                            bytes = snapshot.bytes,
+                            drops = snapshot.drops,
+                            errors = snapshot.errors,
+                            p50_us = snapshot.p50_us,
+                            p95_us = snapshot.p95_us,
+                            p99_us = snapshot.p99_us,
+                            max_us = snapshot.max_us
+                        );
+                    }
+                    if let Some(snapshot) = view_metrics.snapshot_if_due() {
+                        tracing::info!(
+                            metric = "video_pipeline",
+                            stage = "view_branch_emit",
+                            target_fps = view_stream_fps,
                             frame_id,
                             count = snapshot.count,
                             bytes = snapshot.bytes,
@@ -261,6 +292,104 @@ fn unix_timestamp_ms() -> Result<u64, Box<dyn std::error::Error>> {
         .duration_since(UNIX_EPOCH)?
         .as_millis()
         .try_into()?)
+}
+
+#[derive(Debug)]
+struct ViewFrameCadence {
+    mode: ViewFrameCadenceMode,
+}
+
+#[derive(Debug)]
+enum ViewFrameCadenceMode {
+    FrameRatio {
+        target_fps: u32,
+        source_fps: u32,
+        credit: u32,
+    },
+    TokenBucket {
+        target_interval: Duration,
+        max_credit: Duration,
+        credit: Duration,
+        last_seen_at: Option<Instant>,
+    },
+}
+
+impl ViewFrameCadence {
+    fn new(target_fps: u32, source_type: &str, source_fps: u32) -> Self {
+        let target_fps = target_fps.max(1);
+        if source_type == "webcam" {
+            let source_fps = source_fps.max(1);
+            return Self {
+                mode: ViewFrameCadenceMode::FrameRatio {
+                    target_fps,
+                    source_fps,
+                    credit: source_fps.saturating_sub(target_fps),
+                },
+            };
+        }
+
+        let target_interval = Duration::from_nanos(1_000_000_000 / target_fps as u64);
+        let max_credit = target_interval.saturating_mul(target_fps);
+        Self {
+            mode: ViewFrameCadenceMode::TokenBucket {
+                target_interval,
+                max_credit,
+                credit: target_interval,
+                last_seen_at: None,
+            },
+        }
+    }
+
+    fn should_emit_at(&mut self, now: Instant) -> bool {
+        match &mut self.mode {
+            ViewFrameCadenceMode::FrameRatio {
+                target_fps,
+                source_fps,
+                credit,
+            } => {
+                if *target_fps >= *source_fps {
+                    return true;
+                }
+
+                *credit = credit.saturating_add(*target_fps);
+                if *credit >= *source_fps {
+                    *credit -= *source_fps;
+                    true
+                } else {
+                    false
+                }
+            }
+            ViewFrameCadenceMode::TokenBucket {
+                target_interval,
+                max_credit,
+                credit,
+                last_seen_at,
+            } => {
+                if let Some(previous) = *last_seen_at {
+                    if now > previous {
+                        *credit = credit
+                            .saturating_add(now.duration_since(previous))
+                            .min(*max_credit);
+                    }
+                }
+                *last_seen_at = Some(now);
+
+                if *credit < *target_interval {
+                    return false;
+                }
+
+                *credit -= *target_interval;
+                true
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+impl Default for ViewFrameCadence {
+    fn default() -> Self {
+        Self::new(15, "webcam", 30)
+    }
 }
 
 fn build_pipeline() -> Result<VisionPipeline, Box<dyn std::error::Error>> {
@@ -393,4 +522,161 @@ fn send_pipeline_output(
     }
     timings.serialization = serialization_started.elapsed();
     Ok(timings)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ViewFrameCadence;
+    use std::time::{Duration, Instant};
+
+    fn emitted_frames_for_capture_count(
+        capture_frames: u64,
+        target_fps: u32,
+        duration: Duration,
+    ) -> u64 {
+        let mut cadence = ViewFrameCadence::new(target_fps, "rtsp", 30);
+        let mut emitted = 0;
+        let start = Instant::now();
+
+        for frame_index in 0..capture_frames {
+            let frame_offset_nanos =
+                duration.as_nanos() * frame_index as u128 / capture_frames.max(1) as u128;
+            let frame_time = start + Duration::from_nanos(frame_offset_nanos as u64);
+            if cadence.should_emit_at(frame_time) {
+                emitted += 1;
+            }
+        }
+        emitted
+    }
+
+    fn capture_frames_for_duration(duration_ms: u64, source_fps: u32) -> u64 {
+        duration_ms * source_fps as u64 / 1_000
+    }
+
+    #[test]
+    fn view_cadence_meets_phase_two_gate_for_roughly_thirty_fps_input() {
+        let emitted = emitted_frames_for_capture_count(
+            capture_frames_for_duration(600_000, 30),
+            15,
+            Duration::from_secs(600),
+        );
+
+        assert!(
+            emitted >= 8_700,
+            "expected at least 14.5 FPS over 600s, got {emitted} frames"
+        );
+    }
+
+    #[test]
+    fn view_cadence_meets_phase_two_gate_for_observed_capture_count() {
+        let mut cadence = ViewFrameCadence::new(15, "webcam", 30);
+        let mut emitted = 0;
+        for _ in 0..17_914 {
+            if cadence.should_emit_at(Instant::now()) {
+                emitted += 1;
+            }
+        }
+
+        assert!(
+            emitted >= 8_700,
+            "expected observed 10-minute capture count to keep at least 14.5 FPS, got {emitted} frames"
+        );
+    }
+
+    #[test]
+    fn view_cadence_caps_fast_input_to_target_rate() {
+        let emitted = emitted_frames_for_capture_count(
+            capture_frames_for_duration(600_000, 60),
+            15,
+            Duration::from_secs(600),
+        );
+
+        assert!(
+            (8_999..=9_001).contains(&emitted),
+            "expected roughly 15 FPS over 600s for fast input, got {emitted} frames"
+        );
+    }
+
+    #[test]
+    fn view_cadence_handles_non_even_target_rate() {
+        let emitted = emitted_frames_for_capture_count(
+            capture_frames_for_duration(600_000, 30),
+            17,
+            Duration::from_secs(600),
+        );
+
+        assert!(
+            (10_199..=10_201).contains(&emitted),
+            "expected roughly 17 FPS over 600s, got {emitted} frames"
+        );
+    }
+
+    #[test]
+    fn view_cadence_does_not_backfill_after_pause() {
+        let start = Instant::now();
+        let mut cadence = ViewFrameCadence::new(15, "rtsp", 30);
+
+        assert!(cadence.should_emit_at(start));
+        assert!(!cadence.should_emit_at(start + Duration::from_millis(10)));
+        assert!(cadence.should_emit_at(start + Duration::from_secs(5)));
+        assert!(cadence.should_emit_at(start + Duration::from_secs(5) + Duration::from_millis(10)));
+    }
+
+    #[test]
+    fn view_cadence_recovers_after_short_stalls() {
+        let start = Instant::now();
+        let mut cadence = ViewFrameCadence::new(15, "rtsp", 30);
+        let mut emitted = 0;
+        let mut elapsed = Duration::ZERO;
+
+        for frame_index in 0..18_000 {
+            if frame_index % 900 == 0 && frame_index != 0 {
+                elapsed += Duration::from_millis(250);
+            } else {
+                elapsed += Duration::from_micros(33_333);
+            }
+
+            if cadence.should_emit_at(start + elapsed) {
+                emitted += 1;
+            }
+        }
+
+        assert!(
+            emitted >= 8_700,
+            "expected short stalls to remain above Phase 2 gate, got {emitted} frames"
+        );
+    }
+
+    #[test]
+    fn view_cadence_caps_recovery_burst() {
+        let start = Instant::now();
+        let mut cadence = ViewFrameCadence::new(15, "rtsp", 30);
+
+        assert!(cadence.should_emit_at(start));
+
+        let mut emitted_after_pause = 0;
+        for frame_index in 0..100 {
+            if cadence
+                .should_emit_at(start + Duration::from_secs(5) + Duration::from_millis(frame_index))
+            {
+                emitted_after_pause += 1;
+            }
+        }
+
+        assert!(emitted_after_pause <= 16);
+    }
+
+    #[test]
+    fn webcam_view_cadence_honors_configured_source_ratio() {
+        let mut cadence = ViewFrameCadence::new(15, "webcam", 30);
+        let mut emitted = 0;
+
+        for _ in 0..120 {
+            if cadence.should_emit_at(Instant::now()) {
+                emitted += 1;
+            }
+        }
+
+        assert_eq!(emitted, 60);
+    }
 }

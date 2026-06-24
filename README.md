@@ -153,6 +153,11 @@ dora start web-dataflow.yml --name robo-rover-web --attach
 dora start dev-dataflow.yml --name robo-rover-dev --attach
 ```
 
+**Run nodes with environment variables**:
+```shell
+set -a; source .env; set +a; dora start rover-kiwi/rover-kiwi-direct-dataflow.yml --name robo-rover-dev --attach
+```
+
 ### 4. Start Web UI
 
 ```shell
@@ -302,7 +307,8 @@ gst-camera:
     SOURCE_URI: "/dev/video0"    # or RTSP URL
     IMAGE_COLS: "640"
     IMAGE_ROWS: "480"
-    SOURCE_FPS: "30"
+    SOURCE_FPS: "30"             # Capture cadence for ML and servo
+    VIEW_STREAM_FPS: "15"        # Rover-side JPEG publish cadence
 ```
 
 ### Speech Recognition & Voice Commands
@@ -563,7 +569,7 @@ pnpm check-types
 ## Performance Metrics
 
 **Vision Pipeline:**
-- **Video Stream**: 30 FPS @ 640x480
+- **Video Stream**: 15 FPS view output @ 640x480 (`VIEW_STREAM_FPS`); capture may run faster for ML
 - **Object Detection**: ~20-30 FPS (YOLOv12n on Raspberry Pi 5)
 - **ReID Feature Extraction**: 5-15ms per detection (OSNet x0.25)
 - **Object Tracking**: 25-30 FPS with BoTSORT + CMC
@@ -585,7 +591,7 @@ pnpm check-types
 
 **Network:**
 - **Socket.IO Latency**: <50ms on local network
-- **Video Streaming**: ~500-800 KB/s (JPEG quality 80)
+- **Video Streaming**: ~500-800 KB/s (JPEG quality 80, `VIEW_STREAM_FPS`-gated)
 - **Audio Streaming**: ~32 KB/s (16 kHz S16LE)
 
 ## Development

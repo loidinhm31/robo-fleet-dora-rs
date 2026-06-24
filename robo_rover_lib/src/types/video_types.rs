@@ -4,6 +4,11 @@ const RAW_FRAME_MAGIC: &[u8; 4] = b"RFRM";
 const RAW_FRAME_VERSION: u8 = 1;
 const RAW_FRAME_HEADER_LEN: usize = 36;
 const MAX_RAW_FRAME_BYTES: usize = 64 * 1024 * 1024;
+const JPEG_FRAME_MAGIC: &[u8; 4] = b"JPGF";
+const JPEG_FRAME_VERSION: u8 = 1;
+const JPEG_FRAME_HEADER_LEN: usize = 36;
+const MAX_JPEG_FRAME_BYTES: usize = 8 * 1024 * 1024;
+const MAX_JPEG_FRAME_DIMENSION: u32 = 4096;
 
 /// Capture identity that must remain unchanged through the video pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +75,63 @@ impl<'a> RawVideoFramePacket<'a> {
     }
 }
 
+/// Versioned envelope for JPEG video frames transported across Zenoh.
+pub struct JpegFramePacket<'a> {
+    pub metadata: VideoFrameMetadata,
+    pub payload: &'a [u8],
+}
+
+impl<'a> JpegFramePacket<'a> {
+    pub fn encode(&self) -> Result<Vec<u8>, String> {
+        validate_jpeg_frame(self.metadata, self.payload)?;
+        let payload_len = u32::try_from(self.payload.len())
+            .map_err(|_| "jpeg frame payload exceeds u32".to_string())?;
+        let mut packet = Vec::with_capacity(JPEG_FRAME_HEADER_LEN + self.payload.len());
+        packet.extend_from_slice(JPEG_FRAME_MAGIC);
+        packet.push(JPEG_FRAME_VERSION);
+        packet.extend_from_slice(&[0; 3]);
+        packet.extend_from_slice(&self.metadata.frame_id.to_le_bytes());
+        packet.extend_from_slice(&self.metadata.capture_timestamp_ms.to_le_bytes());
+        packet.extend_from_slice(&self.metadata.width.to_le_bytes());
+        packet.extend_from_slice(&self.metadata.height.to_le_bytes());
+        packet.extend_from_slice(&payload_len.to_le_bytes());
+        packet.extend_from_slice(self.payload);
+        Ok(packet)
+    }
+
+    pub fn decode(packet: &'a [u8]) -> Result<Self, String> {
+        if packet.len() < JPEG_FRAME_HEADER_LEN {
+            return Err("jpeg frame packet is truncated".into());
+        }
+        if &packet[..4] != JPEG_FRAME_MAGIC {
+            return Err("unsupported jpeg frame magic".into());
+        }
+        if packet[4] != JPEG_FRAME_VERSION {
+            return Err("unsupported jpeg frame version".into());
+        }
+        let frame_id = read_u64(packet, 8)?;
+        let capture_timestamp_ms = read_u64(packet, 16)?;
+        let width = read_u32(packet, 24)?;
+        let height = read_u32(packet, 28)?;
+        let payload_len = read_u32(packet, 32)? as usize;
+        let expected_len = JPEG_FRAME_HEADER_LEN
+            .checked_add(payload_len)
+            .ok_or_else(|| "jpeg frame packet length overflow".to_string())?;
+        if packet.len() != expected_len {
+            return Err("jpeg frame packet payload length mismatch".into());
+        }
+        let metadata = VideoFrameMetadata {
+            frame_id,
+            capture_timestamp_ms,
+            width,
+            height,
+        };
+        let payload = &packet[JPEG_FRAME_HEADER_LEN..];
+        validate_jpeg_frame(metadata, payload)?;
+        Ok(Self { metadata, payload })
+    }
+}
+
 fn validate_raw_frame(metadata: VideoFrameMetadata, payload_len: usize) -> Result<(), String> {
     if metadata.width == 0 || metadata.height == 0 {
         return Err("raw frame dimensions must be non-zero".into());
@@ -82,6 +144,24 @@ fn validate_raw_frame(metadata: VideoFrameMetadata, payload_len: usize) -> Resul
         return Err(format!(
             "invalid raw RGB8 payload: expected {expected}, got {payload_len}"
         ));
+    }
+    Ok(())
+}
+
+fn validate_jpeg_frame(metadata: VideoFrameMetadata, payload: &[u8]) -> Result<(), String> {
+    if metadata.width == 0 || metadata.height == 0 {
+        return Err("jpeg frame dimensions must be non-zero".into());
+    }
+    if metadata.width > MAX_JPEG_FRAME_DIMENSION || metadata.height > MAX_JPEG_FRAME_DIMENSION {
+        return Err("jpeg frame dimensions exceed maximum".into());
+    }
+    let payload_len = payload.len();
+    if payload_len == 0 || payload_len > MAX_JPEG_FRAME_BYTES {
+        return Err(format!("invalid jpeg payload size: {payload_len}"));
+    }
+    if payload_len < 4 || payload[..2] != [0xFF, 0xD8] || payload[payload_len - 2..] != [0xFF, 0xD9]
+    {
+        return Err("jpeg payload missing SOI/EOI markers".into());
     }
     Ok(())
 }
@@ -147,6 +227,124 @@ mod raw_frame_tests {
         assert!(RawVideoFramePacket {
             metadata,
             payload: &[]
+        }
+        .encode()
+        .is_err());
+    }
+}
+
+#[cfg(test)]
+mod jpeg_frame_tests {
+    use super::*;
+
+    fn metadata() -> VideoFrameMetadata {
+        VideoFrameMetadata {
+            frame_id: 42,
+            capture_timestamp_ms: 1_700_000_000_123,
+            width: 640,
+            height: 480,
+        }
+    }
+
+    fn jpeg_payload() -> Vec<u8> {
+        vec![0xFF, 0xD8, 1, 2, 3, 0xFF, 0xD9]
+    }
+
+    #[test]
+    fn jpeg_frame_packet_round_trips_identity_and_payload() {
+        let payload = jpeg_payload();
+        let encoded = JpegFramePacket {
+            metadata: metadata(),
+            payload: &payload,
+        }
+        .encode()
+        .unwrap();
+        let decoded = JpegFramePacket::decode(&encoded).unwrap();
+        assert_eq!(decoded.metadata, metadata());
+        assert_eq!(decoded.payload, payload);
+    }
+
+    #[test]
+    fn jpeg_frame_packet_rejects_truncation() {
+        assert!(JpegFramePacket::decode(b"JPGF").is_err());
+        let payload = jpeg_payload();
+        let mut encoded = JpegFramePacket {
+            metadata: metadata(),
+            payload: &payload,
+        }
+        .encode()
+        .unwrap();
+        encoded.pop();
+        assert!(JpegFramePacket::decode(&encoded).is_err());
+    }
+
+    #[test]
+    fn jpeg_frame_packet_rejects_bad_magic_and_version() {
+        let payload = jpeg_payload();
+        let mut encoded = JpegFramePacket {
+            metadata: metadata(),
+            payload: &payload,
+        }
+        .encode()
+        .unwrap();
+        encoded[0] = b'X';
+        assert!(JpegFramePacket::decode(&encoded).is_err());
+
+        let mut encoded = JpegFramePacket {
+            metadata: metadata(),
+            payload: &payload,
+        }
+        .encode()
+        .unwrap();
+        encoded[4] = 9;
+        assert!(JpegFramePacket::decode(&encoded).is_err());
+    }
+
+    #[test]
+    fn jpeg_frame_packet_rejects_invalid_dimensions() {
+        let payload = jpeg_payload();
+        assert!(JpegFramePacket {
+            metadata: VideoFrameMetadata {
+                width: 0,
+                ..metadata()
+            },
+            payload: &payload,
+        }
+        .encode()
+        .is_err());
+        assert!(JpegFramePacket {
+            metadata: VideoFrameMetadata {
+                width: MAX_JPEG_FRAME_DIMENSION + 1,
+                ..metadata()
+            },
+            payload: &payload,
+        }
+        .encode()
+        .is_err());
+    }
+
+    #[test]
+    fn jpeg_frame_packet_rejects_oversized_payload() {
+        let oversized = vec![0xFF; MAX_JPEG_FRAME_BYTES + 1];
+        assert!(JpegFramePacket {
+            metadata: metadata(),
+            payload: &oversized,
+        }
+        .encode()
+        .is_err());
+    }
+
+    #[test]
+    fn jpeg_frame_packet_rejects_empty_or_non_jpeg_payload() {
+        assert!(JpegFramePacket {
+            metadata: metadata(),
+            payload: &[],
+        }
+        .encode()
+        .is_err());
+        assert!(JpegFramePacket {
+            metadata: metadata(),
+            payload: b"not jpeg",
         }
         .encode()
         .is_err());

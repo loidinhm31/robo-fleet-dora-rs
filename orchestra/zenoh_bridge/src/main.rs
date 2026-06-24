@@ -1,12 +1,12 @@
 use dora_node_api::{
-    arrow::array::{Array, BinaryArray, Float32Array, UInt8Array},
+    arrow::array::{Array, BinaryArray, Float32Array},
     dora_core::config::DataId,
     DoraNode, Event, Parameter,
 };
 use eyre::Result;
 use robo_rover_lib::{
     capture_age_ms, init_tracing, FleetSelectCommand, FleetSubscriptionCommand,
-    FrameSequenceTracker, MetricWindow, RawVideoFramePacket,
+    FrameSequenceTracker, JpegFramePacket, MetricWindow,
 };
 use serde_json;
 use std::collections::{BTreeMap, HashMap};
@@ -42,7 +42,7 @@ async fn subscribe_to_rover(
 ) -> Result<RoverSubscriptions> {
     tracing::info!("Subscribing to rover: {}", entity_id);
 
-    let video_topic = format!("rover/{}/video/raw", entity_id);
+    let video_topic = format!("rover/{}/video/jpeg/v1", entity_id);
     let video_sub = session
         .declare_subscriber(&video_topic)
         .await
@@ -479,7 +479,7 @@ async fn main() -> Result<()> {
                 if let Some((entity_id, sample)) = result {
                     let receive_started = Instant::now();
                     let payload = sample.payload().to_bytes();
-                    match RawVideoFramePacket::decode(payload.as_ref()) {
+                    match JpegFramePacket::decode(payload.as_ref()) {
                         Ok(frame) => {
                             match video_sequences.entry(entity_id.clone()).or_default()
                                 .observe(frame.metadata.frame_id) {
@@ -492,12 +492,14 @@ async fn main() -> Result<()> {
                                     0
                                 });
                             video_age_metrics.record(Duration::from_millis(frame_age_ms), 0);
-                            let video_array = UInt8Array::from(frame.payload.to_vec());
+                            let video_array = BinaryArray::from_vec(vec![frame.payload]);
                             let mut params = BTreeMap::new();
                             params.insert("entity_id".to_owned(), Parameter::String(entity_id.clone()));
                             params.insert("width".to_owned(), Parameter::Integer(frame.metadata.width as i64));
                             params.insert("height".to_owned(), Parameter::Integer(frame.metadata.height as i64));
-                            params.insert("encoding".to_owned(), Parameter::String("RGB8".to_string()));
+                            params.insert("encoding".to_owned(), Parameter::String("jpeg".to_string()));
+                            params.insert("codec".to_owned(), Parameter::String("jpeg".to_string()));
+                            params.insert("compressed_size".to_owned(), Parameter::Integer(frame.payload.len() as i64));
                             params.insert("frame_id".to_owned(), Parameter::Integer(frame.metadata.frame_id as i64));
                             params.insert("capture_timestamp_ms".to_owned(),
                                 Parameter::Integer(frame.metadata.capture_timestamp_ms as i64));
@@ -525,7 +527,7 @@ async fn main() -> Result<()> {
                         }
                         Err(error) => {
                             video_metrics.record_error();
-                            tracing::warn!(%error, entity_id, "rejected invalid raw video packet");
+                            tracing::warn!(%error, entity_id, "rejected invalid jpeg video packet");
                         }
                     }
                 }

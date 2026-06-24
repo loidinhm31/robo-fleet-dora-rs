@@ -7,7 +7,7 @@ The robo-rover system uses a **distributed architecture** with two deployment ta
 - **Orchestra (Workstation)**: Heavy AI/ML processing, web interface, fleet control
 - **Rover-Kiwi (Raspberry Pi 5)**: Hardware I/O, motor control, low-latency control loops
 
-Communication between machines uses **Zenoh** (pub/sub protocol) for efficient real-time data exchange. Alternatively, the rover can run in **direct mode** (`ROVER_MODE=direct`) with `web_bridge` on the rover itself — no Zenoh or orchestra required.
+Communication between machines uses **Zenoh** (pub/sub protocol) for efficient real-time data exchange. Alternatively, the rover can run in **direct mode** (`ROVER_MODE=direct`) with `web_bridge` on the rover itself - no Zenoh or orchestra required.
 
 ## Architecture Diagram
 
@@ -27,8 +27,8 @@ Communication between machines uses **Zenoh** (pub/sub protocol) for efficient r
 │  ┌────────▼─────────┐           │          │  │  ML Inference    │           │
 │  │  Heavy Compute   │           │   Zenoh  │  │  - YOLO Detect   │           │
 │  │  - Whisper STT   │◄──────────┼──────────┤► │  - OSNet ReID    │           │
-│  │  - Video Encode  │   P2P     │          │  │  - BoTSORT+CMC   │           │
-│  │  - Audio Convert │           │          │  └────────┬─────────┘           │
+│  │  - Audio Convert │   P2P     │          │  │  - BoTSORT+CMC   │           │
+│  │                  │           │          │  └────────┬─────────┘           │
 │  └────────┬─────────┘           │          │           │                     │
 │           │                     │          │  ┌────────▼─────────┐           │
 │           │                     │          │  │ Controllers      │           │
@@ -39,11 +39,11 @@ Communication between machines uses **Zenoh** (pub/sub protocol) for efficient r
 │  └──────────────────┘           │          │           │                     │
 │                                 │          │  ┌────────▼─────────┐           │
 │  Subscribes:                    │          │  │  zenoh-bridge    │           │
-│  - Raw data from rover          │          │  │  (rover mode)    │           │
+│  - JPEG video + rover data      │          │  │  (rover mode)    │           │
 │  - Processed detections         │          │  └──────────────────┘           │
 │                                 │          │                                 │
 │  Publishes:                     │          │  Publishes:                     │
-│  - Commands to rover            │          │  - Raw video (RGB8)             │
+│  - Commands to rover            │          │  - JPEG video                   │
 │                                 │          │  - Raw audio (Float32)          │
 │                                 │          │  - Telemetry                    │
 │                                 │          │  - Detections (tracked)         │
@@ -64,7 +64,7 @@ robo-rover-dora/
 │   ├── speech_recognizer/          # Whisper.cpp STT
 │   ├── command_parser/             # NLU pattern matching
 │   ├── audio_converter/            # Float32 → Int16LE
-│   ├── video_encoder/              # RGB8 → JPEG
+│   ├── video_encoder/              # RGB8 -> JPEG for rover-side view output
 │   ├── kokoro_tts/                 # High-quality TTS (Kokoro-82M, workstation audio, optional)
 │   ├── zenoh_bridge/               # Orchestra Zenoh bridge (orchestra-only)
 │   └── orchestra-dataflow.yml      # Orchestra Dora dataflow
@@ -104,8 +104,8 @@ The system uses **two separate zenoh_bridge implementations** for clean separati
 **Runs on**: Raspberry Pi
 
 **Behavior**:
-- **Publishes TO Zenoh**: Raw sensor data and processed detections
-  - `rover/{entity_id}/video/raw` - RGB8 frames (640×480×3)
+- **Publishes TO Zenoh**: Encoded video, raw audio, telemetry, and processed detections
+  - `rover/{entity_id}/video/jpeg/v1` - versioned JPEG view frames (640x480, quality 80, demand-gated view cadence)
   - `rover/{entity_id}/audio/raw` - Float32 audio (16kHz, mono)
   - `rover/{entity_id}/telemetry/rover` - Position/velocity
   - `rover/{entity_id}/telemetry/arm` - Joint angles
@@ -130,8 +130,8 @@ The system uses **two separate zenoh_bridge implementations** for clean separati
 **Runs on**: Workstation
 
 **Behavior**:
-- **Subscribes FROM Zenoh**: Raw data and processed detections from selected rover
-  - `rover/{selected_entity}/video/raw` - RGB8 for video encoding
+- **Subscribes FROM Zenoh**: Encoded video, audio, telemetry, and processed detections from selected rover
+  - `rover/{selected_entity}/video/jpeg/v1` - versioned JPEG for web streaming
   - `rover/{selected_entity}/audio/raw` - Float32 for STT
   - `rover/{selected_entity}/video/detections` - Tracked detections from rover
   - `rover/{selected_entity}/telemetry/*` - All telemetry (including tracking)
@@ -162,9 +162,9 @@ ZENOH_MODE=peer
    - YOLOv12n detection
    - OSNet ReID feature extraction (512-dim appearance features)
    - BoTSORT tracking with CMC (Camera Motion Compensation)
-3. **Raw data & detections** → `rover/{entity_id}/*` topics via Zenoh
+3. **JPEG view stream, audio, telemetry & detections** -> `rover/{entity_id}/*` topics via Zenoh
 4. **Orchestra receives** and forwards:
-   - RGB8 → video-encoder (JPEG for web UI)
+   - JPEG -> web-bridge (already encoded on rover)
    - Float32 audio → speech-recognizer → command-parser
    - Tracked detections with ReID features → web-bridge (for web UI display)
 
@@ -177,7 +177,7 @@ ZENOH_MODE=peer
 5. **Controllers execute** on hardware
 
 ### Network Requirements
-- **Bandwidth**: 30 Mbps (gigabit LAN recommended)
+- **Bandwidth**: <=15 Mbps average for one 640x480 JPEG viewer stream (gigabit LAN recommended)
 - **Latency**: <10ms on LAN
 - **Topology**: Direct P2P via Zenoh multicast discovery
 - **Protocol**: Zenoh over TCP/UDP (automatic selection)
@@ -284,17 +284,36 @@ Future: Orchestra processes MULTIPLE rovers in parallel with:
 
 ## Key Design Decisions
 
-### Why Raw RGB8 Video from Rover?
+### Why Rover-Side JPEG Video?
 
-**Decision**: Rover sends raw RGB8 (27 MB/s), not JPEG
+**Decision**: Rover sends versioned JPEG packets, not raw RGB8.
 
 **Rationale**:
-- ML inference needs raw pixels (YOLO input)
-- Decoding JPEG on orchestra adds latency
-- Gigabit LAN handles 27 MB/s easily
-- Saves rover CPU (30% encoding overhead)
+- ML inference and visual servoing need raw pixels, so raw RGB8 stays local inside `kornia_capture`.
+- Compression must happen before Zenoh; downstream throttling cannot remove network bottlenecks.
+- The view branch is capped independently of local ML cadence: `SOURCE_FPS` controls capture cadence, `VIEW_STREAM_FPS` controls the published view/video cadence, and ML continues at capture rate.
+- The packet envelope preserves frame ID, capture timestamp, dimensions, and bounded payload validation.
 
-**Tradeoff**: Not suitable for WAN deployment (would need H.264 encoding)
+**Tradeoff**: Software JPEG consumes rover CPU. Phase gates enforce CPU, memory, and servo freshness limits before proceeding.
+
+### View Cadence Contract
+
+- `SOURCE_FPS` sets the camera capture cadence.
+- `VIEW_STREAM_FPS` sets the rover-side JPEG publish cadence for `video/jpeg/v1`.
+- `kornia_capture` keeps ML and servo processing on the capture cadence; only the view/video branch is throttled.
+- Non-webcam sources use a monotonic token bucket to pace the published view stream.
+- Webcam sources use the source-frame ratio so the published cadence stays aligned with the camera.
+
+### Phase 2 Benchmark
+
+- Native split validation ran for 600s.
+- Encoded frames: 8986.
+- Average encode cost: 7.3ms/frame.
+- Encode errors: 0.
+- Rover bridge video frames: 8986.
+- Orchestra video frames: 8986.
+- Measured viewer throughput: 14.98 FPS.
+- Final hybrid cadence was not rerun under the constrained 3 CPU / 4 GiB container profile; native split passed and was approved.
 
 ### Why Object Detection & Tracking on Rover?
 

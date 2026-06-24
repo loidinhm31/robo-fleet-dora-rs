@@ -61,7 +61,7 @@ nodes:
       camera_control: web-bridge/camera_command
       tracking_command: web-bridge/tracking_command
     outputs:
-      - frame                  # Raw RGB8 frames
+      - frame                  # 15 FPS raw RGB8 view branch for local JPEG encoding
       - detections             # DetectionFrame raw YOLO (detection-only mode)
       - tracked_detections     # DetectionFrame with tracking IDs
       - tracking_telemetry     # TrackingTelemetry
@@ -71,6 +71,7 @@ nodes:
       IMAGE_COLS: "640"
       IMAGE_ROWS: "480"
       SOURCE_FPS: "30"
+      VIEW_STREAM_FPS: "15"
       MODEL_PATH: "${ROVER_YOLO_MODEL_PATH:-models/.cache/yolo/yolo12n.onnx}"
       CONFIDENCE_THRESHOLD: "0.5"
       NMS_THRESHOLD: "0.4"

@@ -1,5 +1,5 @@
 use dora_node_api::{
-    arrow::array::{Array, BinaryArray, Float32Array, UInt8Array},
+    arrow::array::{Array, BinaryArray, Float32Array},
     dora_core::config::DataId,
     DoraNode, Event,
 };
@@ -7,7 +7,7 @@ use eyre::Result;
 use robo_rover_lib::{
     capture_age_ms, init_tracing,
     types::{ArmCommandWithMetadata, InputSource, RoverCommandWithMetadata},
-    FrameSequenceTracker, MetricWindow, RawVideoFramePacket, VideoFrameMetadata,
+    FrameSequenceTracker, JpegFramePacket, MetricWindow, VideoFrameMetadata,
 };
 use std::time::{Duration, Instant};
 use zenoh::Config;
@@ -59,7 +59,7 @@ async fn main() -> Result<()> {
     // PUBLISHERS: Send data TO orchestra via Zenoh
     // =========================================================================
 
-    let video_topic = format!("rover/{}/video/raw", entity_id);
+    let video_topic = format!("rover/{}/video/jpeg/v1", entity_id);
     let video_pub = session
         .declare_publisher(&video_topic)
         .await
@@ -247,11 +247,11 @@ async fn main() -> Result<()> {
                     Event::Input { id, data, metadata } => {
                         match id.as_str() {
                             "video_frame" => {
-                                // Video frames are UInt8Array (raw RGB8 bytes)
-                                if let Some(uint8_array) = data.as_any().downcast_ref::<UInt8Array>() {
-                                    if uint8_array.len() > 0 {
+                                // Video frames are rover-side encoded JPEG BinaryArray payloads.
+                                if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                                    if binary_array.len() > 0 {
                                         let started = Instant::now();
-                                        let bytes = uint8_array.values().as_ref();
+                                        let bytes = binary_array.value(0);
                                         match frame_metadata(&metadata.parameters).and_then(|metadata| {
                                             match video_sequence.observe(metadata.frame_id) {
                                                 Ok(missing) => video_metrics.record_drops(missing),
@@ -264,9 +264,9 @@ async fn main() -> Result<()> {
                                                 .unwrap_or_else(|| {
                                                     video_metrics.record_error();
                                                     0
-                                                });
+                                            });
                                             video_age_metrics.record(Duration::from_millis(age_ms), 0);
-                                            RawVideoFramePacket { metadata, payload: bytes }.encode()
+                                            JpegFramePacket { metadata, payload: bytes }.encode()
                                         }) {
                                             Ok(packet) => match video_pub.put(&packet).await {
                                                 Ok(_) => {
