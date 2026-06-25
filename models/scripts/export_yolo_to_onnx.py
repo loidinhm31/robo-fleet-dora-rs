@@ -10,6 +10,7 @@ Usage:
 """
 
 import os
+import shutil
 from pathlib import Path
 from ultralytics import YOLO
 
@@ -32,14 +33,15 @@ def main():
     print(f"Output directory: {cache_dir}")
 
     # Use opset 14 for ONNX IR version 9 compatibility
-    model.export(format='onnx', simplify=True, opset=14)
+    exported_model = Path(model.export(format='onnx', simplify=True, opset=14))
 
-    # Move the exported file to cache directory
-    if Path("yolo12n.onnx").exists():
-        Path("yolo12n.onnx").rename(output_path)
+    # Move the exported file to cache directory. shutil.move falls back to
+    # copy+remove when source and destination are on different filesystems.
+    if exported_model.exists():
+        shutil.move(str(exported_model), output_path)
         print(f"Export complete! Model saved to: {output_path}")
     else:
-        print(f"Warning: yolo12n.onnx not found in current directory")
+        print(f"Warning: exported ONNX file not found at {exported_model}")
 
     print("Note: Exported with opset 14 for ONNX Runtime 1.16 compatibility")
 

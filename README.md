@@ -77,7 +77,19 @@ sudo apt install cmake build-essential
 
 ### ONNX Runtime Setup
 
-The object detection node requires ONNX Runtime. Download and extract:
+The rover vision nodes currently use the Rust `ort` crate `1.16.3`, so use an
+ONNX Runtime `1.16.x` shared library. Download and extract:
+
+**Automatic system-wide install** (recommended when you want the rover dataflow
+default `/usr/local/lib/libonnxruntime.so` to work without extra environment
+variables):
+
+```shell
+./models/scripts/download_onnxruntime.sh
+```
+
+This installs `libonnxruntime.so*` into `/usr/local/lib/` and runs `ldconfig`.
+It requires `sudo`.
 
 ```shell
 # Download ONNX Runtime (version 1.16.3)
@@ -87,13 +99,21 @@ wget https://github.com/microsoft/onnxruntime/releases/download/v1.16.3/onnxrunt
 tar -xzf onnxruntime-linux-x64-1.16.3.tgz
 ```
 
-The `web-dataflow.yml` is configured to use this library via `ORT_DYLIB_PATH`.
+**Manual local install** (use this when you do not want to write into
+`/usr/local/lib`):
 
-**Alternative system-wide install** (requires sudo):
+Set `ROVER_ORT_DYLIB_PATH` to the extracted shared library when running the rover
+dataflows:
+
+```shell
+export ROVER_ORT_DYLIB_PATH="$PWD/onnxruntime-linux-x64-1.16.3/lib/libonnxruntime.so"
+```
+
+**Manual system-wide install** (requires sudo):
 ```shell
 sudo cp onnxruntime-linux-x64-1.16.3/lib/libonnxruntime.so* /usr/local/lib/
 sudo ldconfig
-# Then remove ORT_DYLIB_PATH from web-dataflow.yml
+# Then the rover dataflow default /usr/local/lib/libonnxruntime.so will work
 ```
 
 ### AI Models
@@ -281,7 +301,7 @@ object-detector:
     CONFIDENCE_THRESHOLD: "0.5"              # Min confidence (0.0-1.0)
     NMS_THRESHOLD: "0.4"                     # Non-maximum suppression
     TARGET_CLASSES: "person,dog,cat"         # Filter specific classes (or empty for all)
-    MODEL_PATH: "models/yolo12n.onnx"        # Path to YOLO model
+    MODEL_PATH: "models/.cache/yolo/yolo12n.onnx"  # Path to YOLO model
     ORT_DYLIB_PATH: "onnxruntime-linux-x64-1.16.3/lib/libonnxruntime.so"
 ```
 

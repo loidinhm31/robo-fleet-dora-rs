@@ -213,6 +213,19 @@ fn browser_video_frame_payload(
     })
 }
 
+fn validate_browser_jpeg_payload(payload: &[u8]) -> Result<(), &'static str> {
+    if payload.len() < 4 {
+        return Err("jpeg payload too short");
+    }
+    if payload[0..2] != [0xff, 0xd8] {
+        return Err("jpeg payload missing SOI marker");
+    }
+    if payload[payload.len() - 2..] != [0xff, 0xd9] {
+        return Err("jpeg payload missing EOI marker");
+    }
+    Ok(())
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WebCameraCommand {
     pub command: String, // "start" or "stop"
@@ -1735,6 +1748,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     jpeg_data.len()
                                 );
 
+                                if let Err(reason) = validate_browser_jpeg_payload(&jpeg_data) {
+                                    video_emit_metrics.record_error();
+                                    tracing::warn!(
+                                        reason,
+                                        frame_id = capture_frame_id,
+                                        bytes = jpeg_data.len(),
+                                        head = ?jpeg_data.get(..jpeg_data.len().min(4)),
+                                        tail = ?jpeg_data.get(jpeg_data.len().saturating_sub(4)..),
+                                        "rejected invalid browser jpeg payload"
+                                    );
+                                    continue;
+                                }
+
                                 let eligible_socket_ids = {
                                     if let Ok(clients) = state_for_video.video_clients.lock() {
                                         clients
@@ -1844,6 +1870,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     "detections",
                                                     serde_json::to_value(&detection_frame).unwrap(),
                                                 );
+                                                tracing::info!(
+                                                    event = "detections_forwarded",
+                                                    frame_id = detection_frame.frame_id,
+                                                    object_count = detection_frame.detections.len(),
+                                                    width = detection_frame.width,
+                                                    height = detection_frame.height
+                                                );
                                             }
                                         }
                                     }
@@ -1851,7 +1884,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         tracing::error!("Failed to deserialize detections: {}", e);
                                     }
                                 }
+                            } else {
+                                tracing::warn!("Received empty detections payload from Dora input");
                             }
+                        } else {
+                            tracing::error!(
+                                "Invalid detections data type (expected BinaryArray from gst-camera)"
+                            );
                         }
                     }
                     "tracked_detections" => {
@@ -1869,6 +1908,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 "tracked_detections",
                                                 serde_json::to_value(&detection_frame).unwrap(),
                                             );
+                                            tracing::info!(
+                                                event = "tracked_detections_forwarded",
+                                                frame_id = detection_frame.frame_id,
+                                                object_count = detection_frame.detections.len(),
+                                                width = detection_frame.width,
+                                                height = detection_frame.height
+                                            );
                                         }
                                     }
                                     Err(e) => {
@@ -1878,7 +1924,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         );
                                     }
                                 }
+                            } else {
+                                tracing::warn!(
+                                    "Received empty tracked_detections payload from Dora input"
+                                );
                             }
+                        } else {
+                            tracing::error!(
+                                "Invalid tracked_detections data type (expected BinaryArray from gst-camera)"
+                            );
                         }
                     }
                     "tracking_telemetry" => {
@@ -1896,6 +1950,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 "tracking_telemetry",
                                                 serde_json::to_value(&telemetry).unwrap(),
                                             );
+                                            tracing::info!(
+                                                event = "tracking_telemetry_forwarded",
+                                                state = ?telemetry.state,
+                                                has_target = telemetry.target.is_some(),
+                                                control_mode = ?telemetry.control_mode,
+                                                timestamp = telemetry.timestamp
+                                            );
                                         }
                                     }
                                     Err(e) => {
@@ -1905,7 +1966,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         );
                                     }
                                 }
+                            } else {
+                                tracing::warn!(
+                                    "Received empty tracking_telemetry payload from Dora input"
+                                );
                             }
+                        } else {
+                            tracing::error!(
+                                "Invalid tracking_telemetry data type (expected BinaryArray from gst-camera)"
+                            );
                         }
                     }
                     "servo_telemetry" => {
@@ -2171,6 +2240,20 @@ mod tests {
             }
             other => panic!("expected binary event, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn browser_jpeg_payload_validation_accepts_marker_bounded_payload() {
+        let jpeg = [0xff, 0xd8, 0x11, 0x22, 0xff, 0xd9];
+
+        assert!(validate_browser_jpeg_payload(&jpeg).is_ok());
+    }
+
+    #[test]
+    fn browser_jpeg_payload_validation_rejects_empty_or_truncated_payload() {
+        assert!(validate_browser_jpeg_payload(&[]).is_err());
+        assert!(validate_browser_jpeg_payload(&[0xff, 0xd8, 0x11, 0x22]).is_err());
+        assert!(validate_browser_jpeg_payload(&[0x00, 0xd8, 0xff, 0xd9]).is_err());
     }
 
     #[test]

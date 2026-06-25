@@ -161,7 +161,9 @@ cd models/scripts && ./download_osnet_model.sh        # -> models/.cache/reid/os
 # Whisper (speech recognition) -> models/.cache/ggml/ggml-tiny.bin
 ```
 
-**ONNX Runtime**: Requires v1.22.x or later. Set `ORT_DYLIB_PATH` in dataflow YAML.
+**ONNX Runtime**: Current rover vision crates are pinned to Rust `ort` `1.16.3`,
+so use an ONNX Runtime `1.16.x` shared library and set `ORT_DYLIB_PATH` in the
+dataflow YAML or via `ROVER_ORT_DYLIB_PATH`.
 
 ### Environment Variables (Dataflow YML)
 

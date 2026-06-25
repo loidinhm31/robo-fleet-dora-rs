@@ -78,6 +78,8 @@ nodes:
       NMS_THRESHOLD: "0.4"
       TARGET_CLASSES: ""
       DETECTOR_INTRA_THREADS: "2"
+      # Default assumes a system-wide ONNX Runtime 1.16.x install.
+      # Override ROVER_ORT_DYLIB_PATH when using an extracted local runtime.
       ORT_DYLIB_PATH: "${ROVER_ORT_DYLIB_PATH:-/usr/local/lib/libonnxruntime.so}"
       REID_MODEL_PATH: "${ROVER_REID_MODEL_PATH:-models/.cache/reid/osnet_x0_25.onnx}"
       MIN_BBOX_SIZE: "32"

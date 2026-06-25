@@ -230,26 +230,42 @@ All models are available from the Ultralytics assets repository:
 
 ## ONNX Runtime Requirements
 
-The `object_detector` node requires ONNX Runtime 1.22.x or later.
+The rover vision crates in this repo are currently pinned to Rust `ort` `1.16.3`,
+so use an ONNX Runtime `1.16.x` shared library.
 
 ### Install ONNX Runtime
 
-**Linux:**
+**Automatic system-wide install** (recommended when you want the rover dataflow
+default `/usr/local/lib/libonnxruntime.so` to work without setting
+`ROVER_ORT_DYLIB_PATH`):
+
 ```bash
-# Download ONNX Runtime 1.22.0
-wget https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-linux-x64-1.22.0.tgz
-
-# Extract
-tar -xzf onnxruntime-linux-x64-1.22.0.tgz
-
-# Set library path
-export LD_LIBRARY_PATH=/path/to/onnxruntime-linux-x64-1.22.0/lib:$LD_LIBRARY_PATH
+./models/scripts/download_onnxruntime.sh
 ```
 
-**Or install via pip:**
+This installs `libonnxruntime.so*` into `/usr/local/lib/` and runs `ldconfig`.
+It requires `sudo`.
+
+**Linux:**
+```bash
+# Download ONNX Runtime 1.16.3
+wget https://github.com/microsoft/onnxruntime/releases/download/v1.16.3/onnxruntime-linux-x64-1.16.3.tgz
+
+# Extract
+tar -xzf onnxruntime-linux-x64-1.16.3.tgz
+
+# Use the shared library path for the Rust rover nodes
+export ROVER_ORT_DYLIB_PATH=/path/to/onnxruntime-linux-x64-1.16.3/lib/libonnxruntime.so
+```
+
+**Python-only alternative:**
 ```bash
 pip install onnxruntime
 ```
+
+For this repo's Rust rover nodes, `pip install onnxruntime` is not enough by
+itself; they need a real `libonnxruntime.so` and an `ORT_DYLIB_PATH`
+or `ROVER_ORT_DYLIB_PATH` pointing to it.
 
 ## Usage in Dora Dataflow
 
@@ -306,7 +322,8 @@ refrigerator, book, clock, vase, scissors, teddy bear, hair drier, toothbrush
 ```
 ort 2.0.0-rc.10 is not compatible with the ONNX Runtime binary found
 ```
-**Solution:** Install ONNX Runtime 1.22.x or later (see ONNX Runtime Requirements above)
+**Solution:** Install an ONNX Runtime `1.16.x` shared library that matches the
+repo's pinned `ort` crate (see ONNX Runtime Requirements above)
 
 ### Out of memory
 - Use a smaller model (yolo12n instead of yolo12x)

@@ -80,10 +80,14 @@ impl VisionWorker {
         let (result_tx, result_rx) = sync_channel(RESULT_CAPACITY);
         let accepted_commands = Arc::new(AtomicU64::new(0));
         let command_drops = Arc::new(AtomicU64::new(0));
+        let tracing_dispatch = tracing::dispatcher::get_default(|dispatch| dispatch.clone());
 
         let handle = thread::Builder::new()
             .name("vision-pipeline-worker".into())
-            .spawn(move || run_worker(config, worker_frames, command_rx, result_tx))
+            .spawn(move || {
+                let _guard = tracing::dispatcher::set_default(&tracing_dispatch);
+                run_worker(config, worker_frames, command_rx, result_tx);
+            })
             .expect("failed to spawn vision worker");
 
         Self {

@@ -22,6 +22,7 @@ use robo_rover_lib::{
 };
 use std::{
     env,
+    path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use vision_pipeline::{PipelineOutput, VisionPipelineConfig};
@@ -90,6 +91,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut worker_result_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut worker_stale_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut worker_error_metrics = MetricWindow::new(Duration::from_secs(5));
+    let mut vision_output_log_state = VisionOutputLogState::default();
     let mut vision_worker = Some(VisionWorker::start(pipeline_config));
     let mut vision_submission = VisionSubmissionGate::default();
 
@@ -102,6 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &mut worker_result_metrics,
                 &mut worker_stale_metrics,
                 &mut worker_error_metrics,
+                &mut vision_output_log_state,
             )?;
             if drain_status == DrainStatus::Disconnected {
                 handle_worker_disconnected(
@@ -197,6 +200,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             &mut worker_result_metrics,
                             &mut worker_stale_metrics,
                             &mut worker_error_metrics,
+                            &mut vision_output_log_state,
                         )?;
                         if drain_status == DrainStatus::Disconnected {
                             handle_worker_disconnected(
@@ -620,10 +624,19 @@ fn build_pipeline_config() -> Result<VisionPipelineConfig, Box<dyn std::error::E
         .unwrap_or_else(|_| "true".into())
         .parse::<bool>()?;
 
+    let detector_model_path = resolve_runtime_path(
+        "MODEL_PATH",
+        &env::var("MODEL_PATH").unwrap_or_else(|_| format!("{home}/.cache/yolo/yolo12n.onnx")),
+    );
+    let reid_model_path = resolve_runtime_path(
+        "REID_MODEL_PATH",
+        &env::var("REID_MODEL_PATH")
+            .unwrap_or_else(|_| format!("{home}/.cache/reid/osnet_x0_25.onnx")),
+    );
+
     Ok(VisionPipelineConfig {
         detector: DetectorConfig {
-            model_path: env::var("MODEL_PATH")
-                .unwrap_or_else(|_| format!("{home}/.cache/yolo/yolo12n.onnx")),
+            model_path: detector_model_path,
             confidence_threshold,
             nms_threshold,
             target_classes,
@@ -632,8 +645,7 @@ fn build_pipeline_config() -> Result<VisionPipelineConfig, Box<dyn std::error::E
                 .parse::<i16>()?,
         },
         reid: ReIdConfig {
-            model_path: env::var("REID_MODEL_PATH")
-                .unwrap_or_else(|_| format!("{home}/.cache/reid/osnet_x0_25.onnx")),
+            model_path: reid_model_path,
             min_bbox_size: env::var("MIN_BBOX_SIZE")
                 .unwrap_or_else(|_| "32".into())
                 .parse::<u32>()?,
@@ -652,6 +664,55 @@ fn build_pipeline_config() -> Result<VisionPipelineConfig, Box<dyn std::error::E
     })
 }
 
+fn resolve_runtime_path(label: &str, raw_path: &str) -> String {
+    let raw = Path::new(raw_path);
+    if raw.is_absolute() || raw.exists() {
+        return raw_path.to_string();
+    }
+
+    let mut candidate_bases = Vec::new();
+    if let Ok(cwd) = env::current_dir() {
+        candidate_bases.push(cwd);
+    }
+    if let Ok(exe_path) = env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            candidate_bases.extend(exe_dir.ancestors().map(Path::to_path_buf));
+        }
+    }
+
+    if let Some(resolved) =
+        resolve_path_from_bases(raw, candidate_bases.iter().map(PathBuf::as_path))
+    {
+        tracing::info!(
+            path_label = label,
+            configured_path = raw_path,
+            resolved_path = %resolved.display(),
+            "Resolved runtime asset path"
+        );
+        return resolved.display().to_string();
+    }
+
+    tracing::warn!(
+        path_label = label,
+        configured_path = raw_path,
+        "Runtime asset path could not be resolved; using configured value"
+    );
+    raw_path.to_string()
+}
+
+fn resolve_path_from_bases<'a>(
+    raw: &Path,
+    bases: impl IntoIterator<Item = &'a Path>,
+) -> Option<PathBuf> {
+    for base in bases {
+        let candidate = base.join(raw);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 fn drain_worker_results(
     worker: &VisionWorker,
     node: &mut DoraNode,
@@ -659,6 +720,7 @@ fn drain_worker_results(
     result_metrics: &mut MetricWindow,
     stale_metrics: &mut MetricWindow,
     error_metrics: &mut MetricWindow,
+    vision_output_log_state: &mut VisionOutputLogState,
 ) -> Result<DrainStatus, Box<dyn std::error::Error>> {
     let mut result = Ok(());
     let drain_status = worker.drain_results(|message| {
@@ -674,6 +736,7 @@ fn drain_worker_results(
                     pipeline_metrics,
                     result_metrics,
                     stale_metrics,
+                    vision_output_log_state,
                 ) {
                     result = Err(error);
                 }
@@ -733,9 +796,10 @@ fn handle_worker_result(
     pipeline_metrics: &mut PipelineMetricWindows,
     result_metrics: &mut MetricWindow,
     stale_metrics: &mut MetricWindow,
+    vision_output_log_state: &mut VisionOutputLogState,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let age = captured_at.elapsed();
-    if age > MAX_SERVO_FRAME_AGE {
+    if should_drop_stale_output(&output, age) {
         tracing::warn!(
             metric = "video_pipeline",
             stage = "vision_stale_drop",
@@ -749,15 +813,35 @@ fn handle_worker_result(
     }
 
     result_metrics.record(age, 0);
-    timings = send_pipeline_output(output, timings, node)?;
+    timings = send_pipeline_output(output, timings, node, vision_output_log_state)?;
     pipeline_metrics.record(frame_id, timings);
     Ok(())
+}
+
+#[derive(Debug, Default)]
+struct VisionOutputLogState {
+    last_signature: Option<String>,
+}
+
+impl VisionOutputLogState {
+    fn log_transition(&mut self, signature: String, message: impl FnOnce()) {
+        if self.last_signature.as_ref() == Some(&signature) {
+            return;
+        }
+        self.last_signature = Some(signature);
+        message();
+    }
+}
+
+fn should_drop_stale_output(output: &PipelineOutput, age: Duration) -> bool {
+    matches!(output, PipelineOutput::FullTracking { .. }) && age > MAX_SERVO_FRAME_AGE
 }
 
 fn send_pipeline_output(
     output: PipelineOutput,
     mut timings: vision_pipeline::PipelineTimings,
     node: &mut DoraNode,
+    vision_output_log_state: &mut VisionOutputLogState,
 ) -> Result<vision_pipeline::PipelineTimings, Box<dyn std::error::Error>> {
     let serialization_started = Instant::now();
     match output {
@@ -765,6 +849,16 @@ fn send_pipeline_output(
             detections,
             tracking_telemetry,
         } => {
+            let signature = format!("detection_only::{:?}", tracking_telemetry.state);
+            vision_output_log_state.log_transition(signature, || {
+                tracing::info!(
+                    event = "vision_output_forwarded",
+                    variant = "detection_only",
+                    frame_id = detections.frame_id,
+                    object_count = detections.detections.len(),
+                    state = ?tracking_telemetry.state
+                );
+            });
             let det_json = serde_json::to_vec(&detections)?;
             node.send_output(
                 DataId::from("detections".to_owned()),
@@ -783,6 +877,16 @@ fn send_pipeline_output(
             tracked_detections,
             tracking_telemetry,
         } => {
+            let signature = format!("full_tracking::{:?}", tracking_telemetry.state);
+            vision_output_log_state.log_transition(signature, || {
+                tracing::info!(
+                    event = "vision_output_forwarded",
+                    variant = "full_tracking",
+                    frame_id = tracked_detections.frame_id,
+                    object_count = tracked_detections.detections.len(),
+                    state = ?tracking_telemetry.state
+                );
+            });
             let det_json = serde_json::to_vec(&tracked_detections)?;
             node.send_output(
                 DataId::from("tracked_detections".to_owned()),
@@ -798,6 +902,14 @@ fn send_pipeline_output(
             )?;
         }
         PipelineOutput::CameraOnly { tracking_telemetry } => {
+            let signature = format!("camera_only::{:?}", tracking_telemetry.state);
+            vision_output_log_state.log_transition(signature, || {
+                tracing::info!(
+                    event = "vision_output_forwarded",
+                    variant = "camera_only",
+                    state = ?tracking_telemetry.state
+                );
+            });
             // Emit state=Disabled so the web UI badge updates immediately
             let tel_json = serde_json::to_vec(&tracking_telemetry)?;
             node.send_output(
@@ -846,9 +958,16 @@ fn log_metric_snapshot(
 
 #[cfg(test)]
 mod tests {
-    use super::{ViewFrameCadence, ViewOutputGate, VisionSubmissionGate};
+    use super::{
+        resolve_path_from_bases, ViewFrameCadence, ViewOutputGate, VisionSubmissionGate,
+        MAX_SERVO_FRAME_AGE,
+    };
     use robo_rover_lib::{StreamCommand, StreamControl, TrackingCommand};
-    use std::time::{Duration, Instant};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        time::{Duration, Instant},
+    };
 
     fn emitted_frames_for_capture_count(
         capture_frames: u64,
@@ -901,6 +1020,70 @@ mod tests {
 
         gate.apply_tracking_command(&TrackingCommand::Enable { timestamp: 4 });
         assert!(gate.should_submit_frames());
+    }
+
+    #[test]
+    fn stale_detection_only_output_is_not_dropped_by_servo_age_gate() {
+        use crate::vision_pipeline::PipelineOutput;
+        use robo_rover_lib::types::{DetectionFrame, TrackingState, TrackingTelemetry};
+
+        let output = PipelineOutput::DetectionOnly {
+            detections: DetectionFrame::new(1, 640, 480, Vec::new()),
+            tracking_telemetry: TrackingTelemetry::new(TrackingState::DetectionOnly, None),
+        };
+
+        assert!(!super::should_drop_stale_output(
+            &output,
+            MAX_SERVO_FRAME_AGE + Duration::from_millis(1),
+        ));
+    }
+
+    #[test]
+    fn stale_full_tracking_output_is_dropped_by_servo_age_gate() {
+        use crate::vision_pipeline::PipelineOutput;
+        use robo_rover_lib::types::{DetectionFrame, TrackingState, TrackingTelemetry};
+
+        let output = PipelineOutput::FullTracking {
+            tracked_detections: DetectionFrame::new(1, 640, 480, Vec::new()),
+            tracking_telemetry: TrackingTelemetry::new(TrackingState::Tracking, None),
+        };
+
+        assert!(super::should_drop_stale_output(
+            &output,
+            MAX_SERVO_FRAME_AGE + Duration::from_millis(1),
+        ));
+    }
+
+    #[test]
+    fn resolve_path_from_bases_finds_relative_asset_under_base() {
+        let root = std::env::temp_dir().join(format!("kornia-capture-test-{}", std::process::id()));
+        let repo_root = root.join("repo");
+        let model_path = repo_root.join("models/.cache/yolo/yolo12n.onnx");
+        fs::create_dir_all(model_path.parent().unwrap()).unwrap();
+        fs::write(&model_path, b"test").unwrap();
+
+        let resolved = resolve_path_from_bases(
+            Path::new("models/.cache/yolo/yolo12n.onnx"),
+            [root.join("miss"), repo_root.clone()]
+                .iter()
+                .map(PathBuf::as_path),
+        );
+
+        assert_eq!(resolved, Some(model_path));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolve_path_from_bases_returns_none_when_asset_missing() {
+        let resolved = resolve_path_from_bases(
+            Path::new("models/.cache/yolo/yolo12n.onnx"),
+            [PathBuf::from("/tmp/miss"), PathBuf::from("/also-miss")]
+                .iter()
+                .map(PathBuf::as_path),
+        );
+
+        assert!(resolved.is_none());
     }
 
     #[test]
