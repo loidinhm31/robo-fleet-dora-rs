@@ -6,6 +6,7 @@ members = [
 
     # Rover-kiwi - On-robot nodes
     "rover-kiwi/kornia_capture",
+    "rover-kiwi/video_encoder",
     "rover-kiwi/object_detector",
     "rover-kiwi/reid_extractor",
     "rover-kiwi/object_tracker",
@@ -22,7 +23,6 @@ members = [
 
     # Direct-connect mode additions
     "common/web_bridge",
-    "orchestra/video_encoder",
     "orchestra/audio_converter",
 ]
 

@@ -13,7 +13,6 @@ members = [
     "orchestra/speech_recognizer",
     "orchestra/command_parser",
     "orchestra/audio_converter",
-    "orchestra/video_encoder",
     "orchestra/zenoh_bridge",
     "orchestra/kokoro_tts",
 
@@ -21,6 +20,7 @@ members = [
     "rover-kiwi/rover_controller",
     "rover-kiwi/arm_controller",
     "rover-kiwi/kornia_capture",
+    "rover-kiwi/video_encoder",
     "rover-kiwi/audio_capture",
     "rover-kiwi/audio_playback",
     "rover-kiwi/visual_servo_controller",

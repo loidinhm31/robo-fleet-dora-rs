@@ -29,7 +29,6 @@ COPY common/web_bridge/Cargo.toml common/web_bridge/
 COPY orchestra/speech_recognizer/Cargo.toml orchestra/speech_recognizer/
 COPY orchestra/command_parser/Cargo.toml orchestra/command_parser/
 COPY orchestra/audio_converter/Cargo.toml orchestra/audio_converter/
-COPY orchestra/video_encoder/Cargo.toml orchestra/video_encoder/
 COPY orchestra/zenoh_bridge/Cargo.toml orchestra/zenoh_bridge/
 COPY orchestra/kokoro_tts/Cargo.toml orchestra/kokoro_tts/
 
@@ -45,8 +44,6 @@ RUN mkdir -p common/web_bridge/src && \
     echo "fn main() {}" > orchestra/command_parser/src/main.rs && \
     mkdir -p orchestra/audio_converter/src && \
     echo "fn main() {}" > orchestra/audio_converter/src/main.rs && \
-    mkdir -p orchestra/video_encoder/src && \
-    echo "fn main() {}" > orchestra/video_encoder/src/main.rs && \
     mkdir -p orchestra/zenoh_bridge/src && \
     echo "fn main() {}" > orchestra/zenoh_bridge/src/main.rs && \
     mkdir -p orchestra/kokoro_tts/src && \
@@ -58,7 +55,6 @@ RUN cargo build --release \
     -p speech_recognizer \
     -p command_parser \
     -p audio_converter \
-    -p video_encoder \
     -p orchestra_zenoh_bridge \
     || true
 
@@ -73,7 +69,6 @@ RUN cargo build --release \
     -p speech_recognizer \
     -p command_parser \
     -p audio_converter \
-    -p video_encoder \
     -p orchestra_zenoh_bridge
 
 # =============================================================================
@@ -97,7 +92,6 @@ COPY --from=builder /build/target/release/web_bridge ./bin/
 COPY --from=builder /build/target/release/speech_recognizer ./bin/
 COPY --from=builder /build/target/release/command_parser ./bin/
 COPY --from=builder /build/target/release/audio_converter ./bin/
-COPY --from=builder /build/target/release/video_encoder ./bin/
 COPY --from=builder /build/target/release/orchestra_zenoh_bridge ./bin/
 COPY --from=builder /usr/local/cargo/bin/dora ./bin/
 

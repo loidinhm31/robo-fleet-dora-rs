@@ -29,6 +29,7 @@ COPY robo_rover_lib/Cargo.toml robo_rover_lib/
 
 # Copy rover-kiwi node Cargo.toml files
 COPY rover-kiwi/kornia_capture/Cargo.toml rover-kiwi/kornia_capture/
+COPY rover-kiwi/video_encoder/Cargo.toml rover-kiwi/video_encoder/
 COPY rover-kiwi/object_detector/Cargo.toml rover-kiwi/object_detector/
 COPY rover-kiwi/reid_extractor/Cargo.toml rover-kiwi/reid_extractor/
 COPY rover-kiwi/object_tracker/Cargo.toml rover-kiwi/object_tracker/
@@ -45,7 +46,6 @@ COPY rover-kiwi/dispatcher_keyboard/Cargo.toml rover-kiwi/dispatcher_keyboard/
 
 # Direct-connect mode additions
 COPY common/web_bridge/Cargo.toml common/web_bridge/
-COPY orchestra/video_encoder/Cargo.toml orchestra/video_encoder/
 COPY orchestra/audio_converter/Cargo.toml orchestra/audio_converter/
 
 # Create dummy source files for dependency pre-compilation
@@ -54,6 +54,8 @@ RUN mkdir -p robo_rover_lib/src && \
 
 RUN mkdir -p rover-kiwi/kornia_capture/src && \
     echo "fn main() {}" > rover-kiwi/kornia_capture/src/main.rs && \
+    mkdir -p rover-kiwi/video_encoder/src && \
+    echo "fn main() {}" > rover-kiwi/video_encoder/src/main.rs && \
     mkdir -p rover-kiwi/object_detector/src && \
     echo "fn main() {}" > rover-kiwi/object_detector/src/main.rs && \
     mkdir -p rover-kiwi/reid_extractor/src && \
@@ -82,8 +84,6 @@ RUN mkdir -p rover-kiwi/kornia_capture/src && \
     echo "fn main() {}" > rover-kiwi/dispatcher_keyboard/src/main.rs && \
     mkdir -p common/web_bridge/src && \
     echo "fn main() {}" > common/web_bridge/src/main.rs && \
-    mkdir -p orchestra/video_encoder/src && \
-    echo "fn main() {}" > orchestra/video_encoder/src/main.rs && \
     mkdir -p orchestra/audio_converter/src && \
     echo "fn main() {}" > orchestra/audio_converter/src/main.rs
 
@@ -97,7 +97,6 @@ RUN cargo build --release \
 # Copy actual source code
 COPY robo_rover_lib robo_rover_lib/
 COPY common common/
-COPY orchestra/video_encoder orchestra/video_encoder/
 COPY orchestra/audio_converter orchestra/audio_converter/
 COPY rover-kiwi rover-kiwi/
 

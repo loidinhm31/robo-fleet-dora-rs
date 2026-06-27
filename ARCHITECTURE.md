@@ -64,7 +64,6 @@ robo-rover-dora/
 │   ├── speech_recognizer/          # Whisper.cpp STT
 │   ├── command_parser/             # NLU pattern matching
 │   ├── audio_converter/            # Float32 → Int16LE
-│   ├── video_encoder/              # RGB8 -> JPEG for rover-side view output
 │   ├── kokoro_tts/                 # High-quality TTS (Kokoro-82M, workstation audio, optional)
 │   ├── zenoh_bridge/               # Orchestra Zenoh bridge (orchestra-only)
 │   └── orchestra-dataflow.yml      # Orchestra Dora dataflow
@@ -73,6 +72,7 @@ robo-rover-dora/
 │   ├── audio_capture/              # Microphone (cpal)
 │   ├── audio_playback/             # Speaker output
 │   ├── kornia_capture/             # Camera (GStreamer)
+│   ├── video_encoder/              # RGB8 -> JPEG for rover-side view output
 │   ├── object_detector/            # YOLOv12n inference
 │   ├── reid_extractor/             # OSNet ReID feature extraction (512-dim)
 │   ├── object_tracker/             # BoTSORT tracking with CMC and ReID
