@@ -307,6 +307,12 @@ Future: Orchestra processes MULTIPLE rovers in parallel with:
 
 **Tradeoff**: Software JPEG consumes rover CPU. Phase gates enforce CPU, memory, and servo freshness limits before proceeding.
 
+**Implementation**: `rover-kiwi/video_encoder` keeps one TurboJPEG compressor for the node
+lifetime, accepts RGB8 input, and emits baseline JPEG with 4:2:2 chroma subsampling. The crate's
+default vendored build statically links libjpeg-turbo, so the rover runtime image does not require a
+TurboJPEG package. Retain this codec only when Raspberry Pi 5 benchmarks meet the documented encode
+latency/CPU, bandwidth, frame-rate, error-rate, and servo-freshness gates.
+
 ### View Cadence Contract
 
 - `SOURCE_FPS` sets the camera capture cadence.
