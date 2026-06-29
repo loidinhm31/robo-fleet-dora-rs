@@ -5,9 +5,14 @@ use dora_node_api::dora_core::config::DataId;
 use dora_node_api::{DoraNode, Event, MetadataParameters, Parameter};
 use eyre::Result;
 use ringbuf::{traits::*, HeapRb};
-use robo_rover_lib::{init_tracing, AudioAction, AudioControl};
+use robo_rover_lib::{init_tracing, AudioAction, AudioControl, MetricWindow};
 use std::env;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Mutex,
+};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 
 fn main() -> Result<()> {
     let _guard = init_tracing();
@@ -46,31 +51,47 @@ fn main() -> Result<()> {
     let (producer, consumer) = ring.split();
     let producer = Arc::new(Mutex::new(producer));
     let consumer = Arc::new(Mutex::new(consumer));
+    let rejected_samples = Arc::new(AtomicU64::new(0));
 
     // Try to open the microphone — degrade gracefully if ALSA/hardware is unavailable
-    let mut stream_opt: Option<Stream> =
-        match try_open_input_stream(sample_rate, channels, chunk_size, producer.clone()) {
-            Ok(stream) => {
-                tracing::info!("Audio stream started successfully");
-                Some(stream)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Audio input unavailable ({}), running in silent mode. \
+    let mut stream_opt: Option<Stream> = match try_open_input_stream(
+        sample_rate,
+        channels,
+        producer.clone(),
+        rejected_samples.clone(),
+    ) {
+        Ok(stream) => {
+            tracing::info!("Audio stream started successfully");
+            Some(stream)
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Audio input unavailable ({}), running in silent mode. \
                      No audio will be captured or sent.",
-                    e
-                );
-                None
-            }
-        };
+                e
+            );
+            None
+        }
+    };
 
-    let mut frame_count = 0u64;
+    let stream_id = Uuid::new_v4();
+    let mut next_frame_id = 0u64;
+    let mut frames_sent = 0u64;
+    let mut send_errors = 0u64;
+    let mut samples_rejected = 0u64;
+    let mut capture_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut audio_buffer = Vec::with_capacity(chunk_size);
+    tracing::info!(%stream_id, "audio capture stream identity created");
 
     loop {
         match events.recv() {
             Some(Event::Input { id, data, .. }) => match id.as_str() {
                 "tick" => {
+                    let rejected = rejected_samples.swap(0, Ordering::Relaxed);
+                    if rejected > 0 {
+                        samples_rejected = samples_rejected.saturating_add(rejected);
+                        capture_metrics.record_drops(rejected);
+                    }
                     // Only process audio if stream is active
                     if stream_opt.is_some() {
                         // Read available samples from ring buffer
@@ -87,9 +108,18 @@ fn main() -> Result<()> {
                         // Send chunk when we have enough samples
                         if audio_buffer.len() >= chunk_size {
                             let chunk: Vec<f32> = audio_buffer.drain(..chunk_size).collect();
-
-                            // Create Float32Array
-                            let audio_array = Float32Array::from(chunk.clone());
+                            let started = Instant::now();
+                            let frame_id = next_frame_id;
+                            next_frame_id = next_frame_id.saturating_add(1);
+                            let capture_timestamp_ms = current_time_ms()?;
+                            let sample_count = u32::try_from(chunk.len())?;
+                            let payload_bytes = chunk.len() * std::mem::size_of::<f32>();
+                            let debug_range = (frames_sent < 5).then(|| {
+                                (
+                                    chunk.iter().copied().fold(f32::INFINITY, f32::min),
+                                    chunk.iter().copied().fold(f32::NEG_INFINITY, f32::max),
+                                )
+                            });
 
                             // Create metadata
                             let mut metadata = MetadataParameters::default();
@@ -105,17 +135,41 @@ fn main() -> Result<()> {
                                 "format".to_string(),
                                 Parameter::String("f32le".to_string()),
                             );
+                            metadata.insert(
+                                "stream_id".to_string(),
+                                Parameter::String(stream_id.to_string()),
+                            );
+                            metadata.insert(
+                                "frame_id".to_string(),
+                                Parameter::Integer(i64::try_from(frame_id)?),
+                            );
+                            metadata.insert(
+                                "capture_timestamp_ms".to_string(),
+                                Parameter::Integer(i64::try_from(capture_timestamp_ms)?),
+                            );
+                            metadata.insert(
+                                "sample_count".to_string(),
+                                Parameter::Integer(i64::from(sample_count)),
+                            );
 
                             // Send to Dora
-                            node.send_output(output_id.clone(), metadata, audio_array)?;
+                            let audio_array = Float32Array::from(chunk);
+                            if let Err(error) =
+                                node.send_output(output_id.clone(), metadata, audio_array)
+                            {
+                                send_errors = send_errors.saturating_add(1);
+                                capture_metrics.record_error();
+                                tracing::error!(%error, %stream_id, frame_id, "failed to send audio frame to Dora");
+                                continue;
+                            }
 
-                            frame_count += 1;
-                            if frame_count <= 5 {
-                                let min = chunk.iter().cloned().fold(f32::INFINITY, f32::min);
-                                let max = chunk.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                            frames_sent = frames_sent.saturating_add(1);
+                            capture_metrics.record(started.elapsed(), payload_bytes);
+                            if let Some((min, max)) = debug_range {
                                 tracing::debug!(
-                                    "Sent audio frame {}: {} samples, range [{:.3}, {:.3}]",
-                                    frame_count,
+                                    %stream_id,
+                                    frame_id,
+                                    "Sent audio frame: {} samples, range [{:.3}, {:.3}]",
                                     chunk_size,
                                     min,
                                     max
@@ -149,8 +203,8 @@ fn main() -> Result<()> {
                                             match try_open_input_stream(
                                                 sample_rate,
                                                 channels,
-                                                chunk_size,
                                                 producer.clone(),
+                                                rejected_samples.clone(),
                                             ) {
                                                 Ok(new_stream) => {
                                                     stream_opt = Some(new_stream);
@@ -192,10 +246,34 @@ fn main() -> Result<()> {
                 break;
             }
         }
+
+        if let Some(snapshot) = capture_metrics.snapshot_if_due() {
+            tracing::info!(
+                metric = "audio_pipeline",
+                stage = "capture",
+                %stream_id,
+                count = snapshot.count,
+                bytes = snapshot.bytes,
+                drops = snapshot.drops,
+                errors = snapshot.errors,
+                p50_us = snapshot.p50_us,
+                p95_us = snapshot.p95_us,
+                p99_us = snapshot.p99_us,
+                max_us = snapshot.max_us
+            );
+        }
     }
 
     drop(stream_opt);
-    tracing::info!("Audio capture stopped");
+    tracing::info!(
+        metric = "audio_pipeline_total",
+        stage = "capture",
+        %stream_id,
+        frames_sent,
+        send_errors,
+        samples_rejected,
+        "Audio capture stopped"
+    );
     Ok(())
 }
 
@@ -206,8 +284,8 @@ fn main() -> Result<()> {
 fn try_open_input_stream(
     sample_rate: u32,
     channels: u16,
-    chunk_size: usize,
     producer: Arc<Mutex<ringbuf::HeapProd<f32>>>,
+    rejected_samples: Arc<AtomicU64>,
 ) -> Result<Stream> {
     let host = cpal::default_host();
 
@@ -243,12 +321,16 @@ fn try_open_input_stream(
 
     let err_fn = |err| tracing::error!("Audio stream error: {}", err);
     let producer_clone = producer.clone();
+    let rejected_samples_clone = rejected_samples.clone();
 
     let stream = device.build_input_stream(
         &config,
         move |data: &[f32], _: &_| {
             if let Ok(mut prod) = producer_clone.lock() {
-                write_audio_data(data, &mut prod);
+                let rejected = write_audio_data(data, &mut prod);
+                rejected_samples_clone.fetch_add(rejected as u64, Ordering::Relaxed);
+            } else {
+                rejected_samples_clone.fetch_add(data.len() as u64, Ordering::Relaxed);
             }
         },
         err_fn,
@@ -259,14 +341,37 @@ fn try_open_input_stream(
     Ok(stream)
 }
 
-fn write_audio_data<T>(input: &[T], producer: &mut ringbuf::HeapProd<f32>)
+fn write_audio_data<T>(input: &[T], producer: &mut ringbuf::HeapProd<f32>) -> usize
 where
     T: Sample,
     f32: FromSample<T>,
 {
+    let mut rejected = 0;
     for &sample in input {
         let sample_f32 = f32::from_sample(sample);
-        // Try to push, but don't block if buffer is full (drop oldest samples)
-        let _ = producer.try_push(sample_f32);
+        if producer.try_push(sample_f32).is_err() {
+            rejected += 1;
+        }
+    }
+    rejected
+}
+
+fn current_time_ms() -> Result<u64> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_millis()
+        .try_into()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_audio_data_reports_rejected_samples() {
+        let ring = HeapRb::<f32>::new(2);
+        let (mut producer, _consumer) = ring.split();
+
+        assert_eq!(write_audio_data(&[0.1, 0.2, 0.3], &mut producer), 1);
     }
 }

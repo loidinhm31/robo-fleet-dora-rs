@@ -767,19 +767,18 @@ dependencies = [
  "robo_rover_lib",
  "serde_json",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
 name = "audio_converter"
 version = "0.1.0"
 dependencies = [
- "byteorder",
  "dora-node-api",
  "eyre",
  "robo_rover_lib",
- "serde",
- "serde_json",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1132,6 +1131,20 @@ dependencies = [
  "jobserver",
  "libc",
  "shlex",
+]
+
+[[package]]
+name = "central_speech_recognizer"
+version = "0.1.0"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+ "hound",
+ "robo_rover_lib",
+ "serde",
+ "serde_json",
+ "tracing",
+ "whisper-rs",
 ]
 
 [[package]]
@@ -2031,6 +2044,16 @@ name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
+
+[[package]]
+name = "edge_speech_recognizer"
+version = "0.1.0"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+ "robo_rover_lib",
+ "tracing",
+]
 
 [[package]]
 name = "educe"
@@ -4741,6 +4764,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "uuid",
  "zenoh",
  "zenoh-config",
 ]
@@ -5761,6 +5785,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "uuid",
  "zenoh",
  "zenoh-config",
 ]
@@ -6674,20 +6699,6 @@ dependencies = [
  "byteorder",
  "libc",
  "winapi",
-]
-
-[[package]]
-name = "speech_recognizer"
-version = "0.1.0"
-dependencies = [
- "dora-node-api",
- "eyre",
- "hound",
- "robo_rover_lib",
- "serde",
- "serde_json",
- "tracing",
- "whisper-rs",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 # Codebase Summary
 
-Snapshot date: 2026-06-24
+Snapshot date: 2026-06-29
 
 ## Scope
 
@@ -23,6 +23,11 @@ Snapshot date: 2026-06-24
 - Web bridge aggregates demand and only forwards 0->1 / 1->0 transitions upstream.
 - `kornia_capture` gates view publication plus worker frame submission; local capture continues even when ML/tracking is disabled.
 - Rover dataflows set `DETECTOR_INTRA_THREADS=2` and `REID_INTRA_THREADS=1`.
+- `audio_capture` assigns `stream_id`, `frame_id`, and `capture_timestamp_ms` to F32 frames.
+- Rover `audio_converter` converts capture F32 to S16LE while preserving capture identity.
+- Rover Zenoh publishes versioned PCM v1 packets; orchestra validates them and only accepts bounded legacy F32LE during rollout.
+- Orchestra forwards S16LE directly to `web_bridge`, which emits binary audio attachments to browsers.
+- `central_speech_recognizer` consumes only web-microphone F32 audio and uses `ggml-base.bin`; the edge recognizer remains a disabled placeholder.
 
 ## Documentation Notes
 

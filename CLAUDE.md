@@ -158,7 +158,7 @@ cd models/scripts && python3 export_yolo_to_onnx.py  # -> models/.cache/yolo/yol
 # OSNet (ReID)
 cd models/scripts && ./download_osnet_model.sh        # -> models/.cache/reid/osnet_x0_25.onnx
 
-# Whisper (speech recognition) -> models/.cache/ggml/ggml-tiny.bin
+# Whisper (speech recognition) -> models/.cache/ggml/ggml-base.bin
 ```
 
 **ONNX Runtime**: Current rover vision crates are pinned to Rust `ort` `1.16.3`,

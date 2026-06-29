@@ -1,5 +1,5 @@
 [package]
-name = "speech_recognizer"
+name = "central_speech_recognizer"
 version = "0.1.0"
 edition = "2021"
 

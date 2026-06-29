@@ -23,12 +23,12 @@ mkdir -p "$MODELS_DIR/sherpa-onnx"
 # =============================================================================
 # 1. Whisper GGML Model (for Orchestra speech recognition)
 # =============================================================================
-echo "[1/4] Downloading Whisper GGML tiny model (~75 MB)..."
-if [ -f "$MODELS_DIR/ggml/ggml-tiny.bin" ]; then
+echo "[1/4] Downloading Whisper GGML base model (~142 MB)..."
+if [ -f "$MODELS_DIR/ggml/ggml-base.bin" ]; then
     echo "  ✓ Whisper model already exists, skipping download"
 else
-    wget -O "$MODELS_DIR/ggml/ggml-tiny.bin" \
-        https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
+    wget -O "$MODELS_DIR/ggml/ggml-base.bin" \
+        https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
     echo "  ✓ Whisper model downloaded"
 fi
 
@@ -152,8 +152,8 @@ echo "==================================================================="
 
 MODELS_READY=true
 
-if [ -f "$MODELS_DIR/ggml/ggml-tiny.bin" ]; then
-    echo "  ✓ Whisper (Orchestra): $MODELS_DIR/ggml/ggml-tiny.bin"
+if [ -f "$MODELS_DIR/ggml/ggml-base.bin" ]; then
+    echo "  ✓ Whisper (Orchestra): $MODELS_DIR/ggml/ggml-base.bin"
 else
     echo "  ✗ Whisper (Orchestra): MISSING"
     MODELS_READY=false

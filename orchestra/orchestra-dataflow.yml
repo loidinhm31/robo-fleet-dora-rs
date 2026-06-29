@@ -63,7 +63,7 @@ nodes:
     outputs:
       # Data FROM active rovers via Zenoh (subscribers)
       - video_frame         # JPEG frames from rover camera (with entity_id in metadata)
-      - audio_frame         # Float32 audio from rover microphone (with entity_id in metadata)
+      - audio_frame         # Int16LE audio from rover microphone (with origin metadata)
       - rover_telemetry     # Rover position/velocity telemetry (with entity_id)
       - arm_telemetry       # Arm joint positions (with entity_id)
       - servo_telemetry     # Visual servoing telemetry (with entity_id)
@@ -83,17 +83,16 @@ nodes:
       AUDIO_CHANNELS: "1"
 
   # Speech recognizer - Whisper.cpp STT
-  - id: speech-recognizer
-    build: cargo build --release -p speech_recognizer
-    path: ../target/release/speech_recognizer
+  - id: central-speech-recognizer
+    build: cargo build --release -p central_speech_recognizer
+    path: ../target/release/central_speech_recognizer
     inputs:
-      audio_rover: orchestra-bridge/audio_frame     # From rover microphone
-      audio_web: web-bridge/voice_command_audio      # From web UI microphone
+      audio_web: web-bridge/voice_command_audio  # Float32 audio from web UI microphone only
     outputs:
       - transcription  # SpeechTranscription
     env:
       RUST_LOG: info
-      WHISPER_MODEL_PATH: "../models/.cache/ggml/ggml-tiny.bin"
+      WHISPER_MODEL_PATH: "../models/.cache/ggml/ggml-base.bin"
       SAMPLE_RATE: "16000"
       BUFFER_DURATION_MS: "5000"
       CONFIDENCE_THRESHOLD: "0.5"
@@ -104,7 +103,7 @@ nodes:
     build: cargo build --release -p command_parser
     path: ../target/release/command_parser
     inputs:
-      text: speech-recognizer/transcription
+      text: central-speech-recognizer/transcription
     outputs:
       - rover_command     # RoverCommand from parsed intent
       - tracking_command  # TrackingCommand for object tracking
@@ -127,20 +126,6 @@ nodes:
 #      TTS_VOICE: "bf_emma"
 #      TTS_VOLUME: "0.8"
 
-  # Audio converter - Float32 to Int16LE (for web streaming)
-  - id: audio-converter
-    build: cargo build --release -p audio_converter
-    path: ../target/release/audio_converter
-    inputs:
-      audio_input: orchestra-bridge/audio_frame  # Float32 audio from rover
-    outputs:
-      - audio_output  # Int16LE PCM
-    env:
-      RUST_LOG: info
-      OUTPUT_FORMAT: "int16"
-      SAMPLE_RATE: "16000"
-      CHANNELS: "1"
-
   # Web bridge - Fleet control with entity selection
   - id: web-bridge
     build: cargo build --release -p web_bridge
@@ -148,7 +133,7 @@ nodes:
     inputs:
       # Media streams (encoded data for web clients)
       video_frame: orchestra-bridge/video_frame    # JPEG from rover-side encoder
-      audio_frame: audio-converter/audio_output    # Int16LE PCM from audio-converter
+      audio_frame: orchestra-bridge/audio_frame    # Int16LE PCM from rover
 
       # ========================================================================
       # Telemetry from LOCAL SIMULATION (for testing without real hardware)
@@ -168,7 +153,7 @@ nodes:
       detections: orchestra-bridge/detections
       tracked_detections: orchestra-bridge/tracked_detections
       tracking_telemetry: orchestra-bridge/tracking_telemetry
-      transcription: speech-recognizer/transcription
+      transcription: central-speech-recognizer/transcription
       command_feedback: command-parser/feedback
     outputs:
       # Commands to selected rover (via orchestra-bridge)

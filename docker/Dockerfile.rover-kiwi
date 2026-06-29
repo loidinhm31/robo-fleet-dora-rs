@@ -36,6 +36,7 @@ COPY rover-kiwi/reid_extractor/Cargo.toml rover-kiwi/reid_extractor/
 COPY rover-kiwi/object_tracker/Cargo.toml rover-kiwi/object_tracker/
 COPY rover-kiwi/visual_servo_controller/Cargo.toml rover-kiwi/visual_servo_controller/
 COPY rover-kiwi/audio_capture/Cargo.toml rover-kiwi/audio_capture/
+COPY rover-kiwi/audio_converter/Cargo.toml rover-kiwi/audio_converter/
 COPY rover-kiwi/audio_playback/Cargo.toml rover-kiwi/audio_playback/
 COPY rover-kiwi/sherpa_tts/Cargo.toml rover-kiwi/sherpa_tts/
 COPY rover-kiwi/arm_controller/Cargo.toml rover-kiwi/arm_controller/
@@ -44,10 +45,10 @@ COPY rover-kiwi/performance_monitor/Cargo.toml rover-kiwi/performance_monitor/
 COPY rover-kiwi/zenoh_bridge/Cargo.toml rover-kiwi/zenoh_bridge/
 COPY rover-kiwi/sim_interface/Cargo.toml rover-kiwi/sim_interface/
 COPY rover-kiwi/dispatcher_keyboard/Cargo.toml rover-kiwi/dispatcher_keyboard/
+COPY rover-kiwi/edge_speech_recognizer/Cargo.toml rover-kiwi/edge_speech_recognizer/
 
 # Direct-connect mode additions
 COPY common/web_bridge/Cargo.toml common/web_bridge/
-COPY orchestra/audio_converter/Cargo.toml orchestra/audio_converter/
 
 # Create dummy source files for dependency pre-compilation
 RUN mkdir -p robo_rover_lib/src && \
@@ -67,6 +68,8 @@ RUN mkdir -p rover-kiwi/kornia_capture/src && \
     echo "fn main() {}" > rover-kiwi/visual_servo_controller/src/main.rs && \
     mkdir -p rover-kiwi/audio_capture/src && \
     echo "fn main() {}" > rover-kiwi/audio_capture/src/main.rs && \
+    mkdir -p rover-kiwi/audio_converter/src && \
+    echo "fn main() {}" > rover-kiwi/audio_converter/src/main.rs && \
     mkdir -p rover-kiwi/audio_playback/src && \
     echo "fn main() {}" > rover-kiwi/audio_playback/src/main.rs && \
     mkdir -p rover-kiwi/sherpa_tts/src && \
@@ -83,10 +86,10 @@ RUN mkdir -p rover-kiwi/kornia_capture/src && \
     echo "fn main() {}" > rover-kiwi/sim_interface/src/main.rs && \
     mkdir -p rover-kiwi/dispatcher_keyboard/src && \
     echo "fn main() {}" > rover-kiwi/dispatcher_keyboard/src/main.rs && \
+    mkdir -p rover-kiwi/edge_speech_recognizer/src && \
+    echo "fn main() {}" > rover-kiwi/edge_speech_recognizer/src/main.rs && \
     mkdir -p common/web_bridge/src && \
-    echo "fn main() {}" > common/web_bridge/src/main.rs && \
-    mkdir -p orchestra/audio_converter/src && \
-    echo "fn main() {}" > orchestra/audio_converter/src/main.rs
+    echo "fn main() {}" > common/web_bridge/src/main.rs
 
 # Pre-build dependencies (this layer will be cached)
 RUN cargo build --release \
@@ -98,7 +101,6 @@ RUN cargo build --release \
 # Copy actual source code
 COPY robo_rover_lib robo_rover_lib/
 COPY common common/
-COPY orchestra/audio_converter orchestra/audio_converter/
 COPY rover-kiwi rover-kiwi/
 
 # Build all rover nodes
@@ -109,16 +111,17 @@ RUN cargo build --release \
     -p object_tracker \
     -p visual_servo_controller \
     -p audio_capture \
+    -p audio_converter \
     -p audio_playback \
     -p sherpa_tts \
     -p arm_controller \
     -p rover_controller \
     -p performance_monitor \
     -p rover_zenoh_bridge \
+    -p edge_speech_recognizer \
     -p sim_interface \
     -p web_bridge \
-    -p video_encoder \
-    -p audio_converter
+    -p video_encoder
 
 # Collect sherpa-onnx shared library if it was built as a dynamic library.
 # sherpa-rs-sys may link statically (no .so needed) or dynamically depending on build.
@@ -196,16 +199,17 @@ COPY --from=builder /build/target/release/reid_extractor ./bin/
 COPY --from=builder /build/target/release/object_tracker ./bin/
 COPY --from=builder /build/target/release/visual_servo_controller ./bin/
 COPY --from=builder /build/target/release/audio_capture ./bin/
+COPY --from=builder /build/target/release/audio_converter ./bin/
 COPY --from=builder /build/target/release/audio_playback ./bin/
 COPY --from=builder /build/target/release/sherpa_tts ./bin/
 COPY --from=builder /build/target/release/arm_controller ./bin/
 COPY --from=builder /build/target/release/rover_controller ./bin/
 COPY --from=builder /build/target/release/performance_monitor ./bin/
 COPY --from=builder /build/target/release/rover_zenoh_bridge ./bin/
+COPY --from=builder /build/target/release/edge_speech_recognizer ./bin/
 COPY --from=builder /build/target/release/sim_interface ./bin/
 COPY --from=builder /build/target/release/web_bridge ./bin/
 COPY --from=builder /build/target/release/video_encoder ./bin/
-COPY --from=builder /build/target/release/audio_converter ./bin/
 COPY --from=builder /usr/local/cargo/bin/dora ./bin/
 
 # Copy ONNX Runtime libraries

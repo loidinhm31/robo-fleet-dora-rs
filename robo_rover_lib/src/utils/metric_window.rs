@@ -13,6 +13,13 @@ pub fn capture_age_ms(capture_timestamp_ms: u64) -> Option<u64> {
     now_ms.checked_sub(capture_timestamp_ms)
 }
 
+/// Records capture age only when the wall-clock timestamp is not in the future.
+pub fn record_capture_age(metrics: &mut MetricWindow, capture_timestamp_ms: u64) -> Option<u64> {
+    let age_ms = capture_age_ms(capture_timestamp_ms)?;
+    metrics.record(Duration::from_millis(age_ms), 0);
+    Some(age_ms)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetricSnapshot {
     pub count: u64,
@@ -173,5 +180,13 @@ mod tests {
     fn capture_age_rejects_future_timestamp() {
         assert_eq!(capture_age_ms(u64::MAX), None);
         assert!(capture_age_ms(0).is_some());
+    }
+
+    #[test]
+    fn future_capture_age_is_excluded_from_metric_window() {
+        let mut metrics = MetricWindow::new(Duration::ZERO);
+
+        assert_eq!(record_capture_age(&mut metrics, u64::MAX), None);
+        assert_eq!(metrics.snapshot_if_due().unwrap().count, 0);
     }
 }

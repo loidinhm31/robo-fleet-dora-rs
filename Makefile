@@ -213,7 +213,7 @@ validate-compose:
 
 check-models:
 	@echo "Checking for required models..."
-	@ls -lh models/.cache/ggml/ggml-tiny.bin 2>/dev/null || echo "  ✗ Whisper model missing"
+	@ls -lh models/.cache/ggml/ggml-base.bin 2>/dev/null || echo "  ✗ Whisper model missing"
 	@ls -lh models/.cache/yolo/yolo12n.onnx 2>/dev/null || echo "  ✗ YOLO model missing"
 	@ls -lh models/.cache/reid/osnet_x0_25.onnx 2>/dev/null || echo "  ✗ OSNet model missing"
 	@ls -lhd models/.cache/sherpa-onnx/vits-piper-en_US-lessac-medium 2>/dev/null || echo "  ✗ Sherpa-ONNX model missing"

@@ -5,8 +5,9 @@ use dora_node_api::{
 };
 use eyre::Result;
 use robo_rover_lib::{
-    capture_age_ms, init_tracing, FleetSelectCommand, FleetSubscriptionCommand,
-    FrameSequenceTracker, JpegFramePacket, MetricWindow,
+    capture_age_ms, init_tracing, record_capture_age, AudioFrameMetadata,
+    AudioFrameSequenceTracker, FleetSelectCommand, FleetSubscriptionCommand, FrameSequenceTracker,
+    JpegFramePacket, MetricWindow, PcmFramePacket, PcmSampleFormat,
 };
 use serde_json;
 use std::collections::{BTreeMap, HashMap};
@@ -33,6 +34,17 @@ struct RoverSubscriptions {
     tracked_detections_sub: ZenohSubscriber,
     tracking_telemetry_sub: ZenohSubscriber,
     metrics_sub: ZenohSubscriber,
+}
+
+struct LegacyAudioState {
+    stream_id: uuid::Uuid,
+    next_frame_id: u64,
+}
+
+struct DecodedAudioFrame {
+    metadata: AudioFrameMetadata,
+    payload: Vec<u8>,
+    legacy: bool,
 }
 
 /// Subscribe to all topics for a specific rover
@@ -328,6 +340,12 @@ async fn main() -> Result<()> {
     let mut video_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut video_age_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut video_sequences: HashMap<String, FrameSequenceTracker> = HashMap::new();
+    let mut audio_metrics = MetricWindow::new(Duration::from_secs(5));
+    let mut audio_age_metrics = MetricWindow::new(Duration::from_secs(5));
+    let mut audio_sequences: HashMap<String, AudioFrameSequenceTracker> = HashMap::new();
+    let mut legacy_audio_states: HashMap<String, LegacyAudioState> = HashMap::new();
+    let mut audio_errors = 0u64;
+    let mut audio_sequence_drops = 0u64;
 
     // Create channel to bridge Dora's sync events to async
     let (dora_tx, dora_rx) = flume::unbounded();
@@ -392,14 +410,10 @@ async fn main() -> Result<()> {
                                             if active_rovers.contains_key(entity_id) {
                                                 let audio_stream_topic = format!("rover/{}/cmd/audio_stream", entity_id);
 
-                                                let float_slice = float32_array.values().as_ref();
-                                                let bytes: &[u8] = unsafe {
-                                                    std::slice::from_raw_parts(
-                                                        float_slice.as_ptr() as *const u8,
-                                                        float_slice.len() * std::mem::size_of::<f32>()
-                                                    )
-                                                };
-                                                let _ = session.put(audio_stream_topic, bytes).await;
+                                                let bytes = encode_f32le(float32_array.values().as_ref());
+                                                if let Err(error) = session.put(audio_stream_topic, bytes).await {
+                                                    tracing::error!(%error, "failed to publish speaker audio");
+                                                }
                                             } else {
                                                 tracing::warn!("Selected rover {} is not active", entity_id);
                                             }
@@ -471,6 +485,10 @@ async fn main() -> Result<()> {
                         for (rover_id, count) in audio_counts_map.iter() {
                             tracing::info!("  {}: audio={}", rover_id, count);
                         }
+                        let frames_forwarded: u64 = audio_counts_map.values().copied().sum();
+                        tracing::info!(metric="audio_pipeline_total", stage="orchestra_zenoh_receive",
+                            frames_forwarded, sequence_drops=audio_sequence_drops,
+                            errors=audio_errors);
                         break;
                     }
                     _ => {}
@@ -539,28 +557,71 @@ async fn main() -> Result<()> {
             // Receive from all active rovers' audio subscriptions
             result = receive_from_rovers(&active_rovers, |subs| &subs.audio_sub) => {
                 if let Some((entity_id, sample)) = result {
+                    let receive_started = Instant::now();
                     let payload = sample.payload().to_bytes();
-
-                    // Convert raw bytes to Float32Array
-                    let float_slice: &[f32] = unsafe {
-                        std::slice::from_raw_parts(
-                            payload.as_ref().as_ptr() as *const f32,
-                            payload.len() / std::mem::size_of::<f32>()
-                        )
-                    };
-                    let audio_array = Float32Array::from(float_slice.to_vec());
-
-                    // Create metadata with entity_id
-                    let mut params = BTreeMap::new();
-                    params.insert("sample_rate".to_owned(), Parameter::Integer(audio_sample_rate));
-                    params.insert("channels".to_owned(), Parameter::Integer(audio_channels));
-                    params.insert("format".to_owned(), Parameter::String("f32le".to_string()));
-                    params.insert("entity_id".to_owned(), Parameter::String(entity_id.clone()));
-
-                    let _ = node.send_output(audio_frame_output.clone(), params, audio_array);
-
-                    let mut counts = audio_counts.lock().await;
-                    *counts.entry(entity_id).or_insert(0) += 1;
+                    match decode_rover_audio(
+                        payload.as_ref(),
+                        &entity_id,
+                        &mut legacy_audio_states,
+                        u32::try_from(audio_sample_rate).unwrap_or(16_000),
+                        u16::try_from(audio_channels).unwrap_or(1),
+                    ) {
+                        Ok(frame) => {
+                            match audio_sequences.entry(entity_id.clone()).or_default()
+                                .observe(frame.metadata) {
+                                Ok(observation) => {
+                                    audio_metrics.record_drops(observation.missing_frames);
+                                    audio_sequence_drops = audio_sequence_drops
+                                        .saturating_add(observation.missing_frames);
+                                }
+                                Err(error) => {
+                                    audio_errors = audio_errors.saturating_add(1);
+                                    audio_metrics.record_error();
+                                    tracing::warn!(%error, %entity_id, "rejected duplicate or regressed audio frame");
+                                    continue;
+                                }
+                            }
+                            let frame_age_ms = record_capture_age(
+                                &mut audio_age_metrics,
+                                frame.metadata.capture_timestamp_ms,
+                            );
+                            if frame_age_ms.is_none() {
+                                audio_errors = audio_errors.saturating_add(1);
+                                audio_metrics.record_error();
+                            }
+                            let params = audio_dora_parameters(frame.metadata, &entity_id, frame.payload.len());
+                            let audio_array = BinaryArray::from_vec(vec![frame.payload.as_slice()]);
+                            if let Err(error) = node.send_output(audio_frame_output.clone(), params, audio_array) {
+                                audio_errors = audio_errors.saturating_add(1);
+                                audio_metrics.record_error();
+                                tracing::error!(%error, %entity_id, "failed to forward audio frame to Dora");
+                            } else {
+                                audio_metrics.record(receive_started.elapsed(), payload.len());
+                                let mut counts = audio_counts.lock().await;
+                                *counts.entry(entity_id.clone()).or_insert(0) += 1;
+                            }
+                            if let Some(snapshot) = audio_metrics.snapshot_if_due() {
+                                tracing::info!(metric="audio_pipeline", stage="orchestra_zenoh_receive",
+                                    %entity_id, stream_id=%frame.metadata.stream_id,
+                                    frame_id=frame.metadata.frame_id, frame_age_ms=?frame_age_ms,
+                                    legacy=frame.legacy, count=snapshot.count, bytes=snapshot.bytes,
+                                    drops=snapshot.drops, errors=snapshot.errors,
+                                    p50_us=snapshot.p50_us, p95_us=snapshot.p95_us,
+                                    p99_us=snapshot.p99_us, max_us=snapshot.max_us);
+                            }
+                            if let Some(snapshot) = audio_age_metrics.snapshot_if_due() {
+                                tracing::info!(metric="audio_pipeline", stage="orchestra_zenoh_receive_age",
+                                    count=snapshot.count, p50_us=snapshot.p50_us,
+                                    p95_us=snapshot.p95_us, p99_us=snapshot.p99_us,
+                                    max_us=snapshot.max_us);
+                            }
+                        }
+                        Err(error) => {
+                            audio_errors = audio_errors.saturating_add(1);
+                            audio_metrics.record_error();
+                            tracing::warn!(%error, %entity_id, "rejected invalid audio packet");
+                        }
+                    }
                 }
             }
 
@@ -719,5 +780,164 @@ fn forward_telemetry_with_entity_id(
             let arrow_data = BinaryArray::from_vec(vec![serialized.as_slice()]);
             let _ = node.send_output(output_id.clone(), Default::default(), arrow_data);
         }
+    }
+}
+
+fn decode_rover_audio(
+    payload: &[u8],
+    entity_id: &str,
+    legacy_states: &mut HashMap<String, LegacyAudioState>,
+    legacy_sample_rate: u32,
+    legacy_channels: u16,
+) -> Result<DecodedAudioFrame, String> {
+    if payload.starts_with(b"PCMF") {
+        let packet = PcmFramePacket::decode(payload)?;
+        if packet.metadata.format != PcmSampleFormat::S16Le {
+            return Err("v1 rover audio packet must contain s16le samples".into());
+        }
+        return Ok(DecodedAudioFrame {
+            metadata: packet.metadata,
+            payload: packet.payload.to_vec(),
+            legacy: false,
+        });
+    }
+
+    let max_legacy_bytes = usize::try_from(legacy_sample_rate)
+        .ok()
+        .and_then(|rate| rate.checked_mul(usize::from(legacy_channels)))
+        .and_then(|samples| samples.checked_mul(PcmSampleFormat::F32Le.bytes_per_sample()))
+        .ok_or_else(|| "legacy audio dimensions overflow".to_string())?;
+    let samples = decode_legacy_f32le(payload, max_legacy_bytes)?;
+    let state = legacy_states
+        .entry(entity_id.to_owned())
+        .or_insert_with(|| LegacyAudioState {
+            stream_id: uuid::Uuid::new_v4(),
+            next_frame_id: 0,
+        });
+    let frame_id = state.next_frame_id;
+    state.next_frame_id = state.next_frame_id.saturating_add(1);
+    let metadata = AudioFrameMetadata {
+        stream_id: state.stream_id,
+        frame_id,
+        capture_timestamp_ms: current_time_ms()?,
+        sample_rate: legacy_sample_rate,
+        channels: legacy_channels,
+        sample_count: samples
+            .len()
+            .try_into()
+            .map_err(|_| "legacy sample count exceeds u32")?,
+        format: PcmSampleFormat::S16Le,
+    };
+    let converted = float32_to_s16le(&samples);
+    metadata.validate_payload_len(converted.len())?;
+    Ok(DecodedAudioFrame {
+        metadata,
+        payload: converted,
+        legacy: true,
+    })
+}
+
+fn decode_legacy_f32le(payload: &[u8], max_bytes: usize) -> Result<Vec<f32>, String> {
+    if payload.is_empty() || payload.len() > max_bytes || payload.len() % 4 != 0 {
+        return Err(format!(
+            "invalid legacy f32le payload length: {}",
+            payload.len()
+        ));
+    }
+    Ok(payload
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect())
+}
+
+fn float32_to_s16le(samples: &[f32]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(samples.len() * 2);
+    for &sample in samples {
+        let converted = if sample <= -1.0 {
+            i16::MIN
+        } else {
+            (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)).round() as i16
+        };
+        output.extend_from_slice(&converted.to_le_bytes());
+    }
+    output
+}
+
+fn encode_f32le(samples: &[f32]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(samples.len() * 4);
+    for sample in samples {
+        output.extend_from_slice(&sample.to_le_bytes());
+    }
+    output
+}
+
+fn audio_dora_parameters(
+    metadata: AudioFrameMetadata,
+    entity_id: &str,
+    payload_len: usize,
+) -> BTreeMap<String, Parameter> {
+    BTreeMap::from([
+        ("entity_id".into(), Parameter::String(entity_id.to_owned())),
+        (
+            "stream_id".into(),
+            Parameter::String(metadata.stream_id.to_string()),
+        ),
+        (
+            "frame_id".into(),
+            Parameter::Integer(metadata.frame_id as i64),
+        ),
+        (
+            "capture_timestamp_ms".into(),
+            Parameter::Integer(metadata.capture_timestamp_ms as i64),
+        ),
+        (
+            "sample_rate".into(),
+            Parameter::Integer(i64::from(metadata.sample_rate)),
+        ),
+        (
+            "channels".into(),
+            Parameter::Integer(i64::from(metadata.channels)),
+        ),
+        (
+            "sample_count".into(),
+            Parameter::Integer(i64::from(metadata.sample_count)),
+        ),
+        (
+            "format".into(),
+            Parameter::String(metadata.format.metadata_name().into()),
+        ),
+        ("size".into(), Parameter::Integer(payload_len as i64)),
+    ])
+}
+
+fn current_time_ms() -> Result<u64, String> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_millis()
+        .try_into()
+        .map_err(|_| "current timestamp exceeds u64".into())
+}
+
+#[cfg(test)]
+mod audio_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_audio_decode_is_bounded_and_converts_to_s16le() {
+        let mut states = HashMap::new();
+        let input = encode_f32le(&[-1.0, 0.0, 1.0]);
+        let frame = decode_rover_audio(&input, "rover-a", &mut states, 16_000, 1).unwrap();
+        assert!(frame.legacy);
+        assert_eq!(frame.payload.len(), 6);
+        assert_eq!(frame.metadata.sample_count, 3);
+        assert!(decode_legacy_f32le(&[0, 1, 2], 64_000).is_err());
+    }
+
+    #[test]
+    fn malformed_versioned_packet_does_not_fall_back_to_legacy() {
+        let mut states = HashMap::new();
+        assert!(decode_rover_audio(b"PCMFbad", "rover-a", &mut states, 16_000, 1).is_err());
+        assert!(states.is_empty());
     }
 }

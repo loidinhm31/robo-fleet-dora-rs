@@ -42,7 +42,7 @@ services:
       AUDIO_CHANNELS: "1"
 
       # Whisper speech recognizer
-      WHISPER_MODEL_PATH: /models/ggml/ggml-tiny.bin
+      WHISPER_MODEL_PATH: /models/ggml/ggml-base.bin
       SAMPLE_RATE: "16000"
       BUFFER_DURATION_MS: "5000"
       CONFIDENCE_THRESHOLD: "0.5"

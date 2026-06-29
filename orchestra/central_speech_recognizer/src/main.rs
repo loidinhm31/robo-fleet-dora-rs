@@ -15,11 +15,11 @@ const DEFAULT_ENERGY_THRESHOLD: f32 = 0.02; // VAD threshold
 
 fn main() -> Result<()> {
     let _guard = init_tracing();
-    tracing::info!("Starting speech recognizer node...");
+    tracing::info!("Starting central speech recognizer node...");
 
     // Read configuration from environment variables
-    let model_path =
-        env::var("WHISPER_MODEL_PATH").unwrap_or_else(|_| "models/ggml-tiny.bin".to_string());
+    let model_path = env::var("WHISPER_MODEL_PATH")
+        .unwrap_or_else(|_| "models/.cache/ggml/ggml-base.bin".to_string());
 
     let sample_rate: u32 = env::var("SAMPLE_RATE")
         .ok()
@@ -56,7 +56,7 @@ fn main() -> Result<()> {
         tracing::error!("Whisper model not found at: {:?}", model_path);
         tracing::error!("Please download a Whisper model:");
         tracing::error!("Download from: https://huggingface.co/ggerganov/whisper.cpp/tree/main");
-        tracing::error!("For Raspberry Pi 5, use: ggml-tiny.bin or ggml-base.bin");
+        tracing::error!("Download ggml-base.bin with `make models`");
         tracing::error!("Place in models/ directory");
         return Err(eyre::eyre!("Whisper model not found"));
     }
@@ -87,7 +87,7 @@ fn main() -> Result<()> {
     loop {
         match events.recv() {
             Some(Event::Input { id, data, .. }) => match id.as_str() {
-                "audio_rover" | "audio_web" => {
+                "audio_web" => {
                     // Receive audio from either rover microphone or web UI
                     let audio_data = handle_audio_input(&*data)?;
 

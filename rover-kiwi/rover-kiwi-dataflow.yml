@@ -14,6 +14,27 @@ nodes:
       CHUNK_SIZE: "800"
       # AUDIO_DEVICE: "USB Audio"  # substring match; set when ALSA 'default' maps to wrong card
 
+  # Convert capture F32 to S16LE before cross-machine transport.
+  - id: audio-converter
+    build: cargo build --release -p audio_converter
+    path: ../target/release/audio_converter
+    inputs:
+      audio_input: audio-capture/audio
+    outputs:
+      - audio_output
+    env:
+      RUST_LOG: info
+      OUTPUT_FORMAT: "s16le"
+      SAMPLE_RATE: "16000"
+      CHANNELS: "1"
+
+  # TODO: enable after edge STT implementation is available.
+#  - id: edge-speech-recognizer
+#    build: cargo build --release -p edge_speech_recognizer
+#    path: ../target/release/edge_speech_recognizer
+#    inputs:
+#      audio: audio-capture/audio
+
   # TTS - Sherpa-ONNX lightweight neural TTS for edge device
   # - id: sherpa-tts
   #   build: cargo build --release -p sherpa_tts
@@ -178,7 +199,7 @@ nodes:
     path: ../target/release/rover_zenoh_bridge
     inputs:
       video_frame: video-encoder/encoded_frame
-      audio_frame: audio-capture/audio
+      audio_frame: audio-converter/audio_output
       # rover_telemetry: sim-interface/rover_telemetry
       # arm_telemetry: sim-interface/arm_telemetry
       servo_telemetry: visual-servo-controller/servo_telemetry

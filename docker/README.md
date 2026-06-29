@@ -13,7 +13,7 @@ make models
 ```
 
 This will download:
-- ✅ Whisper GGML tiny model (~75 MB) - for speech recognition
+- ✅ Whisper GGML base model (~142 MB) - for central workstation speech recognition
 - ✅ Sherpa-ONNX VITS TTS model (~21 MB) - for text-to-speech
 
 You'll also need to manually export:
@@ -76,7 +76,7 @@ The Docker setup uses docker-compose profiles to support two deployment scenario
 1. **Orchestra Profile** (`orchestra`)
    - Runs on workstation (x86_64)
    - Heavy ML processing, web interface, fleet management
-   - Nodes: web-bridge, speech-recognizer, command-parser, audio/video converters, zenoh-bridge
+   - Nodes: web-bridge, central-speech-recognizer, command-parser, zenoh-bridge
 
 2. **Rover-Kiwi Profile** (`rover-kiwi`)
    - Runs on Raspberry Pi 5 (ARM64)
@@ -205,7 +205,7 @@ docker/
 
 **Issue: Whisper model not found**
 ```
-ERROR: Whisper model not found at /models/ggml/ggml-tiny.bin
+ERROR: Whisper model not found at /models/ggml/ggml-base.bin
 ```
 
 **Solution:**

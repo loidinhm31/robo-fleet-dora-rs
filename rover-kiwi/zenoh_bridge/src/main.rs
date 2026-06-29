@@ -5,9 +5,10 @@ use dora_node_api::{
 };
 use eyre::Result;
 use robo_rover_lib::{
-    capture_age_ms, init_tracing,
+    capture_age_ms, init_tracing, record_capture_age,
     types::{ArmCommandWithMetadata, InputSource, RoverCommandWithMetadata},
-    FrameSequenceTracker, JpegFramePacket, MetricWindow, VideoFrameMetadata,
+    AudioFrameMetadata, AudioFrameSequenceTracker, FrameSequenceTracker, JpegFramePacket,
+    MetricWindow, PcmFramePacket, PcmSampleFormat, VideoFrameMetadata,
 };
 use std::time::{Duration, Instant};
 use zenoh::Config;
@@ -228,6 +229,12 @@ async fn main() -> Result<()> {
     let mut video_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut video_age_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut video_sequence = FrameSequenceTracker::default();
+    let mut audio_count: u64 = 0;
+    let mut audio_errors: u64 = 0;
+    let mut audio_sequence_drops: u64 = 0;
+    let mut audio_metrics = MetricWindow::new(Duration::from_secs(5));
+    let mut audio_age_metrics = MetricWindow::new(Duration::from_secs(5));
+    let mut audio_sequence = AudioFrameSequenceTracker::default();
 
     // Create channel to bridge Dora's sync events to async
     let (dora_tx, dora_rx) = flume::unbounded();
@@ -312,18 +319,67 @@ async fn main() -> Result<()> {
                                 }
                             }
                             "audio_frame" => {
-                                // Audio frames are Float32Array (raw Float32 audio samples)
-                                if let Some(float32_array) = data.as_any().downcast_ref::<Float32Array>() {
-                                    if float32_array.len() > 0 {
-                                        // Convert Float32Array to bytes for Zenoh transport
-                                        let float_slice = float32_array.values().as_ref();
-                                        let bytes: &[u8] = unsafe {
-                                            std::slice::from_raw_parts(
-                                                float_slice.as_ptr() as *const u8,
-                                                float_slice.len() * std::mem::size_of::<f32>()
-                                            )
-                                        };
-                                        let _ = audio_pub.put(bytes).await;
+                                let started = Instant::now();
+                                let result = (|| -> Result<_, String> {
+                                    let binary = data.as_any().downcast_ref::<BinaryArray>()
+                                        .ok_or_else(|| "audio frame must be BinaryArray".to_string())?;
+                                    if binary.len() != 1 {
+                                        return Err("audio frame must contain exactly one payload".into());
+                                    }
+                                    let payload = binary.value(0);
+                                    let audio_metadata = audio_frame_metadata(&metadata.parameters)?;
+                                    if audio_metadata.format != PcmSampleFormat::S16Le {
+                                        return Err("rover Zenoh bridge requires s16le audio".into());
+                                    }
+                                    audio_metadata.validate_payload_len(payload.len())?;
+                                    let observation = audio_sequence.observe(audio_metadata)?;
+                                    audio_metrics.record_drops(observation.missing_frames);
+                                    audio_sequence_drops = audio_sequence_drops
+                                        .saturating_add(observation.missing_frames);
+                                    let age_ms = record_capture_age(
+                                        &mut audio_age_metrics,
+                                        audio_metadata.capture_timestamp_ms,
+                                    );
+                                    if age_ms.is_none() {
+                                        audio_errors = audio_errors.saturating_add(1);
+                                        audio_metrics.record_error();
+                                    }
+                                    let packet = PcmFramePacket { metadata: audio_metadata, payload }.encode()?;
+                                    Ok((audio_metadata, age_ms, packet))
+                                })();
+
+                                match result {
+                                    Ok((audio_metadata, frame_age_ms, packet)) => {
+                                        match audio_pub.put(&packet).await {
+                                            Ok(_) => {
+                                                audio_count = audio_count.saturating_add(1);
+                                                audio_metrics.record(started.elapsed(), packet.len());
+                                            }
+                                            Err(error) => {
+                                                audio_errors = audio_errors.saturating_add(1);
+                                                audio_metrics.record_error();
+                                                tracing::error!(%error, "failed to publish audio frame");
+                                            }
+                                        }
+                                        if let Some(snapshot) = audio_metrics.snapshot_if_due() {
+                                            tracing::info!(metric="audio_pipeline", stage="rover_zenoh_publish",
+                                                stream_id=%audio_metadata.stream_id, frame_id=audio_metadata.frame_id,
+                                                frame_age_ms=?frame_age_ms, count=snapshot.count, bytes=snapshot.bytes,
+                                                drops=snapshot.drops, errors=snapshot.errors,
+                                                p50_us=snapshot.p50_us, p95_us=snapshot.p95_us,
+                                                p99_us=snapshot.p99_us, max_us=snapshot.max_us);
+                                        }
+                                        if let Some(snapshot) = audio_age_metrics.snapshot_if_due() {
+                                            tracing::info!(metric="audio_pipeline", stage="rover_zenoh_publish_age",
+                                                count=snapshot.count, p50_us=snapshot.p50_us,
+                                                p95_us=snapshot.p95_us, p99_us=snapshot.p99_us,
+                                                max_us=snapshot.max_us);
+                                        }
+                                    }
+                                    Err(error) => {
+                                        audio_errors = audio_errors.saturating_add(1);
+                                        audio_metrics.record_error();
+                                        tracing::warn!(%error, "rejected invalid audio frame");
                                     }
                                 }
                             }
@@ -365,7 +421,10 @@ async fn main() -> Result<()> {
                     }
                     Event::Stop(_) => {
                         tracing::info!("Stop signal received");
-                        tracing::info!("Stats: video={}, telemetry={}, commands={}", video_count, telemetry_count, cmd_count);
+                        tracing::info!(metric="audio_pipeline_total", stage="rover_zenoh_publish",
+                            frames_published=audio_count, sequence_drops=audio_sequence_drops,
+                            errors=audio_errors);
+                        tracing::info!("Stats: video={}, audio={}, telemetry={}, commands={}", video_count, audio_count, telemetry_count, cmd_count);
                         break;
                     }
                     _ => {}
@@ -441,18 +500,17 @@ async fn main() -> Result<()> {
 
             Ok(sample) = audio_stream_sub.recv_async() => {
                 let payload = sample.payload().to_bytes();
-
-                // Convert raw bytes back to Float32Array
-                let float_slice: &[f32] = unsafe {
-                    std::slice::from_raw_parts(
-                        payload.as_ref().as_ptr() as *const f32,
-                        payload.len() / std::mem::size_of::<f32>()
-                    )
-                };
-                let audio_array = Float32Array::from(float_slice.to_vec());
-
-                // Send as Float32Array
-                let _ = node.send_output(audio_stream_output.clone(), Default::default(), audio_array);
+                match decode_f32le(payload.as_ref()) {
+                    Ok(samples) => {
+                        let audio_array = Float32Array::from(samples);
+                        if let Err(error) = node.send_output(
+                            audio_stream_output.clone(), Default::default(), audio_array)
+                        {
+                            tracing::error!(%error, "failed to forward speaker audio to Dora");
+                        }
+                    }
+                    Err(error) => tracing::warn!(%error, "rejected invalid speaker audio payload"),
+                }
             }
         }
     }
@@ -482,4 +540,64 @@ fn frame_metadata(
             .try_into()
             .map_err(|_| "height exceeds u32")?,
     })
+}
+
+fn audio_frame_metadata(
+    parameters: &std::collections::BTreeMap<String, dora_node_api::Parameter>,
+) -> Result<AudioFrameMetadata, String> {
+    let integer = |key: &str| {
+        parameters
+            .get(key)
+            .and_then(|value| match value {
+                dora_node_api::Parameter::Integer(value) => u64::try_from(*value).ok(),
+                _ => None,
+            })
+            .ok_or_else(|| format!("missing or invalid {key}"))
+    };
+    let string = |key: &str| {
+        parameters
+            .get(key)
+            .and_then(|value| match value {
+                dora_node_api::Parameter::String(value) => Some(value.as_str()),
+                _ => None,
+            })
+            .ok_or_else(|| format!("missing or invalid {key}"))
+    };
+    Ok(AudioFrameMetadata {
+        stream_id: uuid::Uuid::parse_str(string("stream_id")?).map_err(|e| e.to_string())?,
+        frame_id: integer("frame_id")?,
+        capture_timestamp_ms: integer("capture_timestamp_ms")?,
+        sample_rate: integer("sample_rate")?
+            .try_into()
+            .map_err(|_| "sample_rate exceeds u32")?,
+        channels: integer("channels")?
+            .try_into()
+            .map_err(|_| "channels exceeds u16")?,
+        sample_count: integer("sample_count")?
+            .try_into()
+            .map_err(|_| "sample_count exceeds u32")?,
+        format: PcmSampleFormat::from_metadata_name(string("format")?)?,
+    })
+}
+
+fn decode_f32le(payload: &[u8]) -> Result<Vec<f32>, String> {
+    const MAX_AUDIO_STREAM_BYTES: usize = 64 * 1024;
+    if payload.is_empty() || payload.len() > MAX_AUDIO_STREAM_BYTES || payload.len() % 4 != 0 {
+        return Err(format!("invalid f32le payload length: {}", payload.len()));
+    }
+    Ok(payload
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect())
+}
+
+#[cfg(test)]
+mod audio_tests {
+    use super::*;
+
+    #[test]
+    fn f32le_decoder_rejects_partial_samples() {
+        assert!(decode_f32le(&[0, 1, 2]).is_err());
+        assert_eq!(decode_f32le(&1.25f32.to_le_bytes()).unwrap(), vec![1.25]);
+    }
 }

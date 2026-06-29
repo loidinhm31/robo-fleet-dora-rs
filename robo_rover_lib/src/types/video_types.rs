@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub use super::audio_types::{AudioCodec, AudioFrame, EncodedAudioFrame};
+
 const RAW_FRAME_MAGIC: &[u8; 4] = b"RFRM";
 const RAW_FRAME_VERSION: u8 = 1;
 const RAW_FRAME_HEADER_LEN: usize = 36;
@@ -349,62 +351,6 @@ mod jpeg_frame_tests {
         .encode()
         .is_err());
     }
-}
-
-/// Raw audio frame data from microphone
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AudioFrame {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub entity_id: Option<String>,
-    pub timestamp: u64,
-    pub frame_id: u64,
-    pub sample_rate: u32,    // e.g., 48000 Hz
-    pub channels: u16,       // 1 = mono, 2 = stereo
-    pub bit_depth: u16,      // e.g., 16-bit
-    pub format: String,      // "PCM_S16LE", "PCM_F32LE", etc.
-    pub data: Vec<u8>,       // Raw PCM audio data
-    pub sample_count: usize, // Number of samples
-}
-
-impl AudioFrame {
-    pub fn expected_size(&self) -> usize {
-        self.sample_count * (self.bit_depth as usize / 8) * self.channels as usize
-    }
-
-    pub fn validate(&self) -> Result<(), String> {
-        let expected = self.expected_size();
-        if self.data.len() != expected {
-            return Err(format!(
-                "Audio data size mismatch: got {} bytes, expected {} bytes",
-                self.data.len(),
-                expected
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// Encoded audio frame (Opus, AAC, etc.)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EncodedAudioFrame {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub entity_id: Option<String>, // Source rover entity ID (for multi-rover support)
-    pub timestamp: u64,
-    pub frame_id: u64,
-    pub sample_rate: u32,
-    pub channels: u16,
-    pub codec: AudioCodec,
-    pub data: Vec<u8>,    // Encoded audio data
-    pub duration_ms: u32, // Frame duration in milliseconds
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AudioCodec {
-    Opus,
-    Aac,
-    Mp3,
-    Pcm,
 }
 
 /// Raw camera frame with optional audio

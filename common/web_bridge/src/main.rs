@@ -9,12 +9,14 @@ use robo_rover_lib::types::{
     SpeechTranscription, SystemMetrics, TrackingCommand, TrackingTelemetry,
 };
 use robo_rover_lib::{
-    capture_age_ms, init_tracing, ArmCommand, ArmCommandWithMetadata, AudioAction, AudioControl,
-    CameraAction, CameraControl, CommandMetadata, CommandPriority, FrameSequenceTracker,
-    InputSource, MetricWindow, RoverCommand, RoverCommandWithMetadata, StreamCommand,
+    capture_age_ms, init_tracing, record_capture_age, ArmCommand, ArmCommandWithMetadata,
+    AudioAction, AudioControl, AudioFrameMetadata, AudioFrameSequenceTracker, CameraAction,
+    CameraControl, CommandMetadata, CommandPriority, FrameSequenceTracker, InputSource,
+    MetricWindow, PcmSampleFormat, RoverCommand, RoverCommandWithMetadata, StreamCommand,
     StreamControl,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid;
@@ -77,6 +79,7 @@ struct ClientState {
     last_activity: Arc<Mutex<Instant>>,
     video_frames_sent: Arc<Mutex<u64>>,
     audio_frames_sent: Arc<Mutex<u64>>,
+    audio_frames_dropped: Arc<Mutex<u64>>,
     frames_dropped: Arc<Mutex<u64>>,
 }
 
@@ -93,6 +96,7 @@ impl ClientState {
             last_activity: Arc::new(Mutex::new(Instant::now())),
             video_frames_sent: Arc::new(Mutex::new(0)),
             audio_frames_sent: Arc::new(Mutex::new(0)),
+            audio_frames_dropped: Arc::new(Mutex::new(0)),
             frames_dropped: Arc::new(Mutex::new(0)),
         }
     }
@@ -130,6 +134,15 @@ impl ClientState {
     fn mark_frame_dropped(&self) {
         *self.frames_dropped.lock().unwrap() += 1;
     }
+
+    fn mark_audio_dropped(&self) {
+        *self.audio_frames_dropped.lock().unwrap() += 1;
+    }
+}
+
+fn record_audio_error(metrics: &mut MetricWindow, total_errors: &mut u64) {
+    metrics.record_error();
+    *total_errors = total_errors.saturating_add(1);
 }
 
 fn touch_activity(clients: &Mutex<Vec<ClientState>>, socket_id: &str) {
@@ -224,6 +237,73 @@ fn validate_browser_jpeg_payload(payload: &[u8]) -> Result<(), &'static str> {
         return Err("jpeg payload missing EOI marker");
     }
     Ok(())
+}
+
+fn audio_frame_metadata(
+    parameters: &std::collections::BTreeMap<String, dora_node_api::Parameter>,
+    payload_len: usize,
+) -> Result<(AudioFrameMetadata, Option<String>), String> {
+    let integer = |key: &str| {
+        parameters
+            .get(key)
+            .and_then(|value| match value {
+                dora_node_api::Parameter::Integer(value) => u64::try_from(*value).ok(),
+                _ => None,
+            })
+            .ok_or_else(|| format!("missing or invalid {key}"))
+    };
+    let string = |key: &str| {
+        parameters
+            .get(key)
+            .and_then(|value| match value {
+                dora_node_api::Parameter::String(value) => Some(value.as_str()),
+                _ => None,
+            })
+            .ok_or_else(|| format!("missing or invalid {key}"))
+    };
+    let metadata = AudioFrameMetadata {
+        stream_id: uuid::Uuid::parse_str(string("stream_id")?).map_err(|e| e.to_string())?,
+        frame_id: integer("frame_id")?,
+        capture_timestamp_ms: integer("capture_timestamp_ms")?,
+        sample_rate: integer("sample_rate")?
+            .try_into()
+            .map_err(|_| "sample_rate exceeds u32")?,
+        channels: integer("channels")?
+            .try_into()
+            .map_err(|_| "channels exceeds u16")?,
+        sample_count: integer("sample_count")?
+            .try_into()
+            .map_err(|_| "sample_count exceeds u32")?,
+        format: PcmSampleFormat::from_metadata_name(string("format")?)?,
+    };
+    if metadata.format != PcmSampleFormat::S16Le {
+        return Err("browser audio input must be s16le".into());
+    }
+    metadata.validate_payload_len(payload_len)?;
+    let entity_id = parameters.get("entity_id").and_then(|value| match value {
+        dora_node_api::Parameter::String(value) => Some(value.clone()),
+        _ => None,
+    });
+    Ok((metadata, entity_id))
+}
+
+fn browser_audio_frame_payload(
+    metadata: AudioFrameMetadata,
+    entity_id: Option<String>,
+    payload: &[u8],
+) -> Value {
+    serde_json::json!({
+        "timestamp": metadata.capture_timestamp_ms,
+        "capture_timestamp_ms": metadata.capture_timestamp_ms,
+        "stream_id": metadata.stream_id.to_string(),
+        "frame_id": metadata.frame_id,
+        "sample_rate": metadata.sample_rate,
+        "channels": metadata.channels,
+        "sample_count": metadata.sample_count,
+        "format": metadata.format.metadata_name(),
+        "entity_id": entity_id,
+        "data": payload,
+    })
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -1449,7 +1529,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         web_audio.audio_data.len()
                     );
 
-                    // Send audio data as Float32Array to speech_recognizer node
+                    // Send Float32 audio to the central speech recognizer node.
                     let arrow_data = Float32Array::from(web_audio.audio_data);
                     if let Ok(mut node_guard) = node_clone_voice_command.lock() {
                         let _ = node_guard.send_output(
@@ -1564,10 +1644,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Event loop - handle video frames
     let state_for_video = shared_state.clone();
     let io_for_video = io_handle.clone();
-    let mut frame_counter = 0u64;
     let mut video_emit_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut video_age_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut video_sequence = FrameSequenceTracker::default();
+    let mut audio_emit_metrics = MetricWindow::new(Duration::from_secs(5));
+    let mut audio_age_metrics = MetricWindow::new(Duration::from_secs(5));
+    let mut audio_sequences: HashMap<String, AudioFrameSequenceTracker> = HashMap::new();
+    let mut audio_emit_errors = 0u64;
+    let mut audio_sequence_drops = 0u64;
 
     loop {
         if let Some(event) = events.recv() {
@@ -1576,94 +1660,170 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     id, data, metadata, ..
                 } => match id.as_str() {
                     "audio_frame" => {
-                        // Now receives pre-converted Int16LE PCM from audio-converter
+                        let started = Instant::now();
                         if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
-                            if binary_array.len() > 0 {
-                                let audio_bytes = binary_array.value(0).to_vec();
-
-                                // Extract metadata
-                                let format = metadata
-                                    .parameters
-                                    .get("format")
-                                    .and_then(|v| match v {
-                                        dora_node_api::Parameter::String(s) => Some(s.clone()),
-                                        _ => None,
-                                    })
-                                    .unwrap_or_else(|| "s16le".to_string());
-
-                                let sample_rate = metadata
-                                    .parameters
-                                    .get("sample_rate")
-                                    .and_then(|v| match v {
-                                        dora_node_api::Parameter::Integer(i) => Some(*i as u32),
-                                        _ => None,
-                                    })
-                                    .unwrap_or(16000);
-
-                                let channels = metadata
-                                    .parameters
-                                    .get("channels")
-                                    .and_then(|v| match v {
-                                        dora_node_api::Parameter::Integer(i) => Some(*i as u16),
-                                        _ => None,
-                                    })
-                                    .unwrap_or(1);
-
-                                // Broadcast pre-converted audio to all clients
-                                frame_counter += 1;
-
-                                if frame_counter <= 3 || frame_counter % 200 == 0 {
-                                    let client_count = state_for_video
-                                        .video_clients
-                                        .lock()
-                                        .map(|c| c.len())
-                                        .unwrap_or(0);
-                                    tracing::info!(
-                                        "audio_frame #{}: {} bytes, {} Hz, {} clients",
-                                        frame_counter,
-                                        audio_bytes.len(),
-                                        sample_rate,
-                                        client_count
+                            if binary_array.len() != 1 {
+                                record_audio_error(&mut audio_emit_metrics, &mut audio_emit_errors);
+                                tracing::warn!("audio frame must contain exactly one payload");
+                                continue;
+                            }
+                            let audio_bytes = binary_array.value(0);
+                            match audio_frame_metadata(&metadata.parameters, audio_bytes.len()) {
+                                Ok((origin, entity_id)) => {
+                                    let sequence_key =
+                                        entity_id.clone().unwrap_or_else(|| "direct".into());
+                                    match audio_sequences
+                                        .entry(sequence_key)
+                                        .or_default()
+                                        .observe(origin)
+                                    {
+                                        Ok(observation) => {
+                                            audio_emit_metrics
+                                                .record_drops(observation.missing_frames);
+                                            audio_sequence_drops = audio_sequence_drops
+                                                .saturating_add(observation.missing_frames);
+                                        }
+                                        Err(error) => {
+                                            record_audio_error(
+                                                &mut audio_emit_metrics,
+                                                &mut audio_emit_errors,
+                                            );
+                                            tracing::warn!(%error, "rejected duplicate or regressed browser audio frame");
+                                            continue;
+                                        }
+                                    }
+                                    let frame_age_ms = record_capture_age(
+                                        &mut audio_age_metrics,
+                                        origin.capture_timestamp_ms,
                                     );
-                                }
+                                    if frame_age_ms.is_none() {
+                                        record_audio_error(
+                                            &mut audio_emit_metrics,
+                                            &mut audio_emit_errors,
+                                        );
+                                    }
+                                    let audio_frame_data =
+                                        browser_audio_frame_payload(origin, entity_id, audio_bytes);
 
-                                let timestamp = SystemTime::now()
-                                    .duration_since(UNIX_EPOCH)
-                                    .unwrap()
-                                    .as_millis()
-                                    as u64;
-
-                                let audio_frame_data = serde_json::json!({
-                                    "timestamp": timestamp,
-                                    "frame_id": frame_counter,
-                                    "sample_rate": sample_rate,
-                                    "channels": channels,
-                                    "format": format,
-                                    "data": audio_bytes,
-                                });
-
-                                if let Ok(clients) = state_for_video.video_clients.lock() {
-                                    for client in clients.iter() {
-                                        if client.should_send_audio() {
-                                            if let Some(ref io) = *io_for_video.lock().unwrap() {
-                                                if let Some(socket) =
-                                                    io.of("/").unwrap().get_socket(
-                                                        (&client.socket_id).parse().unwrap(),
-                                                    )
-                                                {
-                                                    let _ = socket.emit(
-                                                        "audio_frame",
-                                                        audio_frame_data.clone(),
+                                    if let Ok(clients) = state_for_video.video_clients.lock() {
+                                        for client in clients
+                                            .iter()
+                                            .filter(|client| client.should_send_audio())
+                                        {
+                                            let socket_id = match client.socket_id.parse() {
+                                                Ok(socket_id) => socket_id,
+                                                Err(error) => {
+                                                    record_audio_error(
+                                                        &mut audio_emit_metrics,
+                                                        &mut audio_emit_errors,
                                                     );
+                                                    tracing::warn!(%error, "invalid audio client socket ID");
+                                                    continue;
+                                                }
+                                            };
+                                            let io_guard = match io_for_video.lock() {
+                                                Ok(guard) => guard,
+                                                Err(_) => {
+                                                    record_audio_error(
+                                                        &mut audio_emit_metrics,
+                                                        &mut audio_emit_errors,
+                                                    );
+                                                    continue;
+                                                }
+                                            };
+                                            let Some(io) = io_guard.as_ref() else {
+                                                record_audio_error(
+                                                    &mut audio_emit_metrics,
+                                                    &mut audio_emit_errors,
+                                                );
+                                                continue;
+                                            };
+                                            let Some(namespace) = io.of("/") else {
+                                                record_audio_error(
+                                                    &mut audio_emit_metrics,
+                                                    &mut audio_emit_errors,
+                                                );
+                                                continue;
+                                            };
+                                            let Some(socket) = namespace.get_socket(socket_id)
+                                            else {
+                                                audio_emit_metrics.record_drop();
+                                                client.mark_audio_dropped();
+                                                continue;
+                                            };
+                                            match socket
+                                                .emit("audio_frame", audio_frame_data.clone())
+                                            {
+                                                Ok(()) => {
                                                     client.mark_audio_sent();
+                                                    audio_emit_metrics.record(
+                                                        started.elapsed(),
+                                                        audio_bytes.len(),
+                                                    );
+                                                }
+                                                Err(error) => {
+                                                    record_audio_error(
+                                                        &mut audio_emit_metrics,
+                                                        &mut audio_emit_errors,
+                                                    );
+                                                    audio_emit_metrics.record_drop();
+                                                    client.mark_audio_dropped();
+                                                    tracing::warn!(%error, "failed to emit audio frame");
                                                 }
                                             }
                                         }
+                                    } else {
+                                        record_audio_error(
+                                            &mut audio_emit_metrics,
+                                            &mut audio_emit_errors,
+                                        );
+                                    }
+
+                                    if let Some(snapshot) = audio_emit_metrics.snapshot_if_due() {
+                                        tracing::info!(metric="audio_pipeline", stage="web_socket_emit",
+                                            stream_id=%origin.stream_id, frame_id=origin.frame_id,
+                                            frame_age_ms=?frame_age_ms, count=snapshot.count, bytes=snapshot.bytes,
+                                            drops=snapshot.drops, errors=snapshot.errors,
+                                            p50_us=snapshot.p50_us, p95_us=snapshot.p95_us,
+                                            p99_us=snapshot.p99_us, max_us=snapshot.max_us);
+                                    }
+                                    if let Some(snapshot) = audio_age_metrics.snapshot_if_due() {
+                                        tracing::info!(
+                                            metric = "audio_pipeline",
+                                            stage = "web_socket_emit_age",
+                                            count = snapshot.count,
+                                            p50_us = snapshot.p50_us,
+                                            p95_us = snapshot.p95_us,
+                                            p99_us = snapshot.p99_us,
+                                            max_us = snapshot.max_us
+                                        );
+                                    }
+                                }
+                                Err(error) => {
+                                    record_audio_error(
+                                        &mut audio_emit_metrics,
+                                        &mut audio_emit_errors,
+                                    );
+                                    tracing::warn!(%error, "rejected invalid browser audio frame");
+                                    if let Some(snapshot) = audio_emit_metrics.snapshot_if_due() {
+                                        tracing::info!(
+                                            metric = "audio_pipeline",
+                                            stage = "web_socket_emit",
+                                            count = snapshot.count,
+                                            bytes = snapshot.bytes,
+                                            drops = snapshot.drops,
+                                            errors = snapshot.errors,
+                                            p50_us = snapshot.p50_us,
+                                            p95_us = snapshot.p95_us,
+                                            p99_us = snapshot.p99_us,
+                                            max_us = snapshot.max_us
+                                        );
                                     }
                                 }
                             }
                         } else {
-                            tracing::error!("Invalid audio frame data type (expected BinaryArray from audio-converter)");
+                            record_audio_error(&mut audio_emit_metrics, &mut audio_emit_errors);
+                            tracing::error!("Invalid audio frame data type (expected BinaryArray)");
                         }
                     }
                     "video_frame" => {
@@ -2006,7 +2166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     "transcription" => {
-                        // Handle speech transcription from speech_recognizer
+                        // Handle transcription from central_speech_recognizer.
                         if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
                             if binary_array.len() > 0 {
                                 let transcription_data = binary_array.value(0);
@@ -2089,6 +2249,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 },
                 Event::Stop(_) => {
+                    if let Ok(clients) = state_for_video.video_clients.lock() {
+                        let deliveries_emitted: u64 = clients
+                            .iter()
+                            .filter_map(|client| {
+                                client.audio_frames_sent.lock().ok().map(|value| *value)
+                            })
+                            .sum();
+                        let client_drops: u64 = clients
+                            .iter()
+                            .filter_map(|client| {
+                                client.audio_frames_dropped.lock().ok().map(|value| *value)
+                            })
+                            .sum();
+                        tracing::info!(
+                            metric = "audio_pipeline_total",
+                            stage = "web_socket_emit",
+                            deliveries_emitted,
+                            sequence_drops = audio_sequence_drops,
+                            client_drops,
+                            errors = audio_emit_errors
+                        );
+                    }
                     tracing::info!("Stop event received");
                     break;
                 }
@@ -2257,6 +2439,26 @@ mod tests {
     }
 
     #[test]
+    fn browser_audio_payload_preserves_capture_identity() {
+        let origin = AudioFrameMetadata {
+            stream_id: uuid::Uuid::from_u128(42),
+            frame_id: 7,
+            capture_timestamp_ms: 1_717_000_000_000,
+            sample_rate: 16_000,
+            channels: 1,
+            sample_count: 2,
+            format: PcmSampleFormat::S16Le,
+        };
+        let payload = browser_audio_frame_payload(origin, Some("rover-a".into()), &[0, 1, 2, 3]);
+
+        assert_eq!(payload["stream_id"], origin.stream_id.to_string());
+        assert_eq!(payload["frame_id"], origin.frame_id);
+        assert_eq!(payload["capture_timestamp_ms"], origin.capture_timestamp_ms);
+        assert_eq!(payload["sample_count"], origin.sample_count);
+        assert_eq!(payload["data"].as_array().unwrap().len(), 4);
+    }
+
+    #[test]
     fn stream_demand_only_emits_aggregate_transitions() {
         let clients = Mutex::new(vec![
             ClientState::new("a".to_owned()),
@@ -2269,6 +2471,16 @@ mod tests {
         assert!(update_client_video_demand(&clients, "a", false, Some(15)).is_none());
         let stop = update_client_video_demand(&clients, "b", false, Some(15)).unwrap();
         assert!(!stop.video_enabled);
+    }
+
+    #[test]
+    fn audio_drop_accounting_is_separate_from_video_drops() {
+        let client = ClientState::new("client-a".to_owned());
+
+        client.mark_audio_dropped();
+
+        assert_eq!(*client.audio_frames_dropped.lock().unwrap(), 1);
+        assert_eq!(*client.frames_dropped.lock().unwrap(), 0);
     }
 
     #[test]

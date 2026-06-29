@@ -10,9 +10,8 @@ members = [
     # Orchestra (Workstation) - Fleet control hub
     "rover-kiwi/object_detector",
     "rover-kiwi/object_tracker",
-    "orchestra/speech_recognizer",
+    "orchestra/central_speech_recognizer",
     "orchestra/command_parser",
-    "orchestra/audio_converter",
     "orchestra/zenoh_bridge",
     "orchestra/kokoro_tts",
 
@@ -22,6 +21,8 @@ members = [
     "rover-kiwi/kornia_capture",
     "rover-kiwi/video_encoder",
     "rover-kiwi/audio_capture",
+    "rover-kiwi/audio_converter",
+    "rover-kiwi/edge_speech_recognizer",
     "rover-kiwi/audio_playback",
     "rover-kiwi/visual_servo_controller",
     "rover-kiwi/sherpa_tts",

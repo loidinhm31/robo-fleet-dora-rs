@@ -27,7 +27,7 @@ Communication between machines uses **Zenoh** (pub/sub protocol) for efficient r
 │  ┌────────▼─────────┐           │          │  │  ML Inference    │           │
 │  │  Heavy Compute   │           │   Zenoh  │  │  - YOLO Detect   │           │
 │  │  - Whisper STT   │◄──────────┼──────────┤► │  - OSNet ReID    │           │
-│  │  - Audio Convert │   P2P     │          │  │  - BoTSORT+CMC   │           │
+│  │  - Command NLU   │   P2P     │          │  │  - BoTSORT+CMC   │           │
 │  │                  │           │          │  └────────┬─────────┘           │
 │  └────────┬─────────┘           │          │           │                     │
 │           │                     │          │  ┌────────▼─────────┐           │
@@ -44,7 +44,7 @@ Communication between machines uses **Zenoh** (pub/sub protocol) for efficient r
 │                                 │          │                                 │
 │  Publishes:                     │          │  Publishes:                     │
 │  - Commands to rover            │          │  - JPEG video                   │
-│                                 │          │  - Raw audio (Float32)          │
+│                                 │          │  - PCM audio (Int16LE)          │
 │                                 │          │  - Telemetry                    │
 │                                 │          │  - Detections (tracked)         │
 │                                 │          │                                 │
@@ -61,16 +61,17 @@ robo-rover-dora/
 │   └── web_bridge/                 # Socket.IO server (runs on orchestra OR rover)
 │
 ├── orchestra/                      # Workstation-only nodes (heavy compute)
-│   ├── speech_recognizer/          # Whisper.cpp STT
+│   ├── central_speech_recognizer/  # Whisper.cpp STT for web microphone audio
 │   ├── command_parser/             # NLU pattern matching
-│   ├── audio_converter/            # Float32 → Int16LE
 │   ├── kokoro_tts/                 # High-quality TTS (Kokoro-82M, workstation audio, optional)
 │   ├── zenoh_bridge/               # Orchestra Zenoh bridge (orchestra-only)
 │   └── orchestra-dataflow.yml      # Orchestra Dora dataflow
 │
 ├── rover-kiwi/                     # Raspberry Pi nodes (hardware I/O + ML)
 │   ├── audio_capture/              # Microphone (cpal)
+│   ├── audio_converter/            # Float32 -> Int16LE before transport
 │   ├── audio_playback/             # Speaker output
+│   ├── edge_speech_recognizer/     # Future edge STT placeholder (disabled)
 │   ├── kornia_capture/             # Camera (GStreamer)
 │   ├── video_encoder/              # RGB8 -> JPEG for rover-side view output
 │   ├── object_detector/            # YOLOv12n inference
@@ -169,7 +170,7 @@ ZENOH_MODE=peer
 3. **JPEG view stream, audio, telemetry & detections** -> `rover/{entity_id}/*` topics via Zenoh
 4. **Orchestra receives** and forwards:
    - JPEG -> web-bridge (already encoded on rover)
-   - Float32 audio → speech-recognizer → command-parser
+   - Web microphone Float32 audio -> central-speech-recognizer -> command-parser
    - Tracked detections with ReID features → web-bridge (for web UI display)
 
 ### `kornia_capture` runtime notes
@@ -336,6 +337,43 @@ latency/CPU, bandwidth, frame-rate, error-rate, and servo-freshness gates.
 - Upstream `stream_control` transitions are sent only on `0 -> 1` and `1 -> 0`.
 - Disconnects, session expiry, and idle sweeps also clear demand.
 - `kornia_capture` gates only view-frame publication; local capture plus ML/tracking continue.
+
+### Binary Browser Audio and Bounded Playback
+
+**Decision**: Keep audio and video on the existing Socket.IO connection, but send browser audio as
+metadata plus a binary S16LE attachment. Replace timer-driven dequeue with bounded Web Audio timeline
+scheduling on frame arrival.
+
+```mermaid
+flowchart LR
+    Capture["Audio capture<br/>F32LE + capture identity"]
+    Converter["Rover audio converter<br/>F32LE to S16LE"]
+    RoverBridge[Rover Zenoh bridge]
+    OrchestraBridge[Orchestra Zenoh bridge]
+    WebBridge[Web bridge]
+    Browser["Browser audio scheduler<br/>bounded Web Audio horizon"]
+
+    Capture -->|Dora F32LE + metadata| Converter
+    Converter -->|Dora S16LE + preserved metadata| RoverBridge
+    RoverBridge -->|Versioned PCM packet| OrchestraBridge
+    OrchestraBridge -->|Dora S16LE + restored metadata| WebBridge
+    Converter -. direct mode .-> WebBridge
+    WebBridge -->|Socket.IO metadata + binary attachment| Browser
+```
+
+**Invariants**:
+- `audio_capture` assigns `stream_id`, `frame_id`, and `capture_timestamp_ms` once; downstream stages preserve them.
+- The Zenoh PCM envelope is versioned and validates format, dimensions, and payload length before decode.
+- Orchestra accepts bounded legacy F32LE packets during rollout and converts them safely to S16LE.
+- `audio_frame` carries no JSON byte array after cutover; only metadata is JSON-encoded.
+- The browser schedules each accepted frame directly on `AudioContext.currentTime`; no recursive
+  per-buffer timer controls playback.
+- Minimum, target, and maximum scheduled-ahead horizons are explicit and bounded. Late frames,
+  sequence gaps, duplicates, resets, and underruns are counted.
+- Socket.IO emit success is counted only after `emit` returns `Ok`; queue-full and disconnected errors
+  remain visible.
+- A second Socket.IO connection, AudioWorklet, codec migration, and WebRTC remain deferred until
+  Approach A metrics show they are needed.
 
 ### Phase 2 Benchmark
 

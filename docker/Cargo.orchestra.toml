@@ -8,9 +8,8 @@ members = [
     "common/web_bridge",
 
     # Orchestra (Workstation) - Fleet control hub
-    "orchestra/speech_recognizer",
+    "orchestra/central_speech_recognizer",
     "orchestra/command_parser",
-    "orchestra/audio_converter",
     "orchestra/zenoh_bridge",
     "orchestra/kokoro_tts",
 ]

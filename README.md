@@ -140,8 +140,9 @@ cd models/scripts
 **Whisper Model** (speech recognition):
 ```shell
 cd models
-# Download Whisper tiny model (recommended for Raspberry Pi 5)
-wget https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin -O ggml-tiny.bin
+# Download Whisper base model for the workstation recognizer
+mkdir -p .cache/ggml
+wget https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin -O .cache/ggml/ggml-base.bin
 ```
 
 For detailed model setup instructions, see [models/README.md](models/README.md).
@@ -205,7 +206,7 @@ The web UI displays:
 - **Video Feed**: Live camera with bounding box overlays
 
 #### Voice Commands
-1. **Enable microphone** in web UI or use rover's built-in microphone
+1. **Enable microphone** in the web UI
 2. **Speak commands** like:
    - "Move forward"
    - "Turn left"
@@ -239,7 +240,7 @@ Check - [ARCHITECTURE](ARCHITECTURE.md)
 
 **Audio & Voice:**
 - **audio-capture**: cpal-based audio capture (Rust)
-- **speech-recognizer**: Whisper.cpp speech-to-text (Raspberry Pi optimized)
+- **central-speech-recognizer**: Whisper.cpp speech-to-text for web microphone audio
 - **command-parser**: NLU for voice command intent extraction
 - **sherpa-tts** (rover): Lightweight VITS-Piper TTS for edge devices
 - **kokoro-tts** (orchestra): High-quality Kokoro-82M TTS (optional, workstation)
@@ -334,10 +335,10 @@ gst-camera:
 ### Speech Recognition & Voice Commands
 
 ```yaml
-speech-recognizer:
+central-speech-recognizer:
   env:
-    WHISPER_MODEL_PATH: "models/ggml-tiny.bin"  # tiny/base/small
-    SAMPLE_RATE: "16000"                         # Must match audio-capture
+    WHISPER_MODEL_PATH: "models/.cache/ggml/ggml-base.bin"
+    SAMPLE_RATE: "16000"                         # Must match web microphone audio
     BUFFER_DURATION_MS: "5000"                   # Audio buffer size
     CONFIDENCE_THRESHOLD: "0.5"                  # Min transcription confidence
     ENERGY_THRESHOLD: "0.02"                     # VAD threshold
@@ -561,7 +562,7 @@ pnpm check-types
 
 **Speech not recognized**:
 - Check microphone is working: `arecord -l`
-- Verify Whisper model downloaded: `ls -lh models/ggml-tiny.bin`
+- Verify Whisper model downloaded: `ls -lh models/.cache/ggml/ggml-base.bin`
 - Increase `BUFFER_DURATION_MS` for longer phrases (e.g., 7000ms)
 - Lower `ENERGY_THRESHOLD` if voice not detected (try 0.01)
 - Check `SAMPLE_RATE` matches audio-capture (must be 16000)
@@ -603,8 +604,8 @@ pnpm check-types
 - **Track State Management**: Negligible (<1ms)
 
 **Audio & Voice:**
-- **Audio Capture**: 16 kHz, Mono, 20 Hz chunks (50ms)
-- **Speech Recognition**: 1-2s latency (Whisper tiny on RPi5)
+- **Audio Capture**: 16 kHz, Mono, 20 Hz chunks (50ms); F32 locally, S16LE after rover conversion
+- **Speech Recognition**: Workstation central recognizer, 5s buffer by default (`ggml-base.bin`); web microphone input only
 - **TTS Synthesis** (rover): 2-3s initialization, real-time synthesis (Sherpa-ONNX VITS)
 - **TTS Synthesis** (orchestra, optional): 0.5-2s time-to-first-audio (Kokoro-82M)
 - **Walkie-talkie Latency**: <100ms on local network

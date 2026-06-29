@@ -26,9 +26,8 @@ COPY robo_rover_lib/Cargo.toml robo_rover_lib/
 
 # Copy orchestra node Cargo.toml files
 COPY common/web_bridge/Cargo.toml common/web_bridge/
-COPY orchestra/speech_recognizer/Cargo.toml orchestra/speech_recognizer/
+COPY orchestra/central_speech_recognizer/Cargo.toml orchestra/central_speech_recognizer/
 COPY orchestra/command_parser/Cargo.toml orchestra/command_parser/
-COPY orchestra/audio_converter/Cargo.toml orchestra/audio_converter/
 COPY orchestra/zenoh_bridge/Cargo.toml orchestra/zenoh_bridge/
 COPY orchestra/kokoro_tts/Cargo.toml orchestra/kokoro_tts/
 
@@ -38,12 +37,10 @@ RUN mkdir -p robo_rover_lib/src && \
 
 RUN mkdir -p common/web_bridge/src && \
     echo "fn main() {}" > common/web_bridge/src/main.rs && \
-    mkdir -p orchestra/speech_recognizer/src && \
-    echo "fn main() {}" > orchestra/speech_recognizer/src/main.rs && \
+    mkdir -p orchestra/central_speech_recognizer/src && \
+    echo "fn main() {}" > orchestra/central_speech_recognizer/src/main.rs && \
     mkdir -p orchestra/command_parser/src && \
     echo "fn main() {}" > orchestra/command_parser/src/main.rs && \
-    mkdir -p orchestra/audio_converter/src && \
-    echo "fn main() {}" > orchestra/audio_converter/src/main.rs && \
     mkdir -p orchestra/zenoh_bridge/src && \
     echo "fn main() {}" > orchestra/zenoh_bridge/src/main.rs && \
     mkdir -p orchestra/kokoro_tts/src && \
@@ -52,9 +49,8 @@ RUN mkdir -p common/web_bridge/src && \
 # Pre-build dependencies (this layer will be cached)
 RUN cargo build --release \
     -p web_bridge \
-    -p speech_recognizer \
+    -p central_speech_recognizer \
     -p command_parser \
-    -p audio_converter \
     -p orchestra_zenoh_bridge \
     || true
 
@@ -66,9 +62,8 @@ COPY orchestra orchestra/
 # Build all orchestra nodes
 RUN cargo build --release \
     -p web_bridge \
-    -p speech_recognizer \
+    -p central_speech_recognizer \
     -p command_parser \
-    -p audio_converter \
     -p orchestra_zenoh_bridge
 
 # =============================================================================
@@ -89,9 +84,8 @@ WORKDIR /app
 
 # Copy binaries from builder
 COPY --from=builder /build/target/release/web_bridge ./bin/
-COPY --from=builder /build/target/release/speech_recognizer ./bin/
+COPY --from=builder /build/target/release/central_speech_recognizer ./bin/
 COPY --from=builder /build/target/release/command_parser ./bin/
-COPY --from=builder /build/target/release/audio_converter ./bin/
 COPY --from=builder /build/target/release/orchestra_zenoh_bridge ./bin/
 COPY --from=builder /usr/local/cargo/bin/dora ./bin/
 
