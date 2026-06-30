@@ -41,5 +41,25 @@ pub fn init_tracing() -> DefaultGuard {
         .with(env_filter)
         .with(fmt_layer);
 
-    tracing::subscriber::set_default(subscriber)
+    let guard = tracing::subscriber::set_default(subscriber);
+
+    // Automatically configure XDG_RUNTIME_DIR on Unix if not set
+    #[cfg(unix)]
+    {
+        if std::env::var("XDG_RUNTIME_DIR").is_err() {
+            extern "C" {
+                fn getuid() -> u32;
+            }
+            let uid = unsafe { getuid() };
+            let path = format!("/run/user/{}", uid);
+            if std::path::Path::new(&path).exists() {
+                std::env::set_var("XDG_RUNTIME_DIR", &path);
+                tracing::info!("XDG_RUNTIME_DIR was not set. Automatically configured to '{}' for audio services", path);
+            } else {
+                tracing::warn!("XDG_RUNTIME_DIR was not set and '{}' does not exist. ALSA/PipeWire/PulseAudio may fail.", path);
+            }
+        }
+    }
+
+    guard
 }

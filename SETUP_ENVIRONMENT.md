@@ -75,6 +75,20 @@ ctl.!default {
 EOF
 ```
 
+> [!IMPORTANT]
+> **Headless / SSH / Non-Interactive Session Troubleshooting:**
+> If you run Dora dataflows over SSH, via background scripts, or from system services, the `XDG_RUNTIME_DIR` environment variable might not be set.
+> Since ALSA's PipeWire plugin relies on `XDG_RUNTIME_DIR` to locate the user's audio socket (e.g., `/run/user/1000/pipewire-0`), missing this variable results in the following warning/error:
+> `ALSA function 'snd_pcm_open' failed with error 'Host is down (112)'`
+>
+> **Fixes & Workarounds:**
+> 1. **Codebase Auto-recovery:** The codebase automatically detects missing `XDG_RUNTIME_DIR` at startup and maps it to `/run/user/<uid>` if that directory exists.
+> 2. **Manual Setup:** If you are running tools manually outside of standard entrypoints, export it in your terminal session before starting Dora:
+>    ```shell
+>    export XDG_RUNTIME_DIR=/run/user/$(id -u)
+>    ```
+
+
 ### Option B: Headless Raspberry Pi 4 / Raw ALSA (No Sound Server)
 If you are running on a Raspberry Pi 4 host without a running audio server (PipeWire/PulseAudio), route the ALSA default device directly to your USB microphone hardware (usually card 2 on Pi):
 ```shell
