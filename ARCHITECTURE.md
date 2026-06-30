@@ -341,8 +341,8 @@ latency/CPU, bandwidth, frame-rate, error-rate, and servo-freshness gates.
 ### Binary Browser Audio and Bounded Playback
 
 **Decision**: Keep audio and video on the existing Socket.IO connection, but send browser audio as
-metadata plus a binary S16LE attachment. Replace timer-driven dequeue with bounded Web Audio timeline
-scheduling on frame arrival.
+`audio_frame` metadata first plus exactly one binary S16LE attachment. Replace timer-driven dequeue
+with bounded Web Audio timeline scheduling on frame arrival.
 
 ```mermaid
 flowchart LR
@@ -358,18 +358,22 @@ flowchart LR
     RoverBridge -->|Versioned PCM packet| OrchestraBridge
     OrchestraBridge -->|Dora S16LE + restored metadata| WebBridge
     Converter -. direct mode .-> WebBridge
-    WebBridge -->|Socket.IO metadata + binary attachment| Browser
+    WebBridge -->|Socket.IO metadata + one binary attachment| Browser
 ```
 
 **Invariants**:
 - `audio_capture` assigns `stream_id`, `frame_id`, and `capture_timestamp_ms` once; downstream stages preserve them.
+- `capture_timestamp_ms` is authoritative; `timestamp` stays as a legacy alias only.
 - The Zenoh PCM envelope is versioned and validates format, dimensions, and payload length before decode.
-- Orchestra accepts bounded legacy F32LE packets during rollout and converts them safely to S16LE.
-- `audio_frame` carries no JSON byte array after cutover; only metadata is JSON-encoded.
-- The browser schedules each accepted frame directly on `AudioContext.currentTime`; no recursive
-  per-buffer timer controls playback.
-- Minimum, target, and maximum scheduled-ahead horizons are explicit and bounded. Late frames,
-  sequence gaps, duplicates, resets, and underruns are counted.
+- Orchestra accepts bounded legacy F32LE packets during the rollback window and converts them safely to S16LE.
+- `audio_frame` carries metadata first plus exactly one S16LE attachment; no JSON byte array after cutover.
+- Browser metadata uses `protocol_version = 1`.
+- Frontend keeps legacy JSON fallback only during the rollback window.
+- The browser applies a four-frame ordered pre-decode cap and records the corresponding drop metric before decode.
+- Phase 3 retains the existing recursive playback scheduler; Phase 4 will replace it with bounded
+  scheduling on `AudioContext.currentTime`.
+- Phase 4 will make minimum, target, and maximum scheduled-ahead horizons explicit and bounded.
+  Late frames, sequence gaps, duplicates, resets, and underruns are counted.
 - Socket.IO emit success is counted only after `emit` returns `Ok`; queue-full and disconnected errors
   remain visible.
 - A second Socket.IO connection, AudioWorklet, codec migration, and WebRTC remain deferred until

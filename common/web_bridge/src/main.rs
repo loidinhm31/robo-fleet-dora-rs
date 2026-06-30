@@ -145,6 +145,25 @@ fn record_audio_error(metrics: &mut MetricWindow, total_errors: &mut u64) {
     *total_errors = total_errors.saturating_add(1);
 }
 
+#[derive(Default)]
+struct AudioDeliveryErrorCounts {
+    input: u64,
+    socket_id: u64,
+    socket_missing: u64,
+    routing: u64,
+    emit: u64,
+}
+
+impl AudioDeliveryErrorCounts {
+    fn total(&self) -> u64 {
+        self.input
+            .saturating_add(self.socket_id)
+            .saturating_add(self.socket_missing)
+            .saturating_add(self.routing)
+            .saturating_add(self.emit)
+    }
+}
+
 fn touch_activity(clients: &Mutex<Vec<ClientState>>, socket_id: &str) {
     if let Ok(clients) = clients.lock() {
         if let Some(client) = clients.iter().find(|c| c.socket_id == socket_id) {
@@ -276,10 +295,7 @@ fn audio_frame_metadata(
             .map_err(|_| "sample_count exceeds u32")?,
         format: PcmSampleFormat::from_metadata_name(string("format")?)?,
     };
-    if metadata.format != PcmSampleFormat::S16Le {
-        return Err("browser audio input must be s16le".into());
-    }
-    metadata.validate_payload_len(payload_len)?;
+    validate_browser_pcm_payload(metadata, payload_len)?;
     let entity_id = parameters.get("entity_id").and_then(|value| match value {
         dora_node_api::Parameter::String(value) => Some(value.clone()),
         _ => None,
@@ -287,12 +303,11 @@ fn audio_frame_metadata(
     Ok((metadata, entity_id))
 }
 
-fn browser_audio_frame_payload(
-    metadata: AudioFrameMetadata,
-    entity_id: Option<String>,
-    payload: &[u8],
-) -> Value {
+fn browser_audio_frame_payload(metadata: AudioFrameMetadata, entity_id: Option<String>) -> Value {
+    let duration_ms = f64::from(metadata.sample_count) * 1_000.0
+        / (f64::from(metadata.sample_rate) * f64::from(metadata.channels));
     serde_json::json!({
+        "protocol_version": 1,
         "timestamp": metadata.capture_timestamp_ms,
         "capture_timestamp_ms": metadata.capture_timestamp_ms,
         "stream_id": metadata.stream_id.to_string(),
@@ -300,10 +315,30 @@ fn browser_audio_frame_payload(
         "sample_rate": metadata.sample_rate,
         "channels": metadata.channels,
         "sample_count": metadata.sample_count,
+        "duration_ms": duration_ms,
         "format": metadata.format.metadata_name(),
         "entity_id": entity_id,
-        "data": payload,
     })
+}
+
+fn validate_browser_pcm_payload(
+    metadata: AudioFrameMetadata,
+    payload_len: usize,
+) -> Result<(), String> {
+    if metadata.format != PcmSampleFormat::S16Le {
+        return Err("browser audio input must be s16le".into());
+    }
+
+    let expected_len = (metadata.sample_count as usize)
+        .checked_mul(PcmSampleFormat::S16Le.bytes_per_sample())
+        .ok_or_else(|| "browser PCM payload length overflow".to_string())?;
+    if payload_len != expected_len {
+        return Err(format!(
+            "browser PCM payload length mismatch: expected {expected_len}, got {payload_len}"
+        ));
+    }
+
+    metadata.validate_payload_len(payload_len)
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -1650,7 +1685,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut audio_emit_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut audio_age_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut audio_sequences: HashMap<String, AudioFrameSequenceTracker> = HashMap::new();
-    let mut audio_emit_errors = 0u64;
+    let mut audio_errors = AudioDeliveryErrorCounts::default();
     let mut audio_sequence_drops = 0u64;
 
     loop {
@@ -1663,7 +1698,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let started = Instant::now();
                         if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
                             if binary_array.len() != 1 {
-                                record_audio_error(&mut audio_emit_metrics, &mut audio_emit_errors);
+                                record_audio_error(
+                                    &mut audio_emit_metrics,
+                                    &mut audio_errors.input,
+                                );
                                 tracing::warn!("audio frame must contain exactly one payload");
                                 continue;
                             }
@@ -1686,7 +1724,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         Err(error) => {
                                             record_audio_error(
                                                 &mut audio_emit_metrics,
-                                                &mut audio_emit_errors,
+                                                &mut audio_errors.input,
                                             );
                                             tracing::warn!(%error, "rejected duplicate or regressed browser audio frame");
                                             continue;
@@ -1699,11 +1737,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if frame_age_ms.is_none() {
                                         record_audio_error(
                                             &mut audio_emit_metrics,
-                                            &mut audio_emit_errors,
+                                            &mut audio_errors.input,
                                         );
                                     }
                                     let audio_frame_data =
-                                        browser_audio_frame_payload(origin, entity_id, audio_bytes);
+                                        browser_audio_frame_payload(origin, entity_id);
 
                                     if let Ok(clients) = state_for_video.video_clients.lock() {
                                         for client in clients
@@ -1715,7 +1753,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 Err(error) => {
                                                     record_audio_error(
                                                         &mut audio_emit_metrics,
-                                                        &mut audio_emit_errors,
+                                                        &mut audio_errors.socket_id,
                                                     );
                                                     tracing::warn!(%error, "invalid audio client socket ID");
                                                     continue;
@@ -1726,7 +1764,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 Err(_) => {
                                                     record_audio_error(
                                                         &mut audio_emit_metrics,
-                                                        &mut audio_emit_errors,
+                                                        &mut audio_errors.routing,
                                                     );
                                                     continue;
                                                 }
@@ -1734,24 +1772,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             let Some(io) = io_guard.as_ref() else {
                                                 record_audio_error(
                                                     &mut audio_emit_metrics,
-                                                    &mut audio_emit_errors,
+                                                    &mut audio_errors.routing,
                                                 );
                                                 continue;
                                             };
                                             let Some(namespace) = io.of("/") else {
                                                 record_audio_error(
                                                     &mut audio_emit_metrics,
-                                                    &mut audio_emit_errors,
+                                                    &mut audio_errors.routing,
                                                 );
                                                 continue;
                                             };
                                             let Some(socket) = namespace.get_socket(socket_id)
                                             else {
+                                                record_audio_error(
+                                                    &mut audio_emit_metrics,
+                                                    &mut audio_errors.socket_missing,
+                                                );
                                                 audio_emit_metrics.record_drop();
                                                 client.mark_audio_dropped();
                                                 continue;
                                             };
                                             match socket
+                                                .bin(vec![audio_bytes.to_vec()])
                                                 .emit("audio_frame", audio_frame_data.clone())
                                             {
                                                 Ok(()) => {
@@ -1764,7 +1807,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 Err(error) => {
                                                     record_audio_error(
                                                         &mut audio_emit_metrics,
-                                                        &mut audio_emit_errors,
+                                                        &mut audio_errors.emit,
                                                     );
                                                     audio_emit_metrics.record_drop();
                                                     client.mark_audio_dropped();
@@ -1775,7 +1818,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     } else {
                                         record_audio_error(
                                             &mut audio_emit_metrics,
-                                            &mut audio_emit_errors,
+                                            &mut audio_errors.routing,
                                         );
                                     }
 
@@ -1802,7 +1845,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 Err(error) => {
                                     record_audio_error(
                                         &mut audio_emit_metrics,
-                                        &mut audio_emit_errors,
+                                        &mut audio_errors.input,
                                     );
                                     tracing::warn!(%error, "rejected invalid browser audio frame");
                                     if let Some(snapshot) = audio_emit_metrics.snapshot_if_due() {
@@ -1822,7 +1865,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         } else {
-                            record_audio_error(&mut audio_emit_metrics, &mut audio_emit_errors);
+                            record_audio_error(&mut audio_emit_metrics, &mut audio_errors.input);
                             tracing::error!("Invalid audio frame data type (expected BinaryArray)");
                         }
                     }
@@ -2268,7 +2311,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             deliveries_emitted,
                             sequence_drops = audio_sequence_drops,
                             client_drops,
-                            errors = audio_emit_errors
+                            input_errors = audio_errors.input,
+                            socket_id_errors = audio_errors.socket_id,
+                            socket_missing_errors = audio_errors.socket_missing,
+                            routing_errors = audio_errors.routing,
+                            emit_errors = audio_errors.emit,
+                            errors = audio_errors.total()
                         );
                     }
                     tracing::info!("Stop event received");
@@ -2439,8 +2487,60 @@ mod tests {
     }
 
     #[test]
-    fn browser_audio_payload_preserves_capture_identity() {
+    fn browser_audio_packet_uses_one_binary_attachment_and_metadata_only() {
         let origin = AudioFrameMetadata {
+            stream_id: uuid::Uuid::from_u128(42),
+            frame_id: 7,
+            capture_timestamp_ms: 1_717_000_000_000,
+            sample_rate: 16_000,
+            channels: 1,
+            sample_count: 800,
+            format: PcmSampleFormat::S16Le,
+        };
+        let payload = browser_audio_frame_payload(origin, Some("rover-a".into()));
+        let pcm = vec![0u8; 1_600];
+        let packet = Packet::bin_event("/", "audio_frame", payload, vec![pcm.clone()]);
+
+        match packet.inner {
+            PacketData::BinaryEvent(event, binary, None) => {
+                assert_eq!(event, "audio_frame");
+                assert_eq!(binary.bin, vec![pcm]);
+                assert_eq!(binary.data[0]["protocol_version"], 1);
+                assert_eq!(binary.data[0]["stream_id"], origin.stream_id.to_string());
+                assert_eq!(binary.data[0]["frame_id"], origin.frame_id);
+                assert_eq!(
+                    binary.data[0]["capture_timestamp_ms"],
+                    origin.capture_timestamp_ms
+                );
+                assert_eq!(binary.data[0]["sample_count"], origin.sample_count);
+                assert_eq!(binary.data[0]["duration_ms"], 50.0);
+                assert_eq!(binary.data[0]["entity_id"], "rover-a");
+                assert!(binary.data[0].get("data").is_none());
+                assert_eq!(binary.data[1]["_placeholder"], true);
+                assert_eq!(binary.data[1]["num"], 0);
+            }
+            other => panic!("expected binary event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn browser_pcm_validation_accepts_standard_s16le_frame() {
+        let metadata = AudioFrameMetadata {
+            stream_id: uuid::Uuid::from_u128(42),
+            frame_id: 7,
+            capture_timestamp_ms: 1_717_000_000_000,
+            sample_rate: 16_000,
+            channels: 1,
+            sample_count: 800,
+            format: PcmSampleFormat::S16Le,
+        };
+
+        assert!(validate_browser_pcm_payload(metadata, 1_600).is_ok());
+    }
+
+    #[test]
+    fn browser_pcm_validation_rejects_format_and_length_mismatches() {
+        let metadata = AudioFrameMetadata {
             stream_id: uuid::Uuid::from_u128(42),
             frame_id: 7,
             capture_timestamp_ms: 1_717_000_000_000,
@@ -2449,13 +2549,17 @@ mod tests {
             sample_count: 2,
             format: PcmSampleFormat::S16Le,
         };
-        let payload = browser_audio_frame_payload(origin, Some("rover-a".into()), &[0, 1, 2, 3]);
 
-        assert_eq!(payload["stream_id"], origin.stream_id.to_string());
-        assert_eq!(payload["frame_id"], origin.frame_id);
-        assert_eq!(payload["capture_timestamp_ms"], origin.capture_timestamp_ms);
-        assert_eq!(payload["sample_count"], origin.sample_count);
-        assert_eq!(payload["data"].as_array().unwrap().len(), 4);
+        assert!(validate_browser_pcm_payload(metadata, 3).is_err());
+        assert!(validate_browser_pcm_payload(metadata, 6).is_err());
+        assert!(validate_browser_pcm_payload(
+            AudioFrameMetadata {
+                format: PcmSampleFormat::F32Le,
+                ..metadata
+            },
+            8,
+        )
+        .is_err());
     }
 
     #[test]
