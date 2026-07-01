@@ -376,6 +376,10 @@ flowchart LR
   Late frames, sequence gaps, duplicates, resets, and underruns are counted.
 - Socket.IO emit success is counted only after `emit` returns `Ok`; queue-full and disconnected errors
   remain visible.
+- Process-level `Arc<AudioDeliveryCounters>` (atomic, `Ordering::Relaxed`) lives on `SharedState` and is
+  incremented next to every per-client counter mutation, so the shutdown `audio_pipeline_total` log
+  reports lifetime totals (frames sent, frames dropped, client disconnects) that survive client
+  disconnects. Per-client `ClientState` counters remain for live per-client debugging.
 - A second Socket.IO connection, AudioWorklet, codec migration, and WebRTC remain deferred until
   Approach A metrics show they are needed.
 

@@ -35,7 +35,7 @@ A hybrid robotic rover control system with autonomous object tracking and visual
 - **Natural Language Understanding** with Aho-Corasick pattern matching
 - **Text-to-Speech** with dual implementation:
   - **Rover**: Sherpa-ONNX VITS-Piper (lightweight, edge-optimized)
-  - **Orchestra**: Kokoro-82M (high-quality, optional for workstation)
+  - **Orchestra**: Kokoro-82M (high-quality, currently wired into the orchestra dataflow as `kokoro-tts`)
 - **Audio Playback** for walkie-talkie/intercom functionality
 - **Multi-modal Voice Communication** (command, feedback, and direct streaming)
 
@@ -243,7 +243,7 @@ Check - [ARCHITECTURE](ARCHITECTURE.md)
 - **central-speech-recognizer**: Whisper.cpp speech-to-text for web microphone audio
 - **command-parser**: NLU for voice command intent extraction
 - **sherpa-tts** (rover): Lightweight VITS-Piper TTS for edge devices
-- **kokoro-tts** (orchestra): High-quality Kokoro-82M TTS (optional, workstation)
+- **kokoro-tts** (orchestra): High-quality Kokoro-82M TTS (currently wired into the orchestra dataflow)
 - **audio-playback**: Real-time audio playback for walkie-talkie mode
 
 **Control & Communication:**
@@ -357,7 +357,7 @@ sherpa-tts:
     TTS_PROVIDER: "cpu"                          # Execution provider
     LD_LIBRARY_PATH: "target/release"            # sherpa-onnx library path
 
-# Orchestra TTS (High-quality, optional - currently disabled)
+# Orchestra TTS (High-quality, currently wired into the orchestra dataflow)
 kokoro-tts:
   env:
     TTS_VOICE: "bf_emma"                         # Voice style
@@ -369,7 +369,7 @@ kokoro-tts:
 - Optimized for edge devices with minimal resource usage
 - Apache 2.0 license
 
-**Kokoro Voice Styles** (orchestra, optional):
+**Kokoro Voice Styles** (orchestra):
 - `af` / `af_sky` - American Female
 - `af_sarah` - American Female (Sarah)
 - `bf_emma` - British Female (Emma)
@@ -577,7 +577,7 @@ pnpm check-types
 
 **TTS not working on orchestra** (if enabled):
 - Verify Kokoro models downloaded: `ls -lh models/.cache/kokoros/kokoro-v1.0.onnx`
-- Uncomment kokoro-tts node in orchestra-dataflow.yml
+- Confirm the `kokoro-tts` node is active in `orchestra-dataflow.yml` (no longer commented out by default)
 - Check audio output device: `pactl list sinks`
 - Increase `TTS_VOLUME` in kokoro-tts config
 
@@ -607,7 +607,7 @@ pnpm check-types
 - **Audio Capture**: 16 kHz, Mono, 20 Hz chunks (50ms); F32 locally, S16LE after rover conversion
 - **Speech Recognition**: Workstation central recognizer, 5s buffer by default (`ggml-base.bin`); web microphone input only
 - **TTS Synthesis** (rover): 2-3s initialization, real-time synthesis (Sherpa-ONNX VITS)
-- **TTS Synthesis** (orchestra, optional): 0.5-2s time-to-first-audio (Kokoro-82M)
+- **TTS Synthesis** (orchestra): 0.5-2s time-to-first-audio (Kokoro-82M)
 - **Walkie-talkie Latency**: <100ms on local network
 
 **Network:**
@@ -751,7 +751,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [whisper-rs](https://github.com/tazz4843/whisper-rs) - Rust bindings for Whisper
 - [Sherpa-ONNX](https://github.com/k2-fsa/sherpa-onnx) - Lightweight edge TTS (rover)
 - [sherpa-rs](https://github.com/thewh1teagle/sherpa-rs) - Rust bindings for Sherpa-ONNX
-- [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) - High-quality TTS (orchestra, optional)
+- [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) - High-quality TTS (orchestra)
 - [Aho-Corasick](https://docs.rs/aho-corasick/) - Efficient pattern matching
 
 **Web & UI:**

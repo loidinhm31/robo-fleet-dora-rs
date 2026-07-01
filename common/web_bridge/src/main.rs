@@ -41,6 +41,9 @@ use security::{
     CommandRateLimiter, IpRateLimiter, SessionRegistry,
 };
 
+mod audio_counters;
+use audio_counters::AudioDeliveryCounters;
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct JointPositions {
     pub shoulder_pan: f64,
@@ -411,6 +414,10 @@ struct SharedState {
     pub session_registry: Arc<SessionRegistry>,
     pub fleet_status: Arc<Mutex<FleetStatus>>,
     pub active_rovers_status: Arc<Mutex<ActiveRoversStatus>>,
+    /// Process-level cumulative audio delivery counters. Lives in
+    /// `SharedState` (not on `ClientState`) so lifetime totals survive
+    /// client disconnects. See `audio_counters::AudioDeliveryCounters`.
+    pub audio_counters: Arc<AudioDeliveryCounters>,
 }
 
 impl SharedState {
@@ -461,6 +468,7 @@ impl SharedState {
             session_registry: Arc::new(SessionRegistry::new()),
             fleet_status: Arc::new(Mutex::new(fleet_status)),
             active_rovers_status: Arc::new(Mutex::new(active_rovers_status)),
+            audio_counters: Arc::new(AudioDeliveryCounters::new()),
         }
     }
 }
@@ -1046,6 +1054,11 @@ fn setup_socketio(
                     .push(command);
             }
             shared_state_clone.session_registry.remove(&socket_id);
+            // Process-level cumulative: this client's per-client counters
+            // are dropped by `remove_client_and_stream_transition`, but
+            // the cumulative counters in `SharedState` retain all of the
+            // work the bridge did for this client during its lifetime.
+            shared_state_clone.audio_counters.record_client_disconnect();
         });
 
         } // end async move
@@ -1159,6 +1172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sweep_registry = shared_state.session_registry.clone();
     let sweep_clients = shared_state.video_clients.clone();
     let sweep_stream_queue = shared_state.stream_command_queue.clone();
+    let sweep_audio_counters = shared_state.audio_counters.clone();
     let sweep_io = io.clone();
     tokio::spawn(async move {
         tracing::info!("Session sweep task started (interval: 60s)");
@@ -1172,6 +1186,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 {
                     sweep_stream_queue.lock().unwrap().push(command);
                 }
+                // Process-level cumulative: sweep-driven disconnects must
+                // count toward the lifetime client_disconnects total, and
+                // the per-client counters we just dropped are still
+                // represented in the cumulative emit totals.
+                sweep_audio_counters.record_client_disconnect();
                 if let Ok(sid) = socket_id.parse() {
                     if let Some(ns) = sweep_io.of("/") {
                         if let Some(socket) = ns.get_socket(sid) {
@@ -1189,6 +1208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Background sweep: disconnect idle clients exceeding IDLE_TIMEOUT_SECONDS
     let idle_clients = shared_state.video_clients.clone();
     let idle_stream_queue = shared_state.stream_command_queue.clone();
+    let idle_audio_counters = shared_state.audio_counters.clone();
     let idle_io = io.clone();
     tokio::spawn(async move {
         tracing::info!(
@@ -1222,6 +1242,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 {
                     idle_stream_queue.lock().unwrap().push(command);
                 }
+                // Process-level cumulative: idle-sweep-driven disconnects
+                // must count toward the lifetime client_disconnects total.
+                idle_audio_counters.record_client_disconnect();
                 if let Ok(sid) = socket_id.parse() {
                     if let Some(ns) = idle_io.of("/") {
                         if let Some(socket) = ns.get_socket(sid) {
@@ -1720,6 +1743,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 .record_drops(observation.missing_frames);
                                             audio_sequence_drops = audio_sequence_drops
                                                 .saturating_add(observation.missing_frames);
+                                            // Process-level cumulative: these drops
+                                            // would otherwise be lost on client
+                                            // disconnect.
+                                            state_for_video
+                                                .audio_counters
+                                                .record_sequence_drops(observation.missing_frames);
                                         }
                                         Err(error) => {
                                             record_audio_error(
@@ -1791,6 +1820,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 );
                                                 audio_emit_metrics.record_drop();
                                                 client.mark_audio_dropped();
+                                                // Process-level cumulative: this
+                                                // drop would otherwise be lost when
+                                                // the client disconnects.
+                                                state_for_video
+                                                    .audio_counters
+                                                    .record_emit_drop();
                                                 continue;
                                             };
                                             match socket
@@ -1799,6 +1834,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             {
                                                 Ok(()) => {
                                                     client.mark_audio_sent();
+                                                    // Process-level cumulative: must
+                                                    // move in lockstep with the
+                                                    // per-client counter so totals
+                                                    // survive client disconnect.
+                                                    state_for_video
+                                                        .audio_counters
+                                                        .record_emit_success();
                                                     audio_emit_metrics.record(
                                                         started.elapsed(),
                                                         audio_bytes.len(),
@@ -1811,6 +1853,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     );
                                                     audio_emit_metrics.record_drop();
                                                     client.mark_audio_dropped();
+                                                    // Process-level cumulative: emit
+                                                    // errors must persist past
+                                                    // disconnect.
+                                                    state_for_video
+                                                        .audio_counters
+                                                        .record_emit_drop();
                                                     tracing::warn!(%error, "failed to emit audio frame");
                                                 }
                                             }
@@ -2292,33 +2340,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 },
                 Event::Stop(_) => {
-                    if let Ok(clients) = state_for_video.video_clients.lock() {
-                        let deliveries_emitted: u64 = clients
-                            .iter()
-                            .filter_map(|client| {
-                                client.audio_frames_sent.lock().ok().map(|value| *value)
-                            })
-                            .sum();
-                        let client_drops: u64 = clients
-                            .iter()
-                            .filter_map(|client| {
-                                client.audio_frames_dropped.lock().ok().map(|value| *value)
-                            })
-                            .sum();
-                        tracing::info!(
-                            metric = "audio_pipeline_total",
-                            stage = "web_socket_emit",
-                            deliveries_emitted,
-                            sequence_drops = audio_sequence_drops,
-                            client_drops,
-                            input_errors = audio_errors.input,
-                            socket_id_errors = audio_errors.socket_id,
-                            socket_missing_errors = audio_errors.socket_missing,
-                            routing_errors = audio_errors.routing,
-                            emit_errors = audio_errors.emit,
-                            errors = audio_errors.total()
-                        );
-                    }
+                    // Process-level cumulative totals survive client
+                    // disconnects, so the shutdown log now reports the
+                    // actual lifetime work the bridge performed rather
+                    // than just the work for the still-connected subset
+                    // of clients. The per-client counters remain in
+                    // `ClientState` for live per-client debugging.
+                    let cumulative = state_for_video.audio_counters.cumulative_totals();
+                    let still_connected = state_for_video
+                        .video_clients
+                        .lock()
+                        .map(|clients| clients.len())
+                        .unwrap_or(0);
+                    let per_client_sends: u64 = state_for_video
+                        .video_clients
+                        .lock()
+                        .ok()
+                        .map(|clients| {
+                            clients
+                                .iter()
+                                .filter_map(|c| c.audio_frames_sent.lock().ok().map(|v| *v))
+                                .sum()
+                        })
+                        .unwrap_or(0);
+                    let per_client_drops: u64 = state_for_video
+                        .video_clients
+                        .lock()
+                        .ok()
+                        .map(|clients| {
+                            clients
+                                .iter()
+                                .filter_map(|c| c.audio_frames_dropped.lock().ok().map(|v| *v))
+                                .sum()
+                        })
+                        .unwrap_or(0);
+                    tracing::info!(
+                        metric = "audio_pipeline_total",
+                        stage = "web_socket_emit",
+                        deliveries_emitted = cumulative.frames_sent,
+                        sequence_drops = audio_sequence_drops,
+                        client_drops = cumulative.frames_dropped,
+                        per_client_sends_still_connected = per_client_sends,
+                        per_client_drops_still_connected = per_client_drops,
+                        still_connected_clients = still_connected,
+                        lifetime_client_disconnects = cumulative.client_disconnects,
+                        input_errors = audio_errors.input,
+                        socket_id_errors = audio_errors.socket_id,
+                        socket_missing_errors = audio_errors.socket_missing,
+                        routing_errors = audio_errors.routing,
+                        emit_errors = audio_errors.emit,
+                        errors = audio_errors.total()
+                    );
                     tracing::info!("Stop event received");
                     break;
                 }

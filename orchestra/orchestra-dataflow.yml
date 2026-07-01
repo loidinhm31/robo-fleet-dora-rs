@@ -115,16 +115,16 @@ nodes:
       CONFIDENCE_THRESHOLD: "0.7"
 
   # Kokoro TTS - High-quality neural TTS for workstation audio
-#  - id: kokoro-tts
-#    build: cargo build --release -p kokoro_tts
-#    path: ../target/release/kokoro_tts
-#    inputs:
-#      tts_command_parser: command-parser/tts_command
-#      tts_command_web: web-bridge/tts_command
-#    env:
-#      RUST_LOG: info
-#      TTS_VOICE: "bf_emma"
-#      TTS_VOLUME: "0.8"
+  - id: kokoro-tts
+    build: cargo build --release -p kokoro_tts
+    path: ../target/release/kokoro_tts
+    inputs:
+      tts_command_parser: command-parser/tts_command
+      tts_command_web: web-bridge/tts_command
+    env:
+      RUST_LOG: info
+      TTS_VOICE: "bf_emma"
+      TTS_VOLUME: "0.8"
 
   # Web bridge - Fleet control with entity selection
   - id: web-bridge
