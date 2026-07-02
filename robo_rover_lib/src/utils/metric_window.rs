@@ -1,7 +1,6 @@
 use std::time::{Duration, Instant};
 
 const MAX_SAMPLES: usize = 4096;
-
 /// Returns wall-clock age, rejecting timestamps that are in the future.
 pub fn capture_age_ms(capture_timestamp_ms: u64) -> Option<u64> {
     let now_ms: u64 = std::time::SystemTime::now()
@@ -74,14 +73,12 @@ impl MetricWindow {
     pub fn record_drops(&mut self, count: u64) {
         self.drops = self.drops.saturating_add(count);
     }
+
     pub fn record_error(&mut self) {
         self.errors += 1;
     }
 
-    pub fn snapshot_if_due(&mut self) -> Option<MetricSnapshot> {
-        if self.started_at.elapsed() < self.interval {
-            return None;
-        }
+    pub fn snapshot(&mut self) -> MetricSnapshot {
         self.samples_us.sort_unstable();
         let snapshot = MetricSnapshot {
             count: self.count,
@@ -93,13 +90,24 @@ impl MetricWindow {
             p99_us: percentile(&self.samples_us, 99),
             max_us: self.samples_us.last().copied().unwrap_or(0),
         };
+        self.reset();
+        snapshot
+    }
+
+    fn reset(&mut self) {
         self.started_at = Instant::now();
         self.samples_us.clear();
         self.count = 0;
         self.bytes = 0;
         self.drops = 0;
         self.errors = 0;
-        Some(snapshot)
+    }
+
+    pub fn snapshot_if_due(&mut self) -> Option<MetricSnapshot> {
+        if self.started_at.elapsed() < self.interval {
+            return None;
+        }
+        Some(self.snapshot())
     }
 }
 

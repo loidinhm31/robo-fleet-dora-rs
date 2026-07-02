@@ -5721,6 +5721,7 @@ name = "robo_rover_lib"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "cpal",
  "eyre",
  "nalgebra 0.33.2",
  "serde",
