@@ -1823,9 +1823,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 // Process-level cumulative: this
                                                 // drop would otherwise be lost when
                                                 // the client disconnects.
-                                                state_for_video
-                                                    .audio_counters
-                                                    .record_emit_drop();
+                                                state_for_video.audio_counters.record_emit_drop();
                                                 continue;
                                             };
                                             match socket

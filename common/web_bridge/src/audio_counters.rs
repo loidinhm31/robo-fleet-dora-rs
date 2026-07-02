@@ -121,7 +121,9 @@ impl std::ops::Add for CumulativeTotals {
         CumulativeTotals {
             frames_sent: self.frames_sent.saturating_add(rhs.frames_sent),
             frames_dropped: self.frames_dropped.saturating_add(rhs.frames_dropped),
-            client_disconnects: self.client_disconnects.saturating_add(rhs.client_disconnects),
+            client_disconnects: self
+                .client_disconnects
+                .saturating_add(rhs.client_disconnects),
         }
     }
 }
@@ -229,9 +231,18 @@ mod tests {
 
         // Totals now reflect BOTH clients' lifetimes.
         let snapshot = shared.cumulative_totals();
-        assert_eq!(snapshot.frames_sent, 15, "second client's sends must accumulate");
-        assert_eq!(snapshot.frames_dropped, 2, "drops from first client must persist");
-        assert_eq!(snapshot.client_disconnects, 2, "disconnect counter must increment");
+        assert_eq!(
+            snapshot.frames_sent, 15,
+            "second client's sends must accumulate"
+        );
+        assert_eq!(
+            snapshot.frames_dropped, 2,
+            "drops from first client must persist"
+        );
+        assert_eq!(
+            snapshot.client_disconnects, 2,
+            "disconnect counter must increment"
+        );
     }
 
     /// Multiple clients operating concurrently must not lose increments.
@@ -305,4 +316,3 @@ mod tests {
         assert_eq!(combined.client_disconnects, u64::MAX);
     }
 }
-
