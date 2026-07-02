@@ -11,10 +11,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 
-# Whisper for speech recognition
-whisper-rs = "0.12"
-
-# Audio processing
-hound = "3.5"  # WAV file support for Whisper input
+# Official Sherpa runtime. Static linkage keeps the Orchestra binary portable.
+sherpa-onnx = { version = "=1.13.3", default-features = false, features = ["static"] }
 
 robo_rover_lib = { path = "../../robo_rover_lib" }

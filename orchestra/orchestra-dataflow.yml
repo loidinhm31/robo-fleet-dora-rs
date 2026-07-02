@@ -82,7 +82,8 @@ nodes:
       AUDIO_SAMPLE_RATE: "16000"
       AUDIO_CHANNELS: "1"
 
-  # Speech recognizer - Whisper.cpp STT
+  # Speech recognizer - Phase 02 model probe only; audio runtime lands in Phase 03.
+  # Do not deploy this intermediate dataflow as production speech recognition.
   - id: central-speech-recognizer
     build: cargo build --release -p central_speech_recognizer
     path: ../target/release/central_speech_recognizer
@@ -92,11 +93,14 @@ nodes:
       - transcription  # SpeechTranscription
     env:
       RUST_LOG: info
-      WHISPER_MODEL_PATH: "../models/.cache/ggml/ggml-base.bin"
-      SAMPLE_RATE: "16000"
-      BUFFER_DURATION_MS: "5000"
-      CONFIDENCE_THRESHOLD: "0.5"
-      ENERGY_THRESHOLD: "0.02"
+      STT_PROFILE: "${STT_PROFILE:-en-vad-offline}"
+      STT_MODEL_ROOT: "${STT_MODEL_ROOT:-../models/.cache/sherpa-onnx/asr}"
+      STT_NUM_THREADS: "${STT_NUM_THREADS:-2}"
+      STT_VAD_THRESHOLD: "${STT_VAD_THRESHOLD:-0.5}"
+      STT_VAD_MIN_SILENCE_SECONDS: "${STT_VAD_MIN_SILENCE_SECONDS:-0.25}"
+      STT_VAD_MIN_SPEECH_SECONDS: "${STT_VAD_MIN_SPEECH_SECONDS:-0.25}"
+      STT_VAD_MAX_SPEECH_SECONDS: "${STT_VAD_MAX_SPEECH_SECONDS:-8.0}"
+      STT_DECODE_QUEUE_CAPACITY: "${STT_DECODE_QUEUE_CAPACITY:-8}"
 
   # Command parser - NLU with pattern matching
   - id: command-parser

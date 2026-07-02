@@ -19,11 +19,78 @@ mkdir -p "$MODELS_DIR/ggml"
 mkdir -p "$MODELS_DIR/yolo"
 mkdir -p "$MODELS_DIR/reid"
 mkdir -p "$MODELS_DIR/sherpa-onnx"
+ASR_MODELS_DIR="$MODELS_DIR/sherpa-onnx/asr"
+mkdir -p "$ASR_MODELS_DIR/silero"
+
+have_required_files() {
+    local base_dir="$1"
+    shift
+    local relative_path
+    for relative_path in "$@"; do
+        [ -s "$base_dir/$relative_path" ] || return 1
+    done
+}
+
+download_file() {
+    local url="$1"
+    local destination="$2"
+    local temporary="${destination}.part"
+
+    if [ -s "$destination" ]; then
+        echo "  ✓ $(basename "$destination") already exists, skipping download"
+        return
+    fi
+
+    rm -f "$temporary"
+    wget -q --show-progress -O "$temporary" "$url"
+    [ -s "$temporary" ] || { rm -f "$temporary"; return 1; }
+    mv "$temporary" "$destination"
+}
+
+download_asr_bundle() {
+    local name="$1"
+    local url="$2"
+    shift 2
+    local destination="$ASR_MODELS_DIR/$name"
+    local archive="$ASR_MODELS_DIR/.${name}.tar.bz2.part"
+    local extract_dir="$ASR_MODELS_DIR/.${name}.extract.$$"
+
+    if have_required_files "$destination" "$@"; then
+        echo "  ✓ $name already valid, skipping download"
+        return
+    fi
+
+    rm -rf "$extract_dir"
+    rm -f "$archive"
+    mkdir -p "$extract_dir"
+    if ! wget -q --show-progress -O "$archive" "$url"; then
+        rm -rf "$extract_dir"
+        rm -f "$archive"
+        return 1
+    fi
+    if ! tar xjf "$archive" -C "$extract_dir"; then
+        rm -rf "$extract_dir"
+        rm -f "$archive"
+        return 1
+    fi
+    if ! have_required_files "$extract_dir/$name" "$@"; then
+        echo "  ✗ $name archive did not contain the expected files"
+        rm -rf "$extract_dir"
+        rm -f "$archive"
+        return 1
+    fi
+
+    rm -rf "$destination"
+    mv "$extract_dir/$name" "$destination"
+    rm -rf "$extract_dir"
+    rm -f "$archive"
+    echo "  ✓ $name downloaded and validated"
+}
 
 # =============================================================================
 # 1. Whisper GGML Model (for Orchestra speech recognition)
 # =============================================================================
-echo "[1/4] Downloading Whisper GGML base model (~142 MB)..."
+echo "[1/7] Downloading Whisper GGML base model for rollback (~142 MB)..."
 if [ -f "$MODELS_DIR/ggml/ggml-base.bin" ]; then
     echo "  ✓ Whisper model already exists, skipping download"
 else
@@ -33,10 +100,45 @@ else
 fi
 
 # =============================================================================
-# 2. Sherpa-ONNX TTS Model (for Rover TTS)
+# 2. Sherpa-ONNX Silero VAD (for Orchestra speech recognition)
 # =============================================================================
 echo ""
-echo "[2/4] Downloading Sherpa-ONNX VITS TTS model (~21 MB)..."
+echo "[2/7] Downloading Sherpa-ONNX Silero VAD..."
+download_file \
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx" \
+    "$ASR_MODELS_DIR/silero/silero_vad.onnx"
+
+# =============================================================================
+# 3. English offline Zipformer ASR bundle
+# =============================================================================
+echo ""
+echo "[3/7] Downloading English offline Zipformer ASR bundle..."
+EN_ASR_BUNDLE="icefall-asr-multidataset-pruned_transducer_stateless7-2023-05-04"
+download_asr_bundle "$EN_ASR_BUNDLE" \
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${EN_ASR_BUNDLE}.tar.bz2" \
+    "exp/encoder-epoch-30-avg-4.int8.onnx" \
+    "exp/decoder-epoch-30-avg-4.onnx" \
+    "exp/joiner-epoch-30-avg-4.int8.onnx" \
+    "data/lang_bpe_500/tokens.txt"
+
+# =============================================================================
+# 4. Vietnamese offline Zipformer ASR bundle
+# =============================================================================
+echo ""
+echo "[4/7] Downloading Vietnamese offline Zipformer ASR bundle..."
+VI_ASR_BUNDLE="sherpa-onnx-zipformer-vi-30M-int8-2026-02-09"
+download_asr_bundle "$VI_ASR_BUNDLE" \
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${VI_ASR_BUNDLE}.tar.bz2" \
+    "encoder.int8.onnx" \
+    "decoder.onnx" \
+    "joiner.int8.onnx" \
+    "tokens.txt"
+
+# =============================================================================
+# 5. Sherpa-ONNX TTS Model (for Rover TTS)
+# =============================================================================
+echo ""
+echo "[5/7] Downloading Sherpa-ONNX VITS TTS model (~21 MB)..."
 if [ -d "$MODELS_DIR/sherpa-onnx/vits-piper-en_US-lessac-medium" ]; then
     echo "  ✓ Sherpa-ONNX model already exists, skipping download"
 else
@@ -60,10 +162,10 @@ if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "armv7l" ]; then
 fi
 
 # =============================================================================
-# 3. YOLO Model (requires PyTorch export on x86_64)
+# 6. YOLO Model (requires PyTorch export on x86_64)
 # =============================================================================
 echo ""
-echo "[3/4] Exporting YOLO model..."
+echo "[6/7] Exporting YOLO model..."
 if [ -f "$MODELS_DIR/yolo/yolo12n.onnx" ]; then
     echo "  ✓ YOLO model already exists, skipping export"
 elif [ "$CAN_EXPORT" = false ]; then
@@ -83,10 +185,10 @@ else
 fi
 
 # =============================================================================
-# 4. OSNet ReID Model (requires PyTorch export on x86_64)
+# 7. OSNet ReID Model (requires PyTorch export on x86_64)
 # =============================================================================
 echo ""
-echo "[4/4] Exporting OSNet ReID model..."
+echo "[7/7] Exporting OSNet ReID model..."
 if [ -f "$MODELS_DIR/reid/osnet_x0_25.onnx" ]; then
     echo "  ✓ OSNet ReID model already exists, skipping export"
 elif [ "$CAN_EXPORT" = false ]; then
@@ -163,6 +265,30 @@ if [ -d "$MODELS_DIR/sherpa-onnx/vits-piper-en_US-lessac-medium" ]; then
     echo "  ✓ Sherpa-ONNX TTS (Rover): $MODELS_DIR/sherpa-onnx/vits-piper-en_US-lessac-medium"
 else
     echo "  ✗ Sherpa-ONNX TTS (Rover): MISSING"
+    MODELS_READY=false
+fi
+
+if [ -s "$ASR_MODELS_DIR/silero/silero_vad.onnx" ]; then
+    echo "  ✓ Silero VAD (Orchestra): $ASR_MODELS_DIR/silero/silero_vad.onnx"
+else
+    echo "  ✗ Silero VAD (Orchestra): MISSING"
+    MODELS_READY=false
+fi
+
+if have_required_files "$ASR_MODELS_DIR/$EN_ASR_BUNDLE" \
+    "exp/encoder-epoch-30-avg-4.int8.onnx" "exp/decoder-epoch-30-avg-4.onnx" \
+    "exp/joiner-epoch-30-avg-4.int8.onnx" "data/lang_bpe_500/tokens.txt"; then
+    echo "  ✓ English ASR (Orchestra): $ASR_MODELS_DIR/$EN_ASR_BUNDLE"
+else
+    echo "  ✗ English ASR (Orchestra): MISSING"
+    MODELS_READY=false
+fi
+
+if have_required_files "$ASR_MODELS_DIR/$VI_ASR_BUNDLE" \
+    "encoder.int8.onnx" "decoder.onnx" "joiner.int8.onnx" "tokens.txt"; then
+    echo "  ✓ Vietnamese ASR (Orchestra): $ASR_MODELS_DIR/$VI_ASR_BUNDLE"
+else
+    echo "  ✗ Vietnamese ASR (Orchestra): MISSING"
     MODELS_READY=false
 fi
 

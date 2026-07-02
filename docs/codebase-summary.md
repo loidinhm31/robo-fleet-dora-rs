@@ -29,7 +29,9 @@ Snapshot date: 2026-07-01
 - Orchestra forwards S16LE directly to `web_bridge`, which emits binary audio attachments to browsers.
 - `central_speech_recognizer` now follows the Phase 01 STT contract: `SpeechTranscription` carries `source_kind`, `profile`, `target_entity_id`, `entity_id`, `stream_id`, `utterance_id`, `language`, `timestamp`, `duration_ms`, and optional `confidence`; `SttStatus` carries `state`, `profile`, `language`, `timestamp`, `error`.
 - Browser STT path still uses legacy transport (`voice_command_audio` / `transcription`) pending later phases; current browser runtime behavior is still transitional, not the final routed STT path.
-- `central_speech_recognizer` consumes only web-microphone F32 audio and uses `ggml-base.bin`; the edge recognizer remains a disabled placeholder.
+- `central_speech_recognizer` has completed the Sherpa Phase 02 runtime cutover: it provisions fixed English/Vietnamese offline profile catalogs under `models/.cache/sherpa-onnx/asr`, validates required files, and loads Silero VAD plus the selected offline recognizer at startup.
+- The live audio decode loop is not enabled yet. The current Phase 02 binary is a startup probe that loads native Sherpa components, warns that audio inputs stay disabled until Phase 03, and remains alive for orchestration smoke tests.
+- Orchestra dataflow STT environment now points at Sherpa profile/root/thread/VAD settings instead of Whisper model paths; production browser/rover STT routing still waits on later phases.
 - `web_bridge` maintains process-level `Arc<AudioDeliveryCounters>` (atomic, relaxed ordering) in `SharedState` so shutdown totals survive client disconnects; per-client `ClientState` counters remain for live debugging. Resolves the Approach A Phase 5 backlog item (Phase 06 completion report).
 
 ## Documentation Notes

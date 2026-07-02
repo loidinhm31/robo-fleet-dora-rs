@@ -2,167 +2,78 @@
 
 This directory contains AI models used by various Dora nodes:
 - **YOLO models** for object detection (`object_detector` node)
-- **Whisper models** for speech-to-text (`central_speech_recognizer` node)
+- **Sherpa-ONNX models** for central VAD and offline speech-to-text
+- **Whisper models** retained temporarily as rollback artifacts
 
 ---
 
-# 🎤 Whisper Models for Speech-to-Text
+# Sherpa-ONNX Models for Central Speech-to-Text
 
-## Quick Setup (Workstation)
+Run `make models` from the repository root. Downloads are pinned, extracted into
+temporary directories, validated, then moved into place. Re-running the command
+skips every complete model bundle.
 
-### Prerequisites
+The central recognizer uses this layout:
 
-1. **Install CMake** (required to build whisper-rs):
+```text
+models/.cache/sherpa-onnx/asr/
+├── silero/silero_vad.onnx
+├── icefall-asr-multidataset-pruned_transducer_stateless7-2023-05-04/
+│   ├── data/lang_bpe_500/tokens.txt
+│   └── exp/
+│       ├── encoder-epoch-30-avg-4.int8.onnx
+│       ├── decoder-epoch-30-avg-4.onnx
+│       └── joiner-epoch-30-avg-4.int8.onnx
+└── sherpa-onnx-zipformer-vi-30M-int8-2026-02-09/
+    ├── encoder.int8.onnx
+    ├── decoder.onnx
+    ├── joiner.int8.onnx
+    └── tokens.txt
+```
+
+Select exactly one startup profile:
+
+| Profile | Language | Bundle |
+|---|---|---|
+| `en-vad-offline` | English | multidataset Zipformer; default |
+| `vi-vad-offline` | Vietnamese | 30M int8 Zipformer |
+
+Configuration is server-owned. Clients cannot submit model paths or change the
+profile at runtime.
+
+| Variable | Default | Valid values |
+|---|---|---|
+| `STT_PROFILE` | `en-vad-offline` | one of the two profiles above |
+| `STT_MODEL_ROOT` | `models/.cache/sherpa-onnx/asr` | directory containing the documented layout |
+| `STT_NUM_THREADS` | `2` | `1..=64` |
+| `STT_VAD_THRESHOLD` | `0.5` | greater than `0`, less than `1` |
+| `STT_VAD_MIN_SILENCE_SECONDS` | `0.25` | finite seconds in `0..=120` |
+| `STT_VAD_MIN_SPEECH_SECONDS` | `0.25` | finite seconds, greater than `0` and at most `120` |
+| `STT_VAD_MAX_SPEECH_SECONDS` | `8.0` | greater than minimum speech duration and at most `120` |
+| `STT_DECODE_QUEUE_CAPACITY` | `8` | `1..=1024` |
+| `STT_SAMPLE_RATE` | `16000` | fixed; incompatible overrides are rejected |
+| `STT_VAD_WINDOW_SIZE` | `512` | fixed; incompatible overrides are rejected |
+
+Use `make check-models` to report every required file. Startup validates the
+selected profile before creating native Sherpa objects and returns concise errors
+without exposing configured absolute paths.
+
+Native smoke test after downloading models:
+
 ```bash
-# Arch/Manjaro
-sudo pacman -S cmake
-
-# Ubuntu/Debian
-sudo apt install cmake build-essential
-
-# Check installation
-cmake --version
+STT_PROFILE=en-vad-offline STT_MODEL_ROOT="$PWD/models/.cache/sherpa-onnx/asr" \
+  cargo test -p central_speech_recognizer --test model_loading -- --ignored
+# Repeat with STT_PROFILE=vi-vad-offline.
 ```
 
-### Download Whisper Models
+---
 
-The `central_speech_recognizer` node uses Whisper.cpp quantized models for workstation speech recognition.
+# Whisper Rollback Models
 
-**Required by the central workstation recognizer:**
-
-```bash
-# Download Whisper base model
-mkdir -p models/.cache/ggml
-wget https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin -O models/.cache/ggml/ggml-base.bin
-
-# Verify download
-ls -lh models/.cache/ggml/ggml-base.bin
-```
-
-**Alternative models:**
-
-```bash
-# Base model (142 MB, central recognizer default)
-wget https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin -O models/ggml-base.bin
-
-# Small model (466 MB, higher resource use)
-wget https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin -O models/ggml-small.bin
-```
-
-## Whisper Model Comparison
-
-| Model | Size | Accuracy | RAM Usage | Deployment guidance |
-|-------|------|----------|-----------|---------------------|
-| ggml-tiny.bin | 75 MB | Good | ~200 MB | Optional lower-resource alternative |
-| **ggml-base.bin** | 142 MB | Better | ~250 MB | Central workstation default |
-| ggml-small.bin | 466 MB | Excellent | ~500 MB | Optional; higher latency and memory |
-| ggml-medium.bin | 1.5 GB | Excellent | ~1.5 GB | Not configured by default |
-| ggml-large-v3.bin | 3.1 GB | Best | ~3 GB | Not configured by default |
-
-## Quantized Models
-
-Whisper.cpp models are quantized to reduce size and improve inference speed:
-
-| Model Type | Description | Size Reduction | Speed |
-|------------|-------------|----------------|-------|
-| **ggml-*.bin** | Standard quantization | 3-4x smaller | 3-4x faster |
-| ggml-*-q5_0.bin | 5-bit quantization | 5x smaller | 5x faster |
-| ggml-*-q8_0.bin | 8-bit quantization | 2x smaller | 2x faster |
-
-The central workstation recognizer uses the standard `ggml-base.bin` model by default.
-
-## Usage in Dora Dataflow
-
-The workstation node is configured in `orchestra/orchestra-dataflow.yml` as follows:
-
-```yaml
-- id: central-speech-recognizer
-  build: cargo build --release -p central_speech_recognizer
-  path: target/release/central_speech_recognizer
-  inputs:
-    audio_web: web-bridge/voice_command_audio
-  outputs:
-    - transcription
-  env:
-    WHISPER_MODEL_PATH: "models/.cache/ggml/ggml-base.bin"
-    SAMPLE_RATE: "16000"
-    BUFFER_DURATION_MS: "5000"
-    CONFIDENCE_THRESHOLD: "0.5"
-    ENERGY_THRESHOLD: "0.02"
-```
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `WHISPER_MODEL_PATH` | `models/.cache/ggml/ggml-base.bin` | Path to Whisper model file |
-| `SAMPLE_RATE` | `16000` | Audio sample rate (must match web microphone audio) |
-| `BUFFER_DURATION_MS` | `5000` | Buffer audio for X ms before transcription |
-| `CONFIDENCE_THRESHOLD` | `0.5` | Minimum confidence to output transcription |
-| `ENERGY_THRESHOLD` | `0.02` | Voice Activity Detection (VAD) threshold |
-
-## Supported Languages
-
-Whisper supports 99 languages. To use a specific language:
-
-```yaml
-# In central_speech_recognizer/src/main.rs, configure the language:
-params.set_language(Some("en"));  # English (default)
-# params.set_language(Some("es"));  # Spanish
-# params.set_language(Some("fr"));  # French
-# params.set_language(Some("de"));  # German
-# params.set_language(Some("vi"));  # Vietnamese
-```
-
-**Note:** Setting a specific language improves accuracy and speed by ~20%.
-
-## Performance Tips
-
-1. **Use the configured base model** for the central workstation recognizer
-2. **Reduce buffer duration** to 3-4 seconds for faster response (at cost of accuracy)
-3. **Increase energy threshold** to 0.03-0.05 if background noise causes false triggers
-4. **Set language explicitly** rather than auto-detect for 20% speed boost
-5. **Benchmark thread count** on the workstation before changing the default
-
-## Troubleshooting
-
-### Build fails with "cmake not found"
-```
-Solution: Install CMake (see Prerequisites above)
-```
-
-### Model not found error
-```
-ERROR: Whisper model not found at: models/.cache/ggml/ggml-base.bin
-Solution: Download the model (see Download Whisper Models above)
-```
-
-### Slow transcription (>10s for 5s audio)
-```
-Solution: Run `make models` to install ggml-base.bin
-```
-
-### Low quality transcriptions
-```
-Solution:
-- Check browser microphone capture quality and permissions
-- Reduce background noise
-- Use ggml-base.bin for better accuracy (slower)
-- Adjust ENERGY_THRESHOLD to filter out noise
-```
-
-### Audio format mismatch
-```
-Error: Expected Float32Array from audio input
-Solution: Ensure `web_bridge/voice_command_audio` outputs Float32 at 16kHz mono
-```
-
-## References
-
-- [Whisper.cpp GitHub](https://github.com/ggerganov/whisper.cpp)
-- [Whisper.cpp Models](https://huggingface.co/ggerganov/whisper.cpp)
-- [OpenAI Whisper Paper](https://arxiv.org/abs/2212.04356)
-- [whisper-rs Rust Bindings](https://github.com/tazz4843/whisper-rs)
+`models/.cache/ggml/ggml-base.bin` remains downloadable during the staged
+migration so operators can roll back to the Phase 01 artifact. The current
+`central_speech_recognizer` package and dataflow do not load Whisper. Phase 08
+removes this artifact after the dual-profile validation gate passes.
 
 ---
 
