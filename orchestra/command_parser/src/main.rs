@@ -664,10 +664,14 @@ fn main() -> Result<()> {
                     };
 
                     let text = transcription.text.clone();
+                    let confidence_log = transcription
+                        .confidence
+                        .map(|confidence| format!("{confidence:.2}"))
+                        .unwrap_or_else(|| "n/a".to_string());
                     tracing::info!(
-                        "Received transcription: '{}' (confidence: {:.2})",
+                        "Received transcription: '{}' (confidence: {})",
                         text,
-                        transcription.confidence
+                        confidence_log
                     );
 
                     // Parse the command

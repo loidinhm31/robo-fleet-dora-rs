@@ -2265,10 +2265,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     transcription_data,
                                 ) {
                                     Ok(transcription) => {
+                                        let confidence_log = transcription
+                                            .confidence
+                                            .map(|confidence| format!("{confidence:.2}"))
+                                            .unwrap_or_else(|| "n/a".to_string());
                                         tracing::info!(
-                                            "Transcription received: \"{}\" (confidence: {:.2})",
+                                            "Transcription received: \"{}\" (confidence: {})",
                                             transcription.text,
-                                            transcription.confidence
+                                            confidence_log
                                         );
 
                                         // Forward transcription to all connected clients

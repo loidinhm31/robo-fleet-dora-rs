@@ -202,6 +202,7 @@ mod tests {
             }
             client_view.record_emit_drop();
             client_view.record_emit_drop();
+            client_view.record_client_disconnect();
             // Client disconnects — its per-client `ClientState` would be
             // removed from `video_clients` here in production, dropping the
             // per-client counters. We model that with scope exit.

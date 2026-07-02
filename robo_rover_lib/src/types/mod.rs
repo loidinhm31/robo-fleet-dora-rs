@@ -29,6 +29,8 @@ pub use video_types::*;
 
 #[cfg(test)]
 mod pcm_frame_packet_tests;
+#[cfg(test)]
+mod speech_types_tests;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandMetadata {

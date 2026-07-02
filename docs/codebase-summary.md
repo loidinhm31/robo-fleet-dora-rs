@@ -27,6 +27,8 @@ Snapshot date: 2026-07-01
 - Rover `audio_converter` converts capture F32 to S16LE while preserving capture identity.
 - Rover Zenoh publishes versioned PCM v1 packets; orchestra validates them and only accepts bounded legacy F32LE during rollout.
 - Orchestra forwards S16LE directly to `web_bridge`, which emits binary audio attachments to browsers.
+- `central_speech_recognizer` now follows the Phase 01 STT contract: `SpeechTranscription` carries `source_kind`, `profile`, `target_entity_id`, `entity_id`, `stream_id`, `utterance_id`, `language`, `timestamp`, `duration_ms`, and optional `confidence`; `SttStatus` carries `state`, `profile`, `language`, `timestamp`, `error`.
+- Browser STT path still uses legacy transport (`voice_command_audio` / `transcription`) pending later phases; current browser runtime behavior is still transitional, not the final routed STT path.
 - `central_speech_recognizer` consumes only web-microphone F32 audio and uses `ggml-base.bin`; the edge recognizer remains a disabled placeholder.
 - `web_bridge` maintains process-level `Arc<AudioDeliveryCounters>` (atomic, relaxed ordering) in `SharedState` so shutdown totals survive client disconnects; per-client `ClientState` counters remain for live debugging. Resolves the Approach A Phase 5 backlog item (Phase 06 completion report).
 

@@ -26,7 +26,7 @@ Communication between machines uses **Zenoh** (pub/sub protocol) for efficient r
 │           │                     │          │  ┌────────▼─────────┐           │
 │  ┌────────▼─────────┐           │          │  │  ML Inference    │           │
 │  │  Heavy Compute   │           │   Zenoh  │  │  - YOLO Detect   │           │
-│  │  - Whisper STT   │◄──────────┼──────────┤► │  - OSNet ReID    │           │
+│  │  - Central STT   │◄──────────┼──────────┤► │  - OSNet ReID    │           │
 │  │  - Command NLU   │   P2P     │          │  │  - BoTSORT+CMC   │           │
 │  │                  │           │          │  └────────┬─────────┘           │
 │  └────────┬─────────┘           │          │           │                     │
@@ -61,7 +61,7 @@ robo-rover-dora/
 │   └── web_bridge/                 # Socket.IO server (runs on orchestra OR rover)
 │
 ├── orchestra/                      # Workstation-only nodes (heavy compute)
-│   ├── central_speech_recognizer/  # Whisper.cpp STT for web microphone audio
+│   ├── central_speech_recognizer/  # Current Whisper STT baseline, Sherpa target
 │   ├── command_parser/             # NLU pattern matching
 │   ├── kokoro_tts/                 # High-quality TTS (Kokoro-82M, workstation audio, optional)
 │   ├── zenoh_bridge/               # Orchestra Zenoh bridge (orchestra-only)
@@ -173,6 +173,43 @@ ZENOH_MODE=peer
    - Web microphone Float32 audio -> central-speech-recognizer -> command-parser
    - Tracked detections with ReID features → web-bridge (for web UI display)
 
+### Phase 01 STT Target Architecture
+
+The current runtime still uses Whisper as the baseline recognizer, but the locked
+wire contract and routing invariants for the Sherpa migration are:
+
+```text
+browser mic -> web bridge -> central STT -> deterministic command parser -> target rover captured at browser start
+rover mic -> rover bridge -> orchestra bridge -> central STT -> deterministic command parser -> source rover
+central STT -> web bridge -> private browser transcript OR authenticated rover transcript broadcast
+central STT -> web bridge -> global stt_status(profile,state,error)
+```
+
+Phase 01 locks the contract, not the final transport behavior. Current runtime
+limitations remain until the later transport phases land:
+
+- Browser microphone audio still travels through the legacy `voice_command_audio`
+  path with no socket ownership or per-stream metadata.
+- `transcription` remains the only live Socket.IO STT event today, so browser
+  privacy routing is not enforced at runtime yet.
+- Legacy browser transcriptions populate `target_entity_id` from the current
+  `SELECTED_ENTITY_ID` startup fallback because per-stream target snapshots do
+  not exist before Phase 04.
+- Legacy browser transcriptions use a fixed placeholder stream id
+  `legacy-browser-stream` because the current transport does not yet provide
+  authoritative stream ownership.
+
+### STT Contract Invariants
+
+- `SpeechTranscription` is final-only. No partial event or `is_final` field exists.
+- `source_kind` identifies where speech originated. `entity_id` is `null` for browser speech and the rover ID for rover speech.
+- `target_entity_id` is authoritative routing state, captured by the server. Browsers do not supply it.
+- `profile` is global process state. A single startup profile serves every source stream.
+- `confidence` is the only field allowed to be absent on input for backward parsing. Producers emit `null` when confidence is unavailable.
+- The deterministic `command_parser` remains the only actuator interpretation path. AI interpretation is explicitly deferred.
+- Browser transcripts are contractually private to the owning socket after the
+  transport cutover. Rover transcripts remain broadcast to authenticated fleet clients.
+
 ### `kornia_capture` runtime notes
 
 - main loop drains worker results each cycle and safe-disables tracking telemetry if the worker disconnects
@@ -205,7 +242,7 @@ cargo install dora-cli --locked
 ```
 
 **On Orchestra**:
-- Whisper model for STT
+- Whisper model for current STT baseline
 - Kokoro TTS models (optional, for workstation audio)
 
 **On Rover-Kiwi**:

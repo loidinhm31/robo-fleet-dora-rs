@@ -2,7 +2,7 @@ use dora_node_api::arrow::array::{Array, BinaryArray, Float32Array};
 use dora_node_api::dora_core::config::DataId;
 use dora_node_api::{DoraNode, Event};
 use eyre::Result;
-use robo_rover_lib::{init_tracing, SpeechTranscription};
+use robo_rover_lib::{init_tracing, SpeechTranscription, SttProfile};
 use std::env;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -12,6 +12,7 @@ const DEFAULT_SAMPLE_RATE: u32 = 16000;
 const DEFAULT_BUFFER_DURATION_MS: u32 = 5000; // 5 seconds
 const DEFAULT_CONFIDENCE_THRESHOLD: f32 = 0.5;
 const DEFAULT_ENERGY_THRESHOLD: f32 = 0.02; // VAD threshold
+const LEGACY_BROWSER_STREAM_ID: &str = "legacy-browser-stream";
 
 fn main() -> Result<()> {
     let _guard = init_tracing();
@@ -20,6 +21,9 @@ fn main() -> Result<()> {
     // Read configuration from environment variables
     let model_path = env::var("WHISPER_MODEL_PATH")
         .unwrap_or_else(|_| "models/.cache/ggml/ggml-base.bin".to_string());
+    let target_entity_id =
+        env::var("SELECTED_ENTITY_ID").unwrap_or_else(|_| "rover-kiwi".to_string());
+    let stt_profile = parse_stt_profile(env::var("STT_PROFILE").ok());
 
     let sample_rate: u32 = env::var("SAMPLE_RATE")
         .ok()
@@ -47,6 +51,12 @@ fn main() -> Result<()> {
     tracing::info!("Buffer duration: {} ms", buffer_duration_ms);
     tracing::info!("Confidence threshold: {}", confidence_threshold);
     tracing::info!("Energy threshold: {}", energy_threshold);
+    tracing::info!("Contract target entity: {}", target_entity_id);
+    tracing::info!("Contract STT profile: {:?}", stt_profile);
+    tracing::info!(
+        "Legacy browser stream id: {}",
+        LEGACY_BROWSER_STREAM_ID
+    );
 
     // Load Whisper model
     tracing::info!("Loading Whisper model from: {}", model_path);
@@ -126,18 +136,14 @@ fn main() -> Result<()> {
 
                                 // Only output if confidence is above threshold
                                 if confidence >= confidence_threshold && !text.trim().is_empty() {
-                                    let transcription = SpeechTranscription {
-                                        text: text.clone(),
-                                        confidence,
-                                        language: "en".to_string(),
-                                        duration_ms: (audio_buffer.len() as u64 * 1000)
-                                            / sample_rate as u64,
-                                        timestamp: std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap()
-                                            .as_millis()
-                                            as i64,
-                                    };
+                                    let transcription = SpeechTranscription::new_browser(
+                                        text.clone(),
+                                        Some(confidence),
+                                        (audio_buffer.len() as u64 * 1000) / sample_rate as u64,
+                                        LEGACY_BROWSER_STREAM_ID.to_string(),
+                                        target_entity_id.clone(),
+                                        stt_profile,
+                                    );
 
                                     // Send transcription via Dora
                                     let json_bytes = serde_json::to_vec(&transcription)?;
@@ -305,4 +311,11 @@ fn resample_audio(audio: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     }
 
     output
+}
+
+fn parse_stt_profile(raw: Option<String>) -> SttProfile {
+    match raw.as_deref() {
+        Some("vi-vad-offline") => SttProfile::ViVadOffline,
+        _ => SttProfile::EnVadOffline,
+    }
 }
