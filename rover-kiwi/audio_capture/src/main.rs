@@ -1,3 +1,4 @@
+mod audio_dump;
 mod signal_metrics;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -52,6 +53,11 @@ fn main() -> Result<()> {
         channels,
         chunk_size
     );
+
+    // Optional debug dump of exactly what this node sends downstream (post
+    // downmix/resample, e.g. 16 kHz mono f32) to a playable WAV. Off unless
+    // AUDIO_DUMP_FILE is set; AUDIO_DUMP_MAX_SECS caps the file size.
+    let mut audio_dumper = audio_dump::AudioDumper::from_env(sample_rate, channels);
 
     // Initialize Dora node first — so a failed audio init never cascades to other nodes
     let (mut node, mut events) = DoraNode::init_from_env()?;
@@ -122,6 +128,7 @@ fn main() -> Result<()> {
                         // Send chunk when we have enough samples
                         if audio_buffer.len() >= chunk_size {
                             let chunk: Vec<f32> = audio_buffer.drain(..chunk_size).collect();
+                            audio_dumper.write_chunk(&chunk);
                             let started = Instant::now();
                             let frame_id = next_frame_id;
                             next_frame_id = next_frame_id.saturating_add(1);
@@ -291,6 +298,7 @@ fn main() -> Result<()> {
 
     preflight_probe.log_if_pending("capture_preflight_partial");
     drop(stream_opt);
+    audio_dumper.close();
     tracing::info!(
         metric = "audio_pipeline_total",
         stage = "capture",

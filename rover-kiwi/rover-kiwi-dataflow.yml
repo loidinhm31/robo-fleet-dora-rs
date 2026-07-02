@@ -12,7 +12,13 @@ nodes:
       SAMPLE_RATE: "16000"
       CHANNELS: "1"  # preserve downstream mono contract; multichannel mics are downmixed in audio_capture
       CHUNK_SIZE: "800"
-      # AUDIO_DEVICE: "USB Audio"  # optional manual override; uncomment to force deterministic device selection by substring
+      #AUDIO_DEVICE: ""  # optional manual override; uncomment to force deterministic device selection by substring
+      # Debug: dump exactly what this node sends downstream (post downmix/resample,
+      # 16 kHz mono f32) to a playable WAV (VLC/Audacity/ffmpeg). Complements
+      # scripts/check-usb-microphone.py (OS-level) by verifying the in-pipeline
+      # capture path. Off by default; AUDIO_DUMP_MAX_SECS caps file size.
+      AUDIO_DUMP_FILE: "/tmp/rover-kiwi-audio-dump.wav"
+      AUDIO_DUMP_MAX_SECS: "30"
 
   # Convert capture F32 to S16LE before cross-machine transport.
   - id: audio-converter
