@@ -10,9 +10,9 @@ nodes:
       - audio  # Float32 audio data
     env:
       SAMPLE_RATE: "16000"
-      CHANNELS: "1"
+      CHANNELS: "1"  # preserve downstream mono contract; multichannel mics are downmixed in audio_capture
       CHUNK_SIZE: "800"
-      # AUDIO_DEVICE: "USB Audio"  # substring match; set when ALSA 'default' maps to wrong card
+      # AUDIO_DEVICE: "USB Audio"  # optional manual override; uncomment to force deterministic device selection by substring
 
   # Convert capture F32 to S16LE before cross-machine transport.
   - id: audio-converter
