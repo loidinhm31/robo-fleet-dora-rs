@@ -2046,16 +2046,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
-name = "edge_speech_recognizer"
-version = "0.1.0"
-dependencies = [
- "dora-node-api",
- "eyre",
- "robo_rover_lib",
- "tracing",
-]
-
-[[package]]
 name = "educe"
 version = "0.5.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"

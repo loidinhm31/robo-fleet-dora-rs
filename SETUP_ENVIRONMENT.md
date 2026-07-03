@@ -130,3 +130,7 @@ AUDIO_GID=$(getent group audio | cut -d: -f3) docker compose -f docker/docker-co
 * `SOURCE_FPS` controls capture cadence.
 * `VIEW_STREAM_FPS` controls rover-side JPEG publish cadence.
 * Keep `SOURCE_FPS` aligned with the camera and set `VIEW_STREAM_FPS` for the desired viewer rate.
+* Central STT uses startup-only `STT_PROFILE` (`en-vad-offline` or `vi-vad-offline`) plus
+  `STT_MODEL_ROOT` pointing at the Sherpa ASR bundle root.
+* Rover `sherpa_tts` remains manual/operator-triggered. Playback suppression/AEC for rover
+  speaker + microphone overlap is still follow-up work.

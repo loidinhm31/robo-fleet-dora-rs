@@ -22,7 +22,6 @@ members = [
     "rover-kiwi/video_encoder",
     "rover-kiwi/audio_capture",
     "rover-kiwi/audio_converter",
-    "rover-kiwi/edge_speech_recognizer",
     "rover-kiwi/audio_playback",
     "rover-kiwi/visual_servo_controller",
     "rover-kiwi/sherpa_tts",

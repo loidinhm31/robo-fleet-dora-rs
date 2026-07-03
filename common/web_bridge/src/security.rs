@@ -216,8 +216,6 @@ pub fn verify_password_blocking(candidate: &str, hash: &str) -> bool {
 pub enum AuthErrorReason {
     InvalidCredentials,
     AccountDisabled,
-    TokenExpired,
-    RateLimited,
 }
 
 impl AuthErrorReason {
@@ -226,8 +224,6 @@ impl AuthErrorReason {
             Self::InvalidCredentials => "invalid_credentials",
             // Same string as InvalidCredentials to prevent username enumeration
             Self::AccountDisabled => "invalid_credentials",
-            Self::TokenExpired => "token_expired",
-            Self::RateLimited => "rate_limited",
         }
     }
 }
@@ -520,15 +516,6 @@ pub mod validation {
         validate_audio_data(samples)
     }
 
-    pub fn validate_detection_index(index: usize, max: usize) -> Result<(), String> {
-        if index >= max {
-            return Err(format!(
-                "Detection index {} out of bounds (max: {})",
-                index, max
-            ));
-        }
-        Ok(())
-    }
 }
 
 /// Extracts the client IP from request headers.

@@ -31,13 +31,14 @@ A hybrid robotic rover control system with autonomous object tracking and visual
 ### 🔊 Audio & Voice System
 - **Real-time Audio Streaming** from microphone to web clients
 - **Dynamic Audio Control** (start/stop without dataflow restart)
-- **Speech Recognition** using Whisper.cpp for voice commands
+- **Speech Recognition** using central Sherpa VAD/offline STT for voice commands
 - **Natural Language Understanding** with Aho-Corasick pattern matching
 - **Text-to-Speech** with dual implementation:
   - **Rover**: Sherpa-ONNX VITS-Piper (lightweight, edge-optimized)
   - **Orchestra**: Kokoro-82M (high-quality, currently wired into the orchestra dataflow as `kokoro-tts`)
 - **Audio Playback** for walkie-talkie/intercom functionality
 - **Multi-modal Voice Communication** (command, feedback, and direct streaming)
+- **Rover TTS Caveat**: rover-side Sherpa TTS is still operator-triggered/manual; simultaneous mic + speaker playback suppression/AEC is not yet complete.
 
 ## Prerequisites
 
@@ -66,7 +67,7 @@ sudo pacman -S alsa-lib
 sudo apt install libasound2-dev
 ```
 
-Install CMake (required for Whisper.cpp speech recognition):
+Install CMake (required for native Sherpa/TTS builds):
 ```shell
 # Arch/Manjaro
 sudo pacman -S cmake
@@ -137,13 +138,15 @@ cd models/scripts
 ./download_osnet_model.sh
 ```
 
-**Whisper Model** (speech recognition):
+**Sherpa STT Models** (speech recognition):
 ```shell
-cd models
-# Download Whisper base model for the workstation recognizer
-mkdir -p .cache/ggml
-wget https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin -O .cache/ggml/ggml-base.bin
+make models
+make check-models
 ```
+
+This downloads Silero VAD plus the pinned English and Vietnamese offline
+Zipformer bundles under `models/.cache/sherpa-onnx/asr/`. Select one startup
+profile with `STT_PROFILE=en-vad-offline` or `STT_PROFILE=vi-vad-offline`.
 
 For detailed model setup instructions, see [models/README.md](models/README.md).
 
@@ -240,7 +243,7 @@ Check - [ARCHITECTURE](ARCHITECTURE.md)
 
 **Audio & Voice:**
 - **audio-capture**: cpal-based audio capture (Rust)
-- **central-speech-recognizer**: Whisper.cpp speech-to-text for web microphone audio
+- **central-speech-recognizer**: Sherpa VAD/offline speech-to-text with browser-private and rover source-aware routing
 - **command-parser**: NLU for voice command intent extraction
 - **sherpa-tts** (rover): Lightweight VITS-Piper TTS for edge devices
 - **kokoro-tts** (orchestra): High-quality Kokoro-82M TTS (currently wired into the orchestra dataflow)
@@ -337,11 +340,11 @@ gst-camera:
 ```yaml
 central-speech-recognizer:
   env:
-    WHISPER_MODEL_PATH: "models/.cache/ggml/ggml-base.bin"
-    SAMPLE_RATE: "16000"                         # Must match web microphone audio
-    BUFFER_DURATION_MS: "5000"                   # Audio buffer size
-    CONFIDENCE_THRESHOLD: "0.5"                  # Min transcription confidence
-    ENERGY_THRESHOLD: "0.02"                     # VAD threshold
+    STT_PROFILE: "en-vad-offline"                # or vi-vad-offline
+    STT_MODEL_ROOT: "models/.cache/sherpa-onnx/asr"
+    STT_NUM_THREADS: "2"
+    STT_SAMPLE_RATE: "16000"                     # Fixed; incompatible overrides are rejected
+    STT_DECODE_QUEUE_CAPACITY: "8"
 
 command-parser:
   env:
@@ -562,9 +565,9 @@ pnpm check-types
 
 **Speech not recognized**:
 - Check microphone is working: `arecord -l`
-- Verify Whisper model downloaded: `ls -lh models/.cache/ggml/ggml-base.bin`
-- Increase `BUFFER_DURATION_MS` for longer phrases (e.g., 7000ms)
-- Lower `ENERGY_THRESHOLD` if voice not detected (try 0.01)
+- Verify the selected Sherpa bundle: `make check-models`
+- Confirm `STT_PROFILE` is one of `en-vad-offline` or `vi-vad-offline`
+- Check `STT_MODEL_ROOT` points at `models/.cache/sherpa-onnx/asr`
 - Check `SAMPLE_RATE` matches audio-capture (must be 16000)
 
 **TTS not working on rover**:
@@ -605,7 +608,7 @@ pnpm check-types
 
 **Audio & Voice:**
 - **Audio Capture**: 16 kHz, Mono, 20 Hz chunks (50ms); F32 locally, S16LE after rover conversion
-- **Speech Recognition**: Workstation central recognizer, 5s buffer by default (`ggml-base.bin`); web microphone input only
+- **Speech Recognition**: Workstation central recognizer with Sherpa VAD/offline decode; browser transcripts stay private, rover transcripts stay fleet-visible
 - **TTS Synthesis** (rover): 2-3s initialization, real-time synthesis (Sherpa-ONNX VITS)
 - **TTS Synthesis** (orchestra): 0.5-2s time-to-first-audio (Kokoro-82M)
 - **Walkie-talkie Latency**: <100ms on local network
@@ -747,8 +750,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 **Audio & Voice:**
 - [cpal](https://github.com/RustAudio/cpal) - Cross-platform audio I/O
-- [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) - Speech-to-text
-- [whisper-rs](https://github.com/tazz4843/whisper-rs) - Rust bindings for Whisper
 - [Sherpa-ONNX](https://github.com/k2-fsa/sherpa-onnx) - Lightweight edge TTS (rover)
 - [sherpa-rs](https://github.com/thewh1teagle/sherpa-rs) - Rust bindings for Sherpa-ONNX
 - [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) - High-quality TTS (orchestra)

@@ -14,18 +14,14 @@ use pid::PIDController;
 /// Camera and mounting configuration
 struct CameraConfig {
     focal_length_pixels: f32, // Focal length in pixels (calibrated)
-    image_width: u32,
     image_height: u32,
-    camera_height: f32, // Camera mounting height above ground (meters)
 }
 
 impl Default for CameraConfig {
     fn default() -> Self {
         Self {
             focal_length_pixels: 500.0, // Typical for 640x480 webcam (needs calibration)
-            image_width: 640,
             image_height: 480,
-            camera_height: 0.5, // 50cm above ground
         }
     }
 }
@@ -316,7 +312,11 @@ impl ServoController {
         self.last_command_time = Some(SystemTime::now());
 
         (
-            Some(RoverCommandWithMetadata { command, metadata, target_entity_id: None }),
+            Some(RoverCommandWithMetadata {
+                command,
+                metadata,
+                target_entity_id: None,
+            }),
             enhanced_telemetry,
         )
     }

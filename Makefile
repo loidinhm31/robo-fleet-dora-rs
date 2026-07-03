@@ -216,7 +216,6 @@ validate-compose:
 
 check-models:
 	@echo "Checking for required models..."
-	@ls -lh models/.cache/ggml/ggml-base.bin 2>/dev/null || echo "  ✗ Whisper rollback model missing"
 	@ls -lh models/.cache/sherpa-onnx/asr/silero/silero_vad.onnx 2>/dev/null || echo "  ✗ Silero VAD model missing"
 	@ls -lh models/.cache/sherpa-onnx/asr/icefall-asr-multidataset-pruned_transducer_stateless7-2023-05-04/exp/encoder-epoch-30-avg-4.int8.onnx 2>/dev/null || echo "  ✗ English ASR encoder missing"
 	@ls -lh models/.cache/sherpa-onnx/asr/icefall-asr-multidataset-pruned_transducer_stateless7-2023-05-04/exp/decoder-epoch-30-avg-4.onnx 2>/dev/null || echo "  ✗ English ASR decoder missing"

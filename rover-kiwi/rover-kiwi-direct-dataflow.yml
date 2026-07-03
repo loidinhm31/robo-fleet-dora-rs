@@ -13,29 +13,6 @@ nodes:
       CHANNELS: "1"  # preserve downstream mono contract; multichannel mics are downmixed in audio_capture
       CHUNK_SIZE: "800"
       # AUDIO_DEVICE: "USB Audio"  # optional manual override; uncomment to force deterministic device selection by substring
-
-  # TODO: enable after edge STT implementation is available.
-#  - id: edge-speech-recognizer
-#    build: cargo build --release -p edge_speech_recognizer
-#    path: ../target/release/edge_speech_recognizer
-#    inputs:
-#      audio: audio-capture/audio
-
-  # TTS - Sherpa-ONNX lightweight neural TTS for edge device
-#  - id: sherpa-tts
-#    build: cargo build --release -p sherpa_tts
-#    path: ../target/release/sherpa_tts
-#    inputs:
-#      tts_command: web-bridge/tts_command
-#    env:
-#      RUST_LOG: info
-#      TTS_MODEL_DIR: "${HOME}/.cache/sherpa-onnx/vits-piper-en_US-lessac-medium"
-#      TTS_VOLUME: "0.8"
-#      TTS_SPEED: "1.0"
-#      TTS_NUM_THREADS: "2"
-#      TTS_PROVIDER: "cpu"
-#      LD_LIBRARY_PATH: "${HOME}/ws/sharing/robo-fleet-dora-rs/target/release"
-
   # Audio playback - Speaker output (walkie-talkie)
   - id: audio-playback
     build: cargo build --release -p audio_playback

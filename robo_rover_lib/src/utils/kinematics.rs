@@ -4,7 +4,6 @@ use nalgebra::{DMatrix, Matrix4, Vector3};
 
 pub struct ForwardKinematics {
     dh_params: Vec<DHParameter>,
-    link_lengths: Vec<f64>,
     base_offset: Vector3<f64>,
 }
 
@@ -12,7 +11,6 @@ impl ForwardKinematics {
     pub fn new(config: &ArmConfig) -> Result<Self> {
         Ok(Self {
             dh_params: config.kinematics.dh_parameters.clone(),
-            link_lengths: config.kinematics.link_lengths.clone(),
             base_offset: Vector3::new(
                 config.kinematics.base_offset[0],
                 config.kinematics.base_offset[1],

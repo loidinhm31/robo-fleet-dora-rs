@@ -71,7 +71,6 @@ robo-rover-dora/
 │   ├── audio_capture/              # Microphone (cpal)
 │   ├── audio_converter/            # Float32 -> Int16LE before transport
 │   ├── audio_playback/             # Speaker output
-│   ├── edge_speech_recognizer/     # Future edge STT placeholder (disabled)
 │   ├── kornia_capture/             # Camera (GStreamer)
 │   ├── video_encoder/              # RGB8 -> JPEG for rover-side view output
 │   ├── object_detector/            # YOLOv12n inference
@@ -175,9 +174,9 @@ ZENOH_MODE=peer
 
 ### STT Runtime And Contract
 
-Phase 03 replaced the Whisper baseline with the central Sherpa VAD/offline
-recognizer runtime. The web bridge now implements the browser transport and
-source-aware transcript delivery:
+Phase 03 finalized the central Sherpa VAD/offline recognizer runtime. The web
+bridge now implements the browser transport and source-aware transcript
+delivery:
 
 ```text
 browser mic -> web bridge -> central STT -> deterministic command parser -> target rover captured at browser start
@@ -248,8 +247,9 @@ cargo install dora-cli --locked
 ```
 
 **On Orchestra**:
-- Whisper model for current STT baseline
+- Sherpa ASR bundles plus Silero VAD for the selected startup profile
 - Kokoro TTS models (optional, for workstation audio)
+- The shared `models/.cache/sherpa-onnx` cache holds the central STT bundles and rover Sherpa TTS assets.
 
 **On Rover-Kiwi**:
 - GStreamer for camera
@@ -258,6 +258,7 @@ cargo install dora-cli --locked
 - YOLO model (yolo12n.onnx, ~6MB)
 - OSNet model (osnet_x0_25.onnx, ~0.85MB)
 - Sherpa-ONNX VITS-Piper model for lightweight edge TTS (~61MB)
+- Rover Sherpa TTS remains manual/operator-triggered; mic + speaker echo suppression is still follow-up work.
 
 ### Build and Deploy
 

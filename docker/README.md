@@ -13,7 +13,7 @@ make models
 ```
 
 This will download:
-- ✅ Whisper GGML base model (~142 MB) - for central workstation speech recognition
+- ✅ Sherpa Silero VAD + offline ASR bundles - for central workstation speech recognition
 - ✅ Sherpa-ONNX VITS TTS model (~21 MB) - for text-to-speech
 
 You'll also need to manually export:
@@ -94,7 +94,7 @@ Both containers use **host networking mode** to enable Zenoh multicast peer disc
 ### Volume Mounts
 
 **Orchestra:**
-- `models/.cache/ggml` → `/models/ggml` (Whisper model)
+- `models/.cache/sherpa-onnx` → `/models/sherpa-onnx` (shared Sherpa cache for central STT bundles)
 - `orchestra/zenoh_bridge/zenoh_config.json5` → `/app/config/zenoh_config.json5`
 
 **Rover:**
@@ -103,6 +103,8 @@ Both containers use **host networking mode** to enable Zenoh multicast peer disc
 - `models/.cache/sherpa-onnx` → `/models/sherpa-onnx` (TTS model)
 - `rover-kiwi/zenoh_bridge/zenoh_config.json5` → `/app/config/zenoh_config.json5`
 - `rover-kiwi/config` → `/app/config/rover` (arm config, simulation config)
+
+Rover Sherpa TTS is still manual/operator-triggered; echo suppression for simultaneous mic + speaker use is not finished.
 
 ## Model Export
 
@@ -144,6 +146,8 @@ This downloads and exports `models/.cache/reid/osnet_x0_25.onnx` (~6 MB).
 | `FLEET_ROSTER` | `rover-kiwi` | Comma-separated rover IDs |
 | `ZENOH_MODE` | `peer` | Zenoh network mode |
 | `SOCKET_IO_PORT` | `3030` | Socket.IO server port |
+| `STT_PROFILE` | `en-vad-offline` | Startup-only central STT profile |
+| `STT_MODEL_ROOT` | `/models/sherpa-onnx/asr` | Sherpa ASR bundle root |
 
 ### Rover-Kiwi
 
@@ -203,9 +207,9 @@ docker/
 
 ### Orchestra
 
-**Issue: Whisper model not found**
+**Issue: Sherpa STT model missing**
 ```
-ERROR: Whisper model not found at /models/ggml/ggml-base.bin
+ERROR: required STT model file missing: ...
 ```
 
 **Solution:**

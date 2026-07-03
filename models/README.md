@@ -3,7 +3,6 @@
 This directory contains AI models used by various Dora nodes:
 - **YOLO models** for object detection (`object_detector` node)
 - **Sherpa-ONNX models** for central VAD and offline speech-to-text
-- **Whisper models** retained temporarily as rollback artifacts
 
 ---
 
@@ -68,12 +67,15 @@ STT_PROFILE=en-vad-offline STT_MODEL_ROOT="$PWD/models/.cache/sherpa-onnx/asr" \
 
 ---
 
-# Whisper Rollback Models
+Rover playback still uses Sherpa VITS-Piper under
+`models/.cache/sherpa-onnx/vits-piper-en_US-lessac-medium`. Keep that bundle
+available even though STT has fully moved to the central Sherpa ASR runtime.
 
-`models/.cache/ggml/ggml-base.bin` remains downloadable during the staged
-migration so operators can roll back to the Phase 01 artifact. The current
-`central_speech_recognizer` package and dataflow do not load Whisper. Phase 08
-removes this artifact after the dual-profile validation gate passes.
+Browser transcripts remain private to the authenticated origin socket. Rover
+transcripts remain fleet-visible and source-routed by rover identity.
+
+Manual rover TTS remains supported; playback suppression/AEC for simultaneous
+mic + speaker usage is still follow-up work.
 
 ---
 

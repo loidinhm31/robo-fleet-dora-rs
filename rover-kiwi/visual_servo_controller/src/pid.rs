@@ -116,16 +116,17 @@ mod tests {
     #[test]
     fn test_pid_integral_term() {
         let mut pid = PIDController::new(0.0, 1.0, 0.0, -10.0, 10.0);
+        let epsilon = 1e-12;
 
         // Integral should accumulate
         let output = pid.update(1.0, 0.1);
-        assert_eq!(output, 0.1);
+        assert!((output - 0.1).abs() < epsilon);
 
         let output = pid.update(1.0, 0.1);
-        assert_eq!(output, 0.2);
+        assert!((output - 0.2).abs() < epsilon);
 
         let output = pid.update(1.0, 0.1);
-        assert_eq!(output, 0.3);
+        assert!((output - 0.3).abs() < epsilon);
     }
 
     #[test]

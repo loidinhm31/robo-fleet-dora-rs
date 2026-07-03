@@ -8,6 +8,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 MODELS_DIR="$PROJECT_ROOT/models/.cache"
 export MODELS_DIR
 
+. "$SCRIPT_DIR/sherpa-stt-profile-files.sh"
+
 echo "==================================================================="
 echo "  Robo-Fleet Model Download Script"
 echo "==================================================================="
@@ -15,7 +17,6 @@ echo "Models will be downloaded to: $MODELS_DIR"
 echo ""
 
 # Create model directories
-mkdir -p "$MODELS_DIR/ggml"
 mkdir -p "$MODELS_DIR/yolo"
 mkdir -p "$MODELS_DIR/reid"
 mkdir -p "$MODELS_DIR/sherpa-onnx"
@@ -88,32 +89,19 @@ download_asr_bundle() {
 }
 
 # =============================================================================
-# 1. Whisper GGML Model (for Orchestra speech recognition)
-# =============================================================================
-echo "[1/7] Downloading Whisper GGML base model for rollback (~142 MB)..."
-if [ -f "$MODELS_DIR/ggml/ggml-base.bin" ]; then
-    echo "  ✓ Whisper model already exists, skipping download"
-else
-    wget -O "$MODELS_DIR/ggml/ggml-base.bin" \
-        https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
-    echo "  ✓ Whisper model downloaded"
-fi
-
-# =============================================================================
-# 2. Sherpa-ONNX Silero VAD (for Orchestra speech recognition)
+# 1. Sherpa-ONNX Silero VAD (for Orchestra speech recognition)
 # =============================================================================
 echo ""
-echo "[2/7] Downloading Sherpa-ONNX Silero VAD..."
+echo "[1/6] Downloading Sherpa-ONNX Silero VAD..."
 download_file \
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx" \
     "$ASR_MODELS_DIR/silero/silero_vad.onnx"
 
 # =============================================================================
-# 3. English offline Zipformer ASR bundle
+# 2. English offline Zipformer ASR bundle
 # =============================================================================
 echo ""
-echo "[3/7] Downloading English offline Zipformer ASR bundle..."
-EN_ASR_BUNDLE="icefall-asr-multidataset-pruned_transducer_stateless7-2023-05-04"
+echo "[2/6] Downloading English offline Zipformer ASR bundle..."
 download_asr_bundle "$EN_ASR_BUNDLE" \
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${EN_ASR_BUNDLE}.tar.bz2" \
     "exp/encoder-epoch-30-avg-4.int8.onnx" \
@@ -122,11 +110,10 @@ download_asr_bundle "$EN_ASR_BUNDLE" \
     "data/lang_bpe_500/tokens.txt"
 
 # =============================================================================
-# 4. Vietnamese offline Zipformer ASR bundle
+# 3. Vietnamese offline Zipformer ASR bundle
 # =============================================================================
 echo ""
-echo "[4/7] Downloading Vietnamese offline Zipformer ASR bundle..."
-VI_ASR_BUNDLE="sherpa-onnx-zipformer-vi-30M-int8-2026-02-09"
+echo "[3/6] Downloading Vietnamese offline Zipformer ASR bundle..."
 download_asr_bundle "$VI_ASR_BUNDLE" \
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${VI_ASR_BUNDLE}.tar.bz2" \
     "encoder.int8.onnx" \
@@ -135,10 +122,10 @@ download_asr_bundle "$VI_ASR_BUNDLE" \
     "tokens.txt"
 
 # =============================================================================
-# 5. Sherpa-ONNX TTS Model (for Rover TTS)
+# 4. Sherpa-ONNX TTS Model (for Rover TTS)
 # =============================================================================
 echo ""
-echo "[5/7] Downloading Sherpa-ONNX VITS TTS model (~21 MB)..."
+echo "[4/6] Downloading Sherpa-ONNX VITS TTS model (~21 MB)..."
 if [ -d "$MODELS_DIR/sherpa-onnx/vits-piper-en_US-lessac-medium" ]; then
     echo "  ✓ Sherpa-ONNX model already exists, skipping download"
 else
@@ -162,10 +149,10 @@ if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "armv7l" ]; then
 fi
 
 # =============================================================================
-# 6. YOLO Model (requires PyTorch export on x86_64)
+# 5. YOLO Model (requires PyTorch export on x86_64)
 # =============================================================================
 echo ""
-echo "[6/7] Exporting YOLO model..."
+echo "[5/6] Exporting YOLO model..."
 if [ -f "$MODELS_DIR/yolo/yolo12n.onnx" ]; then
     echo "  ✓ YOLO model already exists, skipping export"
 elif [ "$CAN_EXPORT" = false ]; then
@@ -185,10 +172,10 @@ else
 fi
 
 # =============================================================================
-# 7. OSNet ReID Model (requires PyTorch export on x86_64)
+# 6. OSNet ReID Model (requires PyTorch export on x86_64)
 # =============================================================================
 echo ""
-echo "[7/7] Exporting OSNet ReID model..."
+echo "[6/6] Exporting OSNet ReID model..."
 if [ -f "$MODELS_DIR/reid/osnet_x0_25.onnx" ]; then
     echo "  ✓ OSNet ReID model already exists, skipping export"
 elif [ "$CAN_EXPORT" = false ]; then
@@ -253,13 +240,6 @@ echo "  Model Download Summary"
 echo "==================================================================="
 
 MODELS_READY=true
-
-if [ -f "$MODELS_DIR/ggml/ggml-base.bin" ]; then
-    echo "  ✓ Whisper (Orchestra): $MODELS_DIR/ggml/ggml-base.bin"
-else
-    echo "  ✗ Whisper (Orchestra): MISSING"
-    MODELS_READY=false
-fi
 
 if [ -d "$MODELS_DIR/sherpa-onnx/vits-piper-en_US-lessac-medium" ]; then
     echo "  ✓ Sherpa-ONNX TTS (Rover): $MODELS_DIR/sherpa-onnx/vits-piper-en_US-lessac-medium"

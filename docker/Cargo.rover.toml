@@ -21,7 +21,6 @@ members = [
     "rover-kiwi/zenoh_bridge",
     "rover-kiwi/dispatcher_keyboard",
     "rover-kiwi/sim_interface",
-    "rover-kiwi/edge_speech_recognizer",
 
     # Direct-connect mode additions
     "common/web_bridge",
@@ -29,8 +28,8 @@ members = [
 
 [workspace.dependencies]
 # Shared dependencies across all workspace members
-dora-node-api = "0.3.13"
-dora-core = "0.3.13"
+dora-node-api = "0.5.0"
+dora-core = "0.5.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.9.8"
