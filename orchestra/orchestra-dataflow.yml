@@ -57,7 +57,6 @@ nodes:
       audio_command_web: web-bridge/audio_command
       stream_command_web: web-bridge/stream_command
       audio_stream_web: web-bridge/audio_stream
-      voice_audio_web: web-bridge/voice_command_audio
       fleet_subscription_command: web-bridge/fleet_subscription_command
       fleet_select_command: web-bridge/fleet_select_command
     outputs:
@@ -89,8 +88,10 @@ nodes:
     path: ../target/release/central_speech_recognizer
     inputs:
       audio_rover: orchestra-bridge/audio_frame  # S16LE rover microphone audio
-      # Phase 04 adds authoritative metadata/control before browser audio is accepted.
+      # Web bridge assigns target identity and validates browser stream ownership.
       audio_browser: web-bridge/voice_command_audio
+      browser_control: web-bridge/voice_command_control
+      stt_status_request: web-bridge/stt_status_request
     outputs:
       - transcription  # SpeechTranscription
       - stt_status     # SttStatus loading/ready/error lifecycle
@@ -161,6 +162,7 @@ nodes:
       tracked_detections: orchestra-bridge/tracked_detections
       tracking_telemetry: orchestra-bridge/tracking_telemetry
       transcription: central-speech-recognizer/transcription
+      stt_status: central-speech-recognizer/stt_status
       command_feedback: command-parser/feedback
     outputs:
       # Commands to selected rover (via orchestra-bridge)
@@ -173,6 +175,8 @@ nodes:
       - tts_command
       - audio_stream          # Direct audio to rover speakers
       - voice_command_audio   # Audio for STT processing
+      - voice_command_control # Browser STT start/stop lifecycle
+      - stt_status_request    # Request current central STT lifecycle status
       - fleet_subscription_command  # Fleet subscription management (activate/deactivate rovers)
       - fleet_select_command        # Fleet selection (which rover receives commands)
     env:
@@ -198,6 +202,9 @@ nodes:
       # Rate Limiting
       RATE_LIMIT_AUTH_PER_MINUTE: "5"
       RATE_LIMIT_COMMANDS_PER_SECOND: "100"
+      WEB_STT_QUEUE_CAPACITY: "64"          # 8x central decode queue; newest audio drops
+      WEB_STT_STREAM_IDLE_SECONDS: "30"
+      WEB_STT_CLOSING_SECONDS: "30"
 
       # Input Validation
       MAX_TTS_TEXT_LENGTH: "1000"

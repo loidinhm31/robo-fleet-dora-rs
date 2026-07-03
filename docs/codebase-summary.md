@@ -1,6 +1,6 @@
 # Codebase Summary
 
-Snapshot date: 2026-07-01
+Snapshot date: 2026-07-03
 
 ## Scope
 
@@ -28,10 +28,12 @@ Snapshot date: 2026-07-01
 - Rover Zenoh publishes versioned PCM v1 packets; orchestra validates them and only accepts bounded legacy F32LE during rollout.
 - Orchestra forwards S16LE directly to `web_bridge`, which emits binary audio attachments to browsers.
 - `central_speech_recognizer` now follows the Phase 01 STT contract: `SpeechTranscription` carries `source_kind`, `profile`, `target_entity_id`, `entity_id`, `stream_id`, `utterance_id`, `language`, `timestamp`, `duration_ms`, and optional `confidence`; `SttStatus` carries `state`, `profile`, `language`, `timestamp`, `error`.
-- Browser STT path still uses legacy transport (`voice_command_audio` / `transcription`) pending later phases; current browser runtime behavior is still transitional, not the final routed STT path.
+- Authenticated browsers control STT streams with `voice_command_control` start/stop events and send ordered Float32 frames with `voice_command_audio`; the web bridge owns stream identity, snapshots the selected rover at start, and forwards bounded start/audio/stop messages to central STT.
 - `central_speech_recognizer` has completed the Sherpa Phase 02 runtime cutover: it provisions fixed English/Vietnamese offline profile catalogs under `models/.cache/sherpa-onnx/asr`, validates required files, and loads Silero VAD plus the selected offline recognizer at startup.
-- The live audio decode loop is not enabled yet. The current Phase 02 binary is a startup probe that loads native Sherpa components, warns that audio inputs stay disabled until Phase 03, and remains alive for orchestration smoke tests.
-- Orchestra dataflow STT environment now points at Sherpa profile/root/thread/VAD settings instead of Whisper model paths; production browser/rover STT routing still waits on later phases.
+- The live central STT decode loop accepts browser and rover streams, applies Sherpa VAD/offline recognition, and emits final-only transcriptions plus lifecycle status.
+- Browser transcripts use the private `voice_command_transcription` event for their owning authenticated socket. Rover transcripts use authenticated `transcription` broadcasts. `stt_status` is cached and replayed on reconnect, with an explicit Dora status request when no cache exists.
+- Orchestra dataflow wires web-bridge `voice_command_audio`, `voice_command_control`, and `stt_status_request` outputs to central STT, and routes central `transcription` and `stt_status` outputs back to web-bridge.
+- Browser STT transport limits are configured with `WEB_STT_QUEUE_CAPACITY`, `WEB_STT_STREAM_IDLE_SECONDS`, and `WEB_STT_CLOSING_SECONDS`.
 - `web_bridge` maintains process-level `Arc<AudioDeliveryCounters>` (atomic, relaxed ordering) in `SharedState` so shutdown totals survive client disconnects; per-client `ClientState` counters remain for live debugging. Resolves the Approach A Phase 5 backlog item (Phase 06 completion report).
 
 ## Documentation Notes

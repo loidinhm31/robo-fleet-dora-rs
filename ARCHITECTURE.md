@@ -176,8 +176,8 @@ ZENOH_MODE=peer
 ### STT Runtime And Contract
 
 Phase 03 replaced the Whisper baseline with the central Sherpa VAD/offline
-recognizer runtime. The locked wire contract and remaining routing invariants
-for the later transport phases are:
+recognizer runtime. The web bridge now implements the browser transport and
+source-aware transcript delivery:
 
 ```text
 browser mic -> web bridge -> central STT -> deterministic command parser -> target rover captured at browser start
@@ -186,19 +186,24 @@ central STT -> web bridge -> private browser transcript OR authenticated rover t
 central STT -> web bridge -> global stt_status(profile,state,error)
 ```
 
-Phase 01 locks the contract, not the final transport behavior. Current runtime
-limitations remain until the later transport phases land:
-
-- Browser microphone audio still travels through the legacy `voice_command_audio`
-  path with no socket ownership or per-stream metadata.
-- `transcription` remains the only live Socket.IO STT event today, so browser
-  privacy routing is not enforced at runtime yet.
-- Legacy browser transcriptions populate `target_entity_id` from the current
-  `SELECTED_ENTITY_ID` startup fallback because per-stream target snapshots do
-  not exist before Phase 04.
-- Legacy browser transcriptions use a fixed placeholder stream id
-  `legacy-browser-stream` because the current transport does not yet provide
-  authoritative stream ownership.
+- Authenticated browsers emit `voice_command_control` (`start`/`stop`) and
+  ordered Float32 `voice_command_audio` frames. The server owns the stream
+  mapping and snapshots the selected rover when the stream starts; clients
+  cannot supply `target_entity_id` or `entity_id`.
+- The bridge forwards bounded, ordered `voice_command_control` and
+  `voice_command_audio` Dora outputs to central STT. Queue overflow drops the
+  newest frame and terminates only the affected stream.
+- Browser results emit as `voice_command_transcription` only to the owning,
+  still-authenticated socket. Rover results emit as `transcription` only to
+  authenticated fleet clients.
+- `stt_status` is cached and replayed to authenticated reconnects. If no status
+  is cached, web-bridge emits `stt_status_request`; central STT returns its
+  current lifecycle state on the dataflow `stt_status` edge.
+- `WEB_STT_QUEUE_CAPACITY`, `WEB_STT_STREAM_IDLE_SECONDS`, and
+  `WEB_STT_CLOSING_SECONDS` bound transport buffering and ownership lifetime.
+- Orchestra dataflow connects web-bridge browser audio/control/status-request
+  outputs to central STT and routes central transcription/status outputs back
+  to web-bridge.
 
 ### STT Contract Invariants
 
@@ -208,8 +213,8 @@ limitations remain until the later transport phases land:
 - `profile` is global process state. A single startup profile serves every source stream.
 - `confidence` is the only field allowed to be absent on input for backward parsing. Producers emit `null` when confidence is unavailable.
 - The deterministic `command_parser` remains the only actuator interpretation path. AI interpretation is explicitly deferred.
-- Browser transcripts are contractually private to the owning socket after the
-  transport cutover. Rover transcripts remain broadcast to authenticated fleet clients.
+- Browser transcripts are private to the owning authenticated socket. Rover
+  transcripts remain broadcast to authenticated fleet clients.
 
 ### `kornia_capture` runtime notes
 

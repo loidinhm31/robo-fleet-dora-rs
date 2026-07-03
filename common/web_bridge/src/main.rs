@@ -6,7 +6,7 @@ use dora_node_api::{
 use eyre::Result;
 use robo_rover_lib::types::{
     ActiveRoversStatus, DetectionFrame, FleetSelectCommand, FleetStatus, FleetSubscriptionCommand,
-    SpeechTranscription, SystemMetrics, TrackingCommand, TrackingTelemetry,
+    SpeechTranscription, SttStatus, SystemMetrics, TrackingCommand, TrackingTelemetry,
 };
 use robo_rover_lib::{
     capture_age_ms, init_tracing, record_capture_age, ArmCommand, ArmCommandWithMetadata,
@@ -43,6 +43,17 @@ use security::{
 
 mod audio_counters;
 use audio_counters::AudioDeliveryCounters;
+
+mod stt_bridge;
+mod stt_ingress;
+mod stt_protocol;
+mod stt_socket_delivery;
+mod stt_stream_registry;
+mod stt_stream_state;
+mod stt_transcript_routing;
+use stt_bridge::{SttBridge, SttBridgeConfig, TranscriptRoute};
+use stt_protocol::{send_dora_message, SttOutputIds, VoiceCommandAudioFrame, VoiceCommandControl};
+use stt_socket_delivery::{emit_authenticated, AUTHENTICATED_ROOM};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct JointPositions {
@@ -403,7 +414,7 @@ struct SharedState {
     pub tracking_command_queue: Arc<Mutex<Vec<WebTrackingCommand>>>,
     pub tts_command_queue: Arc<Mutex<Vec<WebTtsCommand>>>,
     pub audio_stream_queue: Arc<Mutex<Vec<WebAudioStream>>>,
-    pub voice_command_audio_queue: Arc<Mutex<Vec<WebAudioStream>>>,
+    pub stt_bridge: Arc<SttBridge>,
     pub fleet_subscription_command_queue: Arc<Mutex<Vec<WebFleetSubscriptionCommand>>>,
     pub fleet_select_command_queue: Arc<Mutex<Vec<FleetSelectCommand>>>,
     pub video_clients: Arc<Mutex<Vec<ClientState>>>,
@@ -457,7 +468,7 @@ impl SharedState {
             tracking_command_queue: Arc::new(Mutex::new(Vec::new())),
             tts_command_queue: Arc::new(Mutex::new(Vec::new())),
             audio_stream_queue: Arc::new(Mutex::new(Vec::new())),
-            voice_command_audio_queue: Arc::new(Mutex::new(Vec::new())),
+            stt_bridge: Arc::new(SttBridge::new(stt_bridge_config())),
             fleet_subscription_command_queue: Arc::new(Mutex::new(Vec::new())),
             fleet_select_command_queue: Arc::new(Mutex::new(Vec::new())),
             video_clients: Arc::new(Mutex::new(Vec::new())),
@@ -470,6 +481,40 @@ impl SharedState {
             active_rovers_status: Arc::new(Mutex::new(active_rovers_status)),
             audio_counters: Arc::new(AudioDeliveryCounters::new()),
         }
+    }
+}
+
+fn stt_bridge_config() -> SttBridgeConfig {
+    let decode_capacity = env::var("STT_DECODE_QUEUE_CAPACITY")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(8);
+    let queue_capacity = env::var("WEB_STT_QUEUE_CAPACITY")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_else(|| decode_capacity.saturating_mul(8))
+        .clamp(4, 4_096);
+    let stream_idle_seconds = env::var("WEB_STT_STREAM_IDLE_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(30)
+        .clamp(5, 3_600);
+    let closing_seconds = env::var("WEB_STT_CLOSING_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(30)
+        .clamp(5, 300);
+
+    tracing::info!(
+        queue_capacity,
+        stream_idle_seconds,
+        closing_seconds,
+        "Browser STT transport configured"
+    );
+    SttBridgeConfig {
+        queue_capacity,
+        stream_idle_ttl: Duration::from_secs(stream_idle_seconds),
+        closing_ttl: Duration::from_secs(closing_seconds),
     }
 }
 
@@ -547,6 +592,12 @@ fn setup_socketio(
                 log_auth_attempt(&socket_id, &sub, true);
                 socket.emit("auth_token", token).ok();
                 shared_state.session_registry.register(&socket_id, claims);
+                if let Err(error) = socket.join(AUTHENTICATED_ROOM) {
+                    tracing::error!(%error, "Failed to join authenticated Socket.IO room");
+                    shared_state.session_registry.remove(&socket_id);
+                    socket.disconnect().ok();
+                    return;
+                }
                 shared_state.auth_rate_limiter.reset(&socket_id);
                 tracing::info!("Client authenticated and connected: {} (user={})", socket_id, sub);
             }
@@ -565,6 +616,14 @@ fn setup_socketio(
         // Send fleet status to newly connected client
         let fleet_status = shared_state.fleet_status.lock().unwrap().clone();
         socket.emit("fleet_status", fleet_status).ok();
+
+        // STT status is authoritative and process-wide. Reconnects either receive
+        // the cached lifecycle state or trigger a fresh response from central STT.
+        if let Some(status) = shared_state.stt_bridge.cached_status() {
+            socket.emit("stt_status", status).ok();
+        } else {
+            shared_state.stt_bridge.request_status();
+        }
 
         let shared_state_clone = shared_state.clone();
         let socket_id_clone = socket_id.clone();
@@ -836,6 +895,58 @@ fn setup_socketio(
         let shared_state_clone = shared_state.clone();
         let socket_id_clone = socket_id.clone();
         socket.on(
+            "voice_command_control",
+            move |socket: SocketRef, Data::<Value>(data)| {
+                if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
+                    socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                    socket.disconnect().ok();
+                    return;
+                }
+                if !shared_state_clone.command_rate_limiter.check_command(&socket_id_clone) {
+                    log_rate_limit_exceeded(&socket_id_clone, "voice_command_control");
+                    return;
+                }
+                touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
+                let control = match serde_json::from_value::<VoiceCommandControl>(data) {
+                    Ok(control) => control,
+                    Err(error) => {
+                        log_validation_error(
+                            &socket_id_clone,
+                            &format!("Voice control: {error}"),
+                        );
+                        return;
+                    }
+                };
+                let selected_target = matches!(&control, VoiceCommandControl::Start { .. })
+                    .then(|| {
+                        shared_state_clone
+                            .fleet_status
+                            .lock()
+                            .ok()
+                            .map(|status| status.selected_entity.clone())
+                    })
+                    .flatten();
+                let target_is_active = selected_target.as_ref().is_some_and(|target| {
+                    shared_state_clone
+                        .active_rovers_status
+                        .lock()
+                        .map(|status| status.active_rovers.contains(target))
+                        .unwrap_or(false)
+                });
+                if let Err(error) = shared_state_clone.stt_bridge.handle_control(
+                    &socket_id_clone,
+                    control,
+                    selected_target.as_deref(),
+                    target_is_active,
+                ) {
+                    log_validation_error(&socket_id_clone, &format!("Voice control: {error}"));
+                }
+            },
+        );
+
+        let shared_state_clone = shared_state.clone();
+        let socket_id_clone = socket_id.clone();
+        socket.on(
             "voice_command_audio",
             move |socket: SocketRef, Data::<Value>(data)| {
                 if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
@@ -848,17 +959,18 @@ fn setup_socketio(
                     return;
                 }
                 touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
-                if let Ok(web_audio) = serde_json::from_value::<WebAudioStream>(data) {
-                    if let Err(e) = security::validation::validate_audio_data(&web_audio.audio_data) {
-                        log_validation_error(&socket_id_clone, &format!("Voice audio: {}", e));
+                let frame = match serde_json::from_value::<VoiceCommandAudioFrame>(data) {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        log_validation_error(&socket_id_clone, &format!("Voice audio: {error}"));
                         return;
                     }
-                    tracing::debug!("Received voice command audio: {} samples", web_audio.audio_data.len());
-                    shared_state_clone
-                        .voice_command_audio_queue
-                        .lock()
-                        .unwrap()
-                        .push(web_audio);
+                };
+                if let Err(error) = shared_state_clone
+                    .stt_bridge
+                    .handle_audio(&socket_id_clone, frame)
+                {
+                    log_validation_error(&socket_id_clone, &format!("Voice audio: {error}"));
                 }
             },
         );
@@ -1053,6 +1165,13 @@ fn setup_socketio(
                     .unwrap()
                     .push(command);
             }
+            let stopped_voice_streams = shared_state_clone.stt_bridge.close_owner(&socket_id);
+            if stopped_voice_streams > 0 {
+                tracing::info!(
+                    stopped_voice_streams,
+                    "Flushing browser speech streams for disconnected client"
+                );
+            }
             shared_state_clone.session_registry.remove(&socket_id);
             // Process-level cumulative: this client's per-client counters
             // are dropped by `remove_client_and_stream_transition`, but
@@ -1154,7 +1273,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tracking_command_output = DataId::from("tracking_command".to_owned());
     let tts_command_output = DataId::from("tts_command".to_owned());
     let audio_stream_output = DataId::from("audio_stream".to_owned());
-    let voice_command_audio_output = DataId::from("voice_command_audio".to_owned());
+    let stt_outputs = SttOutputIds {
+        audio: DataId::from("voice_command_audio".to_owned()),
+        control: DataId::from("voice_command_control".to_owned()),
+        status_request: DataId::from("stt_status_request".to_owned()),
+    };
     let fleet_subscription_command_output = DataId::from("fleet_subscription_command".to_owned());
     let fleet_select_command_output = DataId::from("fleet_select_command".to_owned());
 
@@ -1173,6 +1296,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sweep_clients = shared_state.video_clients.clone();
     let sweep_stream_queue = shared_state.stream_command_queue.clone();
     let sweep_audio_counters = shared_state.audio_counters.clone();
+    let sweep_stt = shared_state.stt_bridge.clone();
     let sweep_io = io.clone();
     tokio::spawn(async move {
         tracing::info!("Session sweep task started (interval: 60s)");
@@ -1186,6 +1310,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 {
                     sweep_stream_queue.lock().unwrap().push(command);
                 }
+                sweep_stt.close_owner(&socket_id);
                 // Process-level cumulative: sweep-driven disconnects must
                 // count toward the lifetime client_disconnects total, and
                 // the per-client counters we just dropped are still
@@ -1209,6 +1334,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let idle_clients = shared_state.video_clients.clone();
     let idle_stream_queue = shared_state.stream_command_queue.clone();
     let idle_audio_counters = shared_state.audio_counters.clone();
+    let idle_stt = shared_state.stt_bridge.clone();
     let idle_io = io.clone();
     tokio::spawn(async move {
         tracing::info!(
@@ -1242,6 +1368,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 {
                     idle_stream_queue.lock().unwrap().push(command);
                 }
+                idle_stt.close_owner(&socket_id);
                 // Process-level cumulative: idle-sweep-driven disconnects
                 // must count toward the lifetime client_disconnects total.
                 idle_audio_counters.record_client_disconnect();
@@ -1332,7 +1459,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node_clone_tracking = node_clone_arm.clone();
     let node_clone_tts = node_clone_arm.clone();
     let node_clone_audio_stream = node_clone_arm.clone();
-    let node_clone_voice_command = node_clone_arm.clone();
+    let node_clone_stt = node_clone_arm.clone();
     let node_clone_fleet_sub = node_clone_arm.clone();
     let state_clone_arm = shared_state.clone();
 
@@ -1575,30 +1702,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Process voice command audio from Web UI microphone (voice command mode)
-    let state_clone_voice_command = shared_state.clone();
-    let _voice_command_processor = tokio::spawn(async move {
+    // Preserve start/audio/stop ordering while keeping browser STT transport bounded.
+    let state_clone_stt = shared_state.clone();
+    let _stt_transport_processor = tokio::spawn(async move {
+        let mut last_sweep = Instant::now();
         loop {
-            if let Ok(mut queue) = state_clone_voice_command.voice_command_audio_queue.lock() {
-                if !queue.is_empty() {
-                    let web_audio = queue.remove(0);
-                    tracing::debug!(
-                        "Processing voice command audio: {} samples",
-                        web_audio.audio_data.len()
-                    );
-
-                    // Send Float32 audio to the central speech recognizer node.
-                    let arrow_data = Float32Array::from(web_audio.audio_data);
-                    if let Ok(mut node_guard) = node_clone_voice_command.lock() {
-                        let _ = node_guard.send_output(
-                            voice_command_audio_output.clone(),
-                            Default::default(),
-                            arrow_data,
-                        );
+            if last_sweep.elapsed() >= Duration::from_secs(1) {
+                state_clone_stt.stt_bridge.sweep();
+                last_sweep = Instant::now();
+            }
+            for _ in 0..32 {
+                let Some(message) = state_clone_stt.stt_bridge.pop_message() else {
+                    break;
+                };
+                let mut delivered = false;
+                if let Ok(mut node_guard) = node_clone_stt.lock() {
+                    match send_dora_message(&mut node_guard, &stt_outputs, &message) {
+                        Ok(()) => delivered = true,
+                        Err(error) => {
+                            tracing::error!(%error, "Failed to forward browser STT transport message; retrying in order");
+                        }
                     }
+                } else {
+                    tracing::error!("Dora node lock poisoned; retrying browser STT message");
+                }
+                if delivered {
+                    state_clone_stt.stt_bridge.complete_delivery();
+                } else {
+                    state_clone_stt.stt_bridge.retry_delivery(message);
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    break;
                 }
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
     });
 
@@ -2255,32 +2391,77 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     "transcription" => {
-                        // Handle transcription from central_speech_recognizer.
                         if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
                             if binary_array.len() > 0 {
                                 let transcription_data = binary_array.value(0);
-
-                                // Deserialize SpeechTranscription
                                 match serde_json::from_slice::<SpeechTranscription>(
                                     transcription_data,
                                 ) {
                                     Ok(transcription) => {
-                                        let confidence_log = transcription
-                                            .confidence
-                                            .map(|confidence| format!("{confidence:.2}"))
-                                            .unwrap_or_else(|| "n/a".to_string());
                                         tracing::info!(
-                                            "Transcription received: \"{}\" (confidence: {})",
-                                            transcription.text,
-                                            confidence_log
+                                            source = ?transcription.source_kind,
+                                            stream_id = %transcription.stream_id,
+                                            utterance_id = %transcription.utterance_id,
+                                            "Final transcription received"
                                         );
-
-                                        // Forward transcription to all connected clients
                                         if let Some(ref io) = *io_for_video.lock().unwrap() {
-                                            let _ = io.of("/").unwrap().emit(
-                                                "transcription",
-                                                serde_json::to_value(&transcription).unwrap(),
-                                            );
+                                            if let Some(namespace) = io.of("/") {
+                                                let payload = serde_json::to_value(&transcription)
+                                                    .unwrap_or(Value::Null);
+                                                match state_for_video
+                                                    .stt_bridge
+                                                    .route_transcription(&transcription)
+                                                {
+                                                    TranscriptRoute::Browser { socket_id } => {
+                                                        if !state_for_video
+                                                            .session_registry
+                                                            .is_valid(&socket_id)
+                                                        {
+                                                            tracing::warn!(
+                                                                stream_id = %transcription.stream_id,
+                                                                "Dropping browser transcription for unauthenticated owner"
+                                                            );
+                                                            continue;
+                                                        }
+                                                        let socket =
+                                                            socket_id.parse().ok().and_then(
+                                                                |sid| namespace.get_socket(sid),
+                                                            );
+                                                        if let Some(socket) = socket {
+                                                            if let Err(error) = socket.emit(
+                                                                "voice_command_transcription",
+                                                                payload,
+                                                            ) {
+                                                                tracing::warn!(
+                                                                    %error,
+                                                                    stream_id = %transcription.stream_id,
+                                                                    "Failed to emit private browser transcription"
+                                                                );
+                                                            }
+                                                        } else {
+                                                            tracing::warn!(
+                                                                stream_id = %transcription.stream_id,
+                                                                "Browser transcription owner disconnected before emit"
+                                                            );
+                                                        }
+                                                    }
+                                                    TranscriptRoute::RoverBroadcast => {
+                                                        emit_authenticated(
+                                                            namespace,
+                                                            &state_for_video.session_registry,
+                                                            "transcription",
+                                                            payload,
+                                                        );
+                                                    }
+                                                    TranscriptRoute::Drop(reason) => {
+                                                        tracing::warn!(
+                                                            %reason,
+                                                            stream_id = %transcription.stream_id,
+                                                            "Dropping unroutable transcription"
+                                                        );
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                     Err(e) => {
@@ -2288,6 +2469,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             "Failed to deserialize transcription: {}",
                                             e
                                         );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "stt_status" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() > 0 {
+                                match serde_json::from_slice::<SttStatus>(binary_array.value(0)) {
+                                    Ok(status) => {
+                                        state_for_video.stt_bridge.cache_status(status.clone());
+                                        if let Some(ref io) = *io_for_video.lock().unwrap() {
+                                            if let Some(namespace) = io.of("/") {
+                                                emit_authenticated(
+                                                    namespace,
+                                                    &state_for_video.session_registry,
+                                                    "stt_status",
+                                                    serde_json::to_value(status)
+                                                        .unwrap_or(Value::Null),
+                                                );
+                                            }
+                                        }
+                                    }
+                                    Err(error) => {
+                                        tracing::error!(%error, "Failed to deserialize STT status");
                                     }
                                 }
                             }
@@ -2342,6 +2548,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 },
                 Event::Stop(_) => {
+                    let stt_metrics = state_for_video.stt_bridge.metrics();
+                    tracing::info!(
+                        metric = "browser_stt_transport_total",
+                        queue_drops = stt_metrics.queue_drops,
+                        terminated_streams = stt_metrics.terminated_streams,
+                        expired_streams = stt_metrics.expired_streams,
+                        late_transcriptions = stt_metrics.late_transcriptions,
+                        status_requests = stt_metrics.status_requests,
+                        "Browser STT transport shutdown totals"
+                    );
                     // Process-level cumulative totals survive client
                     // disconnects, so the shutdown log now reports the
                     // actual lifetime work the bridge performed rather

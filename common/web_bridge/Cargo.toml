@@ -17,7 +17,7 @@ uuid = { workspace = true }
 tokio = { version = "1.24.2", features = ["full"] }
 socketioxide = "0.12"
 axum = "0.7"
-tower = "0.4"
+tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5", features = ["cors"] }
 
 # Base64 encoding for video frames

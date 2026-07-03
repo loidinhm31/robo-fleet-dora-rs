@@ -489,6 +489,37 @@ pub mod validation {
         Ok(())
     }
 
+    pub fn validate_voice_stream_format(sample_rate: u32, channels: u16) -> Result<(), String> {
+        if !(8_000..=192_000).contains(&sample_rate) {
+            return Err("Voice sample rate must be between 8000 and 192000 Hz".to_string());
+        }
+        if channels != 1 {
+            return Err("Voice command audio must be mono".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn validate_voice_audio_frame(
+        sample_rate: u32,
+        channels: u16,
+        sample_count: u32,
+        samples: &[f32],
+    ) -> Result<(), String> {
+        validate_voice_stream_format(sample_rate, channels)?;
+        let declared = usize::try_from(sample_count)
+            .map_err(|_| "Voice sample count exceeds platform size".to_string())?;
+        if declared != samples.len() {
+            return Err(format!(
+                "Voice sample count mismatch: declared {declared}, received {}",
+                samples.len()
+            ));
+        }
+        if sample_count > sample_rate {
+            return Err("Voice audio frame duration must not exceed one second".to_string());
+        }
+        validate_audio_data(samples)
+    }
+
     pub fn validate_detection_index(index: usize, max: usize) -> Result<(), String> {
         if index >= max {
             return Err(format!(
@@ -647,6 +678,18 @@ mod tests {
         assert!(validation::validate_audio_data(&[]).is_err());
         assert!(validation::validate_audio_data(&[f32::NAN]).is_err());
         assert!(validation::validate_audio_data(&[f32::INFINITY]).is_err());
+    }
+
+    #[test]
+    fn test_voice_frame_validation() {
+        assert!(validation::validate_voice_audio_frame(48_000, 1, 2, &[0.0, 0.1]).is_ok());
+        assert!(validation::validate_voice_audio_frame(48_000, 2, 2, &[0.0, 0.1]).is_err());
+        assert!(validation::validate_voice_audio_frame(1_000, 1, 2, &[0.0, 0.1]).is_err());
+        assert!(validation::validate_voice_audio_frame(48_000, 1, 3, &[0.0, 0.1]).is_err());
+        assert!(validation::validate_voice_audio_frame(48_000, 1, 1, &[f32::NAN]).is_err());
+        assert!(
+            validation::validate_voice_audio_frame(8_000, 1, 8_001, &vec![0.0; 8_001]).is_err()
+        );
     }
 
     #[test]
