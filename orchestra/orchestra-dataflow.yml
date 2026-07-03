@@ -88,9 +88,12 @@ nodes:
     build: cargo build --release -p central_speech_recognizer
     path: ../target/release/central_speech_recognizer
     inputs:
-      audio_web: web-bridge/voice_command_audio  # Float32 audio from web UI microphone only
+      audio_rover: orchestra-bridge/audio_frame  # S16LE rover microphone audio
+      # Phase 04 adds authoritative metadata/control before browser audio is accepted.
+      audio_browser: web-bridge/voice_command_audio
     outputs:
       - transcription  # SpeechTranscription
+      - stt_status     # SttStatus loading/ready/error lifecycle
     env:
       RUST_LOG: info
       STT_PROFILE: "${STT_PROFILE:-en-vad-offline}"

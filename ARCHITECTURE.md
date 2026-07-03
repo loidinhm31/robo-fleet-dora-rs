@@ -61,7 +61,7 @@ robo-rover-dora/
 │   └── web_bridge/                 # Socket.IO server (runs on orchestra OR rover)
 │
 ├── orchestra/                      # Workstation-only nodes (heavy compute)
-│   ├── central_speech_recognizer/  # Current Whisper STT baseline, Sherpa target
+│   ├── central_speech_recognizer/  # Central Sherpa VAD/offline STT runtime
 │   ├── command_parser/             # NLU pattern matching
 │   ├── kokoro_tts/                 # High-quality TTS (Kokoro-82M, workstation audio, optional)
 │   ├── zenoh_bridge/               # Orchestra Zenoh bridge (orchestra-only)
@@ -173,10 +173,11 @@ ZENOH_MODE=peer
    - Web microphone Float32 audio -> central-speech-recognizer -> command-parser
    - Tracked detections with ReID features → web-bridge (for web UI display)
 
-### Phase 01 STT Target Architecture
+### STT Runtime And Contract
 
-The current runtime still uses Whisper as the baseline recognizer, but the locked
-wire contract and routing invariants for the Sherpa migration are:
+Phase 03 replaced the Whisper baseline with the central Sherpa VAD/offline
+recognizer runtime. The locked wire contract and remaining routing invariants
+for the later transport phases are:
 
 ```text
 browser mic -> web bridge -> central STT -> deterministic command parser -> target rover captured at browser start

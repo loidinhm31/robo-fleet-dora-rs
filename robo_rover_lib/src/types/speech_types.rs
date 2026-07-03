@@ -129,7 +129,8 @@ impl SpeechTranscription {
 
     /// Check if confidence is above threshold
     pub fn is_confident(&self, threshold: f32) -> bool {
-        self.confidence.is_some_and(|confidence| confidence >= threshold)
+        self.confidence
+            .is_some_and(|confidence| confidence >= threshold)
     }
 }
 

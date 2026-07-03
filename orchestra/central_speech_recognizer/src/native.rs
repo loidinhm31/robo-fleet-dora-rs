@@ -10,6 +10,12 @@ pub struct NativeModels {
 }
 
 pub fn load_models(config: &SttConfig) -> Result<NativeModels> {
+    let vad = create_vad(config)?;
+    let recognizer = create_recognizer(config)?;
+    Ok(NativeModels { vad, recognizer })
+}
+
+pub fn create_vad(config: &SttConfig) -> Result<VoiceActivityDetector> {
     let mut vad_config = VadModelConfig::default();
     vad_config.silero_vad.model = Some(path(&config.models.vad));
     vad_config.silero_vad.threshold = config.vad.threshold;
@@ -21,9 +27,11 @@ pub fn load_models(config: &SttConfig) -> Result<NativeModels> {
     vad_config.num_threads = config.num_threads;
     vad_config.provider = Some("cpu".to_string());
 
-    let vad = VoiceActivityDetector::create(&vad_config, config.vad.max_speech_seconds * 2.0)
-        .ok_or_else(|| eyre!("failed to initialize Silero VAD"))?;
+    VoiceActivityDetector::create(&vad_config, config.vad.max_speech_seconds * 2.0)
+        .ok_or_else(|| eyre!("failed to initialize Silero VAD"))
+}
 
+fn create_recognizer(config: &SttConfig) -> Result<OfflineRecognizer> {
     let mut recognizer_config = OfflineRecognizerConfig::default();
     recognizer_config.model_config.transducer.encoder = Some(path(&config.models.encoder));
     recognizer_config.model_config.transducer.decoder = Some(path(&config.models.decoder));
@@ -31,10 +39,8 @@ pub fn load_models(config: &SttConfig) -> Result<NativeModels> {
     recognizer_config.model_config.tokens = Some(path(&config.models.tokens));
     recognizer_config.model_config.num_threads = config.num_threads;
     recognizer_config.model_config.provider = Some("cpu".to_string());
-    let recognizer = OfflineRecognizer::create(&recognizer_config)
-        .ok_or_else(|| eyre!("failed to initialize offline recognizer"))?;
-
-    Ok(NativeModels { vad, recognizer })
+    OfflineRecognizer::create(&recognizer_config)
+        .ok_or_else(|| eyre!("failed to initialize offline recognizer"))
 }
 
 fn path(value: &std::path::Path) -> String {

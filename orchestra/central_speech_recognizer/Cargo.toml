@@ -10,6 +10,7 @@ eyre = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
 
 # Official Sherpa runtime. Static linkage keeps the Orchestra binary portable.
 sherpa-onnx = { version = "=1.13.3", default-features = false, features = ["static"] }
