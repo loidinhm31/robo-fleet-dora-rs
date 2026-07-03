@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 const MAX_SESSIONS: usize = 64;
+const MAX_PRESTART_FRAMES: usize = 8;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecodeJob {
@@ -26,8 +27,15 @@ enum SessionKey {
     Rover(String, Uuid),
 }
 
+struct PendingBrowser {
+    identity: SourceIdentity,
+    sample_rate: u32,
+    frames: Vec<AudioInput>,
+}
+
 pub struct SessionManager {
     sessions: HashMap<SessionKey, Session>,
+    pending_browsers: HashMap<Uuid, PendingBrowser>,
     factory: SegmenterFactory,
 }
 
@@ -35,31 +43,47 @@ impl SessionManager {
     pub fn new(factory: SegmenterFactory) -> Self {
         Self {
             sessions: HashMap::new(),
+            pending_browsers: HashMap::new(),
             factory,
         }
     }
 
-    pub fn start_browser(&mut self, identity: SourceIdentity, sample_rate: u32) -> Result<()> {
-        if identity.source_kind != SttSourceKind::Browser
-            || identity.entity_id.is_some()
-            || identity.target_entity_id.trim().is_empty()
-            || !(8_000..=192_000).contains(&sample_rate)
-        {
-            return Err(eyre!("invalid browser stream start"));
-        }
+    pub fn start_browser(
+        &mut self,
+        identity: SourceIdentity,
+        sample_rate: u32,
+    ) -> Result<FrameOutcome> {
+        validate_browser_identity(&identity, sample_rate)?;
         let key = SessionKey::Browser(identity.stream_id);
+        if self
+            .pending_browsers
+            .get(&identity.stream_id)
+            .is_some_and(|pending| {
+                pending.identity != identity || pending.sample_rate != sample_rate
+            })
+        {
+            return Err(eyre!("browser pre-start metadata does not match start"));
+        }
         self.ensure_capacity(&key)?;
-        self.sessions
-            .insert(key, Session::new(identity, sample_rate, (self.factory)()?)?);
-        Ok(())
+        let mut session = Session::new(identity, sample_rate, (self.factory)()?)?;
+        let mut outcome = FrameOutcome::default();
+        if let Some(pending) = self.pending_browsers.remove(&session.identity.stream_id) {
+            for frame in pending.frames {
+                let frame_outcome = session.accept(frame.frame_id, &frame.samples);
+                outcome.jobs.extend(frame_outcome.jobs);
+                outcome.sequence_reset |= frame_outcome.sequence_reset;
+            }
+        }
+        self.sessions.insert(key, session);
+        Ok(outcome)
     }
 
     pub fn accept_browser(&mut self, input: AudioInput) -> Result<FrameOutcome> {
         let key = SessionKey::Browser(input.identity.stream_id);
-        let session = self
-            .sessions
-            .get_mut(&key)
-            .ok_or_else(|| eyre!("browser audio received before stream start"))?;
+        let Some(session) = self.sessions.get_mut(&key) else {
+            self.buffer_prestart(input)?;
+            return Ok(FrameOutcome::default());
+        };
         if session.identity != input.identity || session.sample_rate != input.sample_rate {
             return Err(eyre!("browser stream metadata changed after start"));
         }
@@ -95,14 +119,17 @@ impl SessionManager {
     }
 
     pub fn stop_browser(&mut self, stream_id: Uuid) -> Result<Vec<DecodeJob>> {
-        let mut session = self
-            .sessions
-            .remove(&SessionKey::Browser(stream_id))
-            .ok_or_else(|| eyre!("unknown browser stream stop"))?;
-        Ok(session.flush())
+        if let Some(mut session) = self.sessions.remove(&SessionKey::Browser(stream_id)) {
+            return Ok(session.flush());
+        }
+        if self.pending_browsers.remove(&stream_id).is_some() {
+            return Ok(Vec::new());
+        }
+        Err(eyre!("unknown browser stream stop"))
     }
 
     pub fn flush_all_browsers(&mut self) -> Vec<DecodeJob> {
+        self.pending_browsers.clear();
         let keys: Vec<_> = self
             .sessions
             .keys()
@@ -115,12 +142,58 @@ impl SessionManager {
             .collect()
     }
 
+    fn buffer_prestart(&mut self, input: AudioInput) -> Result<()> {
+        validate_browser_identity(&input.identity, input.sample_rate)?;
+        let key = SessionKey::Browser(input.identity.stream_id);
+        self.ensure_capacity(&key)?;
+        let pending = self
+            .pending_browsers
+            .entry(input.identity.stream_id)
+            .or_insert_with(|| PendingBrowser {
+                identity: input.identity.clone(),
+                sample_rate: input.sample_rate,
+                frames: Vec::new(),
+            });
+        if pending.identity != input.identity || pending.sample_rate != input.sample_rate {
+            return Err(eyre!("browser pre-start metadata changed"));
+        }
+        if pending.frames.len() >= MAX_PRESTART_FRAMES {
+            return Err(eyre!("browser pre-start buffer is full"));
+        }
+        if pending
+            .frames
+            .last()
+            .is_some_and(|last| last.frame_id.checked_add(1) != Some(input.frame_id))
+        {
+            return Err(eyre!("browser pre-start frame sequence is invalid"));
+        }
+        pending.frames.push(input);
+        Ok(())
+    }
+
     fn ensure_capacity(&self, key: &SessionKey) -> Result<()> {
-        if !self.sessions.contains_key(key) && self.sessions.len() >= MAX_SESSIONS {
+        let pending_exists =
+            matches!(key, SessionKey::Browser(id) if self.pending_browsers.contains_key(id));
+        if !self.sessions.contains_key(key)
+            && !pending_exists
+            && self.sessions.len() + self.pending_browsers.len() >= MAX_SESSIONS
+        {
             Err(eyre!("active speech stream limit reached"))
         } else {
             Ok(())
         }
+    }
+}
+
+fn validate_browser_identity(identity: &SourceIdentity, sample_rate: u32) -> Result<()> {
+    if identity.source_kind != SttSourceKind::Browser
+        || identity.entity_id.is_some()
+        || identity.target_entity_id.trim().is_empty()
+        || !(8_000..=192_000).contains(&sample_rate)
+    {
+        Err(eyre!("invalid browser stream metadata"))
+    } else {
+        Ok(())
     }
 }
 

@@ -1,5 +1,5 @@
 use crate::audio_input::SourceIdentity;
-use crate::session::{DecodeJob, SessionManager};
+use crate::session::{FrameOutcome, SessionManager};
 use dora_node_api::arrow::array::{Array, BinaryArray};
 use eyre::{eyre, Result};
 use robo_rover_lib::SttSourceKind;
@@ -23,7 +23,7 @@ enum BrowserControl {
 pub(crate) fn handle_control(
     data: &dyn Array,
     sessions: &mut SessionManager,
-) -> Result<Vec<DecodeJob>> {
+) -> Result<FrameOutcome> {
     let array = data
         .as_any()
         .downcast_ref::<BinaryArray>()
@@ -49,10 +49,12 @@ pub(crate) fn handle_control(
                     target_entity_id,
                 },
                 sample_rate,
-            )?;
-            Ok(Vec::new())
+            )
         }
-        BrowserControl::Stop { stream_id } => sessions.stop_browser(stream_id),
+        BrowserControl::Stop { stream_id } => Ok(FrameOutcome {
+            jobs: sessions.stop_browser(stream_id)?,
+            sequence_reset: false,
+        }),
     }
 }
 

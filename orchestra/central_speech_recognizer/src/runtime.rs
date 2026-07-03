@@ -82,7 +82,7 @@ fn run_ready(
                         .and_then(|input| sessions.accept_browser(input))
                         .map(|outcome| record_outcome(outcome, &submitter, &mut metrics)),
                     "browser_control" => handle_control(data.as_ref(), &mut sessions)
-                        .map(|jobs| submit_jobs(jobs, &submitter, &mut metrics)),
+                        .map(|outcome| record_non_frame_outcome(outcome, &submitter, &mut metrics)),
                     "stt_status_request" => emit_status(&node, &status),
                     other => Err(eyre!("unexpected central STT input: {other}")),
                 };
@@ -150,6 +150,15 @@ fn record_outcome(
     metrics: &mut RuntimeMetrics,
 ) {
     metrics.frames += 1;
+    metrics.sequence_resets += u64::from(outcome.sequence_reset);
+    submit_jobs(outcome.jobs, submitter, metrics);
+}
+
+fn record_non_frame_outcome(
+    outcome: crate::session::FrameOutcome,
+    submitter: &DecodeSubmitter,
+    metrics: &mut RuntimeMetrics,
+) {
     metrics.sequence_resets += u64::from(outcome.sequence_reset);
     submit_jobs(outcome.jobs, submitter, metrics);
 }

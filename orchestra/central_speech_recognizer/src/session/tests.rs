@@ -66,19 +66,104 @@ fn rover(entity: &str, stream_id: Uuid, samples: Vec<f32>) -> AudioInput {
 }
 
 #[test]
-fn browser_requires_start_and_flushes_padded_final_window() {
+fn browser_buffers_audio_until_start_and_flushes_padded_final_window() {
     let stream_id = Uuid::new_v4();
     let mut sessions = manager();
     let frame = browser(stream_id, "rover-a", 0, vec![1.0; 100]);
-    assert!(sessions.accept_browser(frame.clone()).is_err());
-    sessions
+    assert_eq!(
+        sessions.accept_browser(frame.clone()).unwrap(),
+        FrameOutcome::default()
+    );
+    let start_outcome = sessions
         .start_browser(frame.identity.clone(), frame.sample_rate)
         .unwrap();
-    assert!(sessions.accept_browser(frame).unwrap().jobs.is_empty());
+    assert_eq!(start_outcome, FrameOutcome::default());
     let jobs = sessions.stop_browser(stream_id).unwrap();
     assert_eq!(jobs.len(), 1);
     assert_eq!(jobs[0].samples.len(), VAD_WINDOW_SIZE);
     assert_eq!(jobs[0].identity.target_entity_id, "rover-a");
+}
+
+#[test]
+fn browser_prestart_buffer_is_bounded_and_ordered() {
+    let stream_id = Uuid::new_v4();
+    let mut sessions = manager();
+    for frame_id in 0..MAX_PRESTART_FRAMES as u64 {
+        sessions
+            .accept_browser(browser(stream_id, "rover-a", frame_id, vec![1.0; 512]))
+            .unwrap();
+    }
+    assert!(sessions
+        .accept_browser(browser(
+            stream_id,
+            "rover-a",
+            MAX_PRESTART_FRAMES as u64,
+            vec![1.0; 512]
+        ))
+        .is_err());
+    sessions
+        .start_browser(
+            browser(stream_id, "rover-a", 0, Vec::new()).identity,
+            16_000,
+        )
+        .unwrap();
+    let jobs = sessions.stop_browser(stream_id).unwrap();
+    assert_eq!(jobs[0].samples.len(), MAX_PRESTART_FRAMES * 512);
+}
+
+#[test]
+fn browser_prestart_metadata_must_match_start() {
+    let stream_id = Uuid::new_v4();
+    let mut sessions = manager();
+    sessions
+        .accept_browser(browser(stream_id, "rover-a", 0, vec![1.0; 512]))
+        .unwrap();
+    assert!(sessions
+        .start_browser(
+            browser(stream_id, "rover-b", 0, Vec::new()).identity,
+            16_000,
+        )
+        .is_err());
+}
+
+#[test]
+fn browser_prestart_frames_survive_session_factory_failure() {
+    let stream_id = Uuid::new_v4();
+    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let factory_attempts = attempts.clone();
+    let mut sessions = SessionManager::new(Arc::new(move || {
+        if factory_attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+            return Err(eyre!("injected segmenter failure"));
+        }
+        Ok(Box::new(HoldingSegmenter {
+            buffered: Vec::new(),
+        }))
+    }));
+    let frame = browser(stream_id, "rover-a", 0, vec![1.0; 512]);
+    sessions.accept_browser(frame.clone()).unwrap();
+
+    assert!(sessions
+        .start_browser(frame.identity.clone(), frame.sample_rate)
+        .is_err());
+    assert_eq!(sessions.pending_browsers.len(), 1);
+    sessions
+        .start_browser(frame.identity, frame.sample_rate)
+        .unwrap();
+    assert_eq!(
+        sessions.stop_browser(stream_id).unwrap()[0].samples.len(),
+        512
+    );
+}
+
+#[test]
+fn browser_stop_before_start_discards_pending_frames() {
+    let stream_id = Uuid::new_v4();
+    let mut sessions = manager();
+    sessions
+        .accept_browser(browser(stream_id, "rover-a", 0, vec![1.0; 512]))
+        .unwrap();
+    assert!(sessions.stop_browser(stream_id).unwrap().is_empty());
+    assert!(sessions.pending_browsers.is_empty());
 }
 
 #[test]
