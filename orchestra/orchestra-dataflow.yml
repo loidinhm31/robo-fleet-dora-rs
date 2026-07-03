@@ -44,11 +44,11 @@ nodes:
     build: cargo build --release -p orchestra_zenoh_bridge
     path: ../target/release/orchestra_zenoh_bridge
     inputs:
-      # Processed data TO send to selected rover via Zenoh
+      # Parser commands (carry authoritative target_entity_id — validated before Zenoh publication)
       tracking_command_parser: command-parser/tracking_command
       rover_command_parser: command-parser/rover_command
       camera_control_parser: command-parser/camera_control
-      tts_command_parser: command-parser/tts_command
+      # Web/manual commands (routed to currently selected rover)
       tts_command_web: web-bridge/tts_command
       rover_command_web: web-bridge/rover_command
       arm_command_web: web-bridge/arm_command
@@ -81,8 +81,7 @@ nodes:
       AUDIO_SAMPLE_RATE: "16000"
       AUDIO_CHANNELS: "1"
 
-  # Speech recognizer - Phase 02 model probe only; audio runtime lands in Phase 03.
-  # Do not deploy this intermediate dataflow as production speech recognition.
+  # Central final-only VAD/offline speech recognizer.
   - id: central-speech-recognizer
     build: cargo build --release -p central_speech_recognizer
     path: ../target/release/central_speech_recognizer
@@ -107,27 +106,28 @@ nodes:
       STT_DECODE_QUEUE_CAPACITY: "${STT_DECODE_QUEUE_CAPACITY:-8}"
 
   # Command parser - NLU with pattern matching
+  # Phase 02: carries authoritative target_entity_id in every actuator output.
+  # Automatic parser TTS removed — manual UI TTS preserved via kokoro-tts.
   - id: command-parser
     build: cargo build --release -p command_parser
     path: ../target/release/command_parser
     inputs:
       text: central-speech-recognizer/transcription
     outputs:
-      - rover_command     # RoverCommand from parsed intent
+      - rover_command     # RoverCommandWithMetadata (carries target_entity_id for source-aware routing)
       - tracking_command  # TrackingCommand for object tracking
       - camera_control    # CameraControl for camera on/off
       - feedback          # String feedback for web UI
-      - tts_command       # TtsCommand for voice feedback
     env:
       RUST_LOG: info
       CONFIDENCE_THRESHOLD: "0.7"
 
   # Kokoro TTS - High-quality neural TTS for workstation audio
+  # Note: tts_command_parser removed in Phase 02; only manual UI TTS remains.
   - id: kokoro-tts
     build: cargo build --release -p kokoro_tts
     path: ../target/release/kokoro_tts
     inputs:
-      tts_command_parser: command-parser/tts_command
       tts_command_web: web-bridge/tts_command
     env:
       RUST_LOG: info
@@ -197,7 +197,7 @@ nodes:
       ALLOW_DEFAULT_CREDENTIALS: "${ALLOW_DEFAULT_CREDENTIALS:-false}"
 
       # CORS
-      ALLOWED_ORIGINS: "http://localhost:1420,http://localhost:3000"
+      ALLOWED_ORIGINS: "http://localhost:1420,http://localhost:3000,http://localhost:3001"
 
       # Rate Limiting
       RATE_LIMIT_AUTH_PER_MINUTE: "5"

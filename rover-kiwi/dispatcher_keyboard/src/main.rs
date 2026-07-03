@@ -82,6 +82,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         let cmd_with_metadata = RoverCommandWithMetadata {
                                             command: rover_cmd.clone(),
                                             metadata,
+                                            target_entity_id: None,
                                         };
 
                                         let serialized = serde_json::to_vec(&cmd_with_metadata)?;

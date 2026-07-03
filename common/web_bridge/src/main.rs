@@ -1504,6 +1504,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let cmd_with_metadata = RoverCommandWithMetadata {
                             command: rover_cmd,
                             metadata,
+                            target_entity_id: None, // web commands use selected rover
                         };
 
                         if let Ok(serialized) = serde_json::to_vec(&cmd_with_metadata) {

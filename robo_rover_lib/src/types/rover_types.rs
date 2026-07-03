@@ -147,8 +147,16 @@ impl RoverTelemetry {
         }
     }
 }
+/// Rover command with metadata envelope.
+///
+/// `target_entity_id` is set by the command parser for voice-sourced commands
+/// to carry the authoritative rover target from `SpeechTranscription`. It is
+/// `None` for web/manual commands that rely on the currently selected rover.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct RoverCommandWithMetadata {
     pub command: RoverCommand,
     pub metadata: CommandMetadata,
+    /// Authoritative rover target for parser-sourced commands; `None` for web commands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_entity_id: Option<String>,
 }

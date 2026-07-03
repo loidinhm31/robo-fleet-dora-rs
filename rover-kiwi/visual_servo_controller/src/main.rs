@@ -316,7 +316,7 @@ impl ServoController {
         self.last_command_time = Some(SystemTime::now());
 
         (
-            Some(RoverCommandWithMetadata { command, metadata }),
+            Some(RoverCommandWithMetadata { command, metadata, target_entity_id: None }),
             enhanced_telemetry,
         )
     }

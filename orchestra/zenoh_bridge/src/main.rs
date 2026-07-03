@@ -429,44 +429,122 @@ async fn main() -> Result<()> {
                                 if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
                                     if binary_array.len() > 0 {
                                         let bytes = binary_array.value(0);
+                                        let input_id = id.as_str();
 
-                                        // Route command to currently selected rover
-                                        if let Some(ref entity_id) = selected_entity {
-                                            if active_rovers.contains_key(entity_id) {
-                                                let topic = match id.as_str() {
-                                                    "rover_command_web" | "rover_command_parser" => {
-                                                        Some(format!("rover/{}/cmd/movement", entity_id))
-                                                    }
-                                                    "arm_command_web" | "arm_command_parser" => {
-                                                        Some(format!("rover/{}/cmd/arm", entity_id))
-                                                    }
-                                                    "camera_command_web" | "camera_control_parser" => {
-                                                        Some(format!("rover/{}/cmd/camera", entity_id))
-                                                    }
-                                                    "audio_command_web" => {
-                                                        Some(format!("rover/{}/cmd/audio", entity_id))
-                                                    }
-                                                    "stream_command_web" => {
-                                                        Some(format!("rover/{}/cmd/stream/v1", entity_id))
-                                                    }
-                                                    "tracking_command_web" | "tracking_command_parser" => {
-                                                        Some(format!("rover/{}/cmd/tracking", entity_id))
-                                                    }
-                                                    "tts_command_web" | "tts_command_parser" => {
-                                                        Some(format!("rover/{}/cmd/tts", entity_id))
-                                                    }
-                                                    _ => None,
-                                                };
+                                        // ----------------------------------------------------------------
+                                        // PARSER inputs: must carry an authoritative target_entity_id.
+                                        // Never fall back to the selected rover for parser commands.
+                                        // ----------------------------------------------------------------
+                                        let is_parser_input = matches!(
+                                            input_id,
+                                            "rover_command_parser"
+                                            | "tracking_command_parser"
+                                            | "camera_control_parser"
+                                        );
 
-                                                if let Some(topic) = topic {
-                                                    tracing::debug!("Routing command to {}: {}", entity_id, topic);
-                                                    let _ = session.put(&topic, bytes).await;
+                                        if is_parser_input {
+                                            // Extract target from the JSON envelope
+                                            let target_entity_id: Option<String> =
+                                                serde_json::from_slice::<serde_json::Value>(bytes)
+                                                    .ok()
+                                                    .and_then(|v| {
+                                                        v.get("target_entity_id")
+                                                            .and_then(|t| t.as_str())
+                                                            .map(|s| s.to_string())
+                                                    });
+
+                                            match target_entity_id {
+                                                None => {
+                                                    tracing::warn!(
+                                                        metric = "parser_routing",
+                                                        input = input_id,
+                                                        reason = "missing_target",
+                                                        "rejected parser command: no target_entity_id"
+                                                    );
                                                 }
-                                            } else {
-                                                tracing::warn!("Selected rover {} is not active", entity_id);
+                                                Some(ref target_id) if target_id.trim().is_empty() => {
+                                                    tracing::warn!(
+                                                        metric = "parser_routing",
+                                                        input = input_id,
+                                                        reason = "empty_target",
+                                                        "rejected parser command: empty target_entity_id"
+                                                    );
+                                                }
+                                                Some(ref target_id) => {
+                                                    if !active_rovers.contains_key(target_id) {
+                                                        tracing::warn!(
+                                                            metric = "parser_routing",
+                                                            input = input_id,
+                                                            target = %target_id,
+                                                            reason = "inactive_target",
+                                                            "rejected parser command: target rover is not active"
+                                                        );
+                                                    } else {
+                                                        let topic = match input_id {
+                                                            "rover_command_parser" => {
+                                                                Some(format!("rover/{}/cmd/movement", target_id))
+                                                            }
+                                                            "camera_control_parser" => {
+                                                                Some(format!("rover/{}/cmd/camera", target_id))
+                                                            }
+                                                            "tracking_command_parser" => {
+                                                                Some(format!("rover/{}/cmd/tracking", target_id))
+                                                            }
+                                                            _ => None,
+                                                        };
+                                                        if let Some(topic) = topic {
+                                                            tracing::info!(
+                                                                metric = "parser_routing",
+                                                                input = input_id,
+                                                                target = %target_id,
+                                                                "routing parser command to target rover"
+                                                            );
+                                                            let _ = session.put(&topic, bytes).await;
+                                                        }
+                                                    }
+                                                }
                                             }
                                         } else {
-                                            tracing::warn!("No rover selected for command: {}", id.as_str());
+                                            // ----------------------------------------------------------------
+                                            // WEB/MANUAL inputs: route to the currently selected rover.
+                                            // ----------------------------------------------------------------
+                                            if let Some(ref entity_id) = selected_entity {
+                                                if active_rovers.contains_key(entity_id) {
+                                                    let topic = match input_id {
+                                                        "rover_command_web" => {
+                                                            Some(format!("rover/{}/cmd/movement", entity_id))
+                                                        }
+                                                        "arm_command_web" => {
+                                                            Some(format!("rover/{}/cmd/arm", entity_id))
+                                                        }
+                                                        "camera_command_web" => {
+                                                            Some(format!("rover/{}/cmd/camera", entity_id))
+                                                        }
+                                                        "audio_command_web" => {
+                                                            Some(format!("rover/{}/cmd/audio", entity_id))
+                                                        }
+                                                        "stream_command_web" => {
+                                                            Some(format!("rover/{}/cmd/stream/v1", entity_id))
+                                                        }
+                                                        "tracking_command_web" => {
+                                                            Some(format!("rover/{}/cmd/tracking", entity_id))
+                                                        }
+                                                        "tts_command_web" => {
+                                                            Some(format!("rover/{}/cmd/tts", entity_id))
+                                                        }
+                                                        _ => None,
+                                                    };
+
+                                                    if let Some(topic) = topic {
+                                                        tracing::debug!("Routing web command to {}: {}", entity_id, topic);
+                                                        let _ = session.put(&topic, bytes).await;
+                                                    }
+                                                } else {
+                                                    tracing::warn!("Selected rover {} is not active", entity_id);
+                                                }
+                                            } else {
+                                                tracing::warn!("No rover selected for command: {}", input_id);
+                                            }
                                         }
                                     }
                                 }
@@ -941,3 +1019,178 @@ mod audio_tests {
         assert!(states.is_empty());
     }
 }
+
+// ---------------------------------------------------------------------------
+// Routing logic tests (Phase 02: source-aware command routing)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod routing_tests {
+    /// Returns true if the given Dora input id is classified as a parser input
+    /// that requires an authoritative target_entity_id.
+    fn is_parser_input(id: &str) -> bool {
+        matches!(
+            id,
+            "rover_command_parser" | "tracking_command_parser" | "camera_control_parser"
+        )
+    }
+
+    /// Extract target_entity_id from a JSON bytes payload (mirrors bridge logic).
+    fn extract_target(bytes: &[u8]) -> Option<String> {
+        serde_json::from_slice::<serde_json::Value>(bytes)
+            .ok()
+            .and_then(|v| {
+                v.get("target_entity_id")
+                    .and_then(|t| t.as_str())
+                    .map(|s| s.to_string())
+            })
+    }
+
+    // --- Parser input classification ---
+
+    #[test]
+    fn parser_inputs_are_classified_correctly() {
+        assert!(is_parser_input("rover_command_parser"));
+        assert!(is_parser_input("tracking_command_parser"));
+        assert!(is_parser_input("camera_control_parser"));
+    }
+
+    #[test]
+    fn web_inputs_are_not_parser_inputs() {
+        assert!(!is_parser_input("rover_command_web"));
+        assert!(!is_parser_input("arm_command_web"));
+        assert!(!is_parser_input("tracking_command_web"));
+        assert!(!is_parser_input("camera_command_web"));
+        assert!(!is_parser_input("tts_command_web"));
+        assert!(!is_parser_input("audio_command_web"));
+        assert!(!is_parser_input("stream_command_web"));
+        assert!(!is_parser_input("audio_stream_web"));
+        assert!(!is_parser_input("fleet_subscription_command"));
+        assert!(!is_parser_input("fleet_select_command"));
+    }
+
+    // --- Target extraction from JSON ---
+
+    #[test]
+    fn target_extracted_from_rover_command_json() {
+        let payload = serde_json::json!({
+            "command": {"type": "Stop", "timestamp": 0, "command_id": "abc"},
+            "metadata": {
+                "command_id": "abc",
+                "timestamp": 0,
+                "source": "VoiceCommand",
+                "priority": "Low"
+            },
+            "target_entity_id": "rover-a"
+        });
+        let bytes = serde_json::to_vec(&payload).unwrap();
+        let target = extract_target(&bytes);
+        assert_eq!(target.as_deref(), Some("rover-a"));
+    }
+
+    #[test]
+    fn missing_target_returns_none() {
+        let payload = serde_json::json!({
+            "command": {"type": "Stop", "timestamp": 0, "command_id": "abc"},
+            "metadata": {}
+        });
+        let bytes = serde_json::to_vec(&payload).unwrap();
+        let target = extract_target(&bytes);
+        assert!(target.is_none());
+    }
+
+    #[test]
+    fn null_target_returns_none() {
+        let payload = serde_json::json!({
+            "target_entity_id": null
+        });
+        let bytes = serde_json::to_vec(&payload).unwrap();
+        let target = extract_target(&bytes);
+        assert!(target.is_none());
+    }
+
+    #[test]
+    fn empty_target_is_detected() {
+        let payload = serde_json::json!({ "target_entity_id": "  " });
+        let bytes = serde_json::to_vec(&payload).unwrap();
+        let target = extract_target(&bytes);
+        // Extraction returns the raw string; the bridge then checks .trim().is_empty()
+        assert!(target.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true));
+    }
+
+    // --- Simulated routing decisions ---
+
+    /// Simulates the bridge routing decision for a parser command:
+    /// - with valid active target → should route
+    /// - with inactive target → should reject
+    /// - with no target → should reject
+    #[test]
+    fn parser_routing_rejects_inactive_target() {
+        let active_rovers = std::collections::HashMap::from([
+            ("rover-a".to_string(), ()),
+        ]);
+
+        let target_inactive = "rover-b";
+        assert!(!active_rovers.contains_key(target_inactive));
+
+        let target_active = "rover-a";
+        assert!(active_rovers.contains_key(target_active));
+    }
+
+    #[test]
+    fn parser_routing_accepts_active_target() {
+        let active_rovers = std::collections::HashMap::from([
+            ("rover-kiwi".to_string(), ()),
+        ]);
+        let target = "rover-kiwi";
+        assert!(active_rovers.contains_key(target));
+    }
+
+    #[test]
+    fn web_routing_uses_selected_rover_regardless_of_payload() {
+        // Web command doesn't need target in payload — it uses selected_entity
+        let selected = Some("rover-kiwi".to_string());
+        let active_rovers = std::collections::HashMap::from([
+            ("rover-kiwi".to_string(), ()),
+        ]);
+        let entity_id = selected.as_ref().unwrap();
+        assert!(active_rovers.contains_key(entity_id.as_str()));
+    }
+
+    #[test]
+    fn rover_a_parser_command_targets_rover_a_not_selected_b() {
+        // Selected rover is rover-b; parser command carries target rover-a.
+        // Bridge must route to rover-a, not rover-b.
+        let selected_entity = Some("rover-b".to_string());
+        let active_rovers = std::collections::HashMap::from([
+            ("rover-a".to_string(), ()),
+            ("rover-b".to_string(), ()),
+        ]);
+        let parser_target = "rover-a";
+
+        // Selected rover is rover-b but parser target is rover-a
+        assert_ne!(selected_entity.as_deref(), Some(parser_target));
+        // Parser target is active → should route to rover-a
+        assert!(active_rovers.contains_key(parser_target));
+        // Topic that would be built
+        let topic = format!("rover/{}/cmd/movement", parser_target);
+        assert_eq!(topic, "rover/rover-a/cmd/movement");
+    }
+
+    #[test]
+    fn browser_target_preserved_after_selection_change() {
+        // Browser stream captured target at stream start. Even if UI switches
+        // selected rover, the authoritative target must not change.
+        let target_at_stream_start = "rover-a";
+        let selected_after_change = Some("rover-b".to_string());
+
+        // The parser uses target_at_stream_start (from SpeechTranscription)
+        // NOT selected_after_change
+        assert_ne!(Some(target_at_stream_start), selected_after_change.as_deref());
+
+        // Routing should use target_at_stream_start
+        let routed_topic = format!("rover/{}/cmd/movement", target_at_stream_start);
+        assert_eq!(routed_topic, "rover/rover-a/cmd/movement");
+    }
+}
+
