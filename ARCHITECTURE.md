@@ -459,6 +459,193 @@ flowchart LR
 - Two-stage matching reduces ID switches by ~50%
 - Track state management filters noisy detections
 
+## Target Edge Voice Architecture (Planned)
+
+> Status: target contract frozen in Phase 01 on 2026-07-04. The nodes and edges in
+> this section are not current-state claims until the final implementation phase
+> removes this notice. Orchestra and Rover remain separate Dora dataflows even
+> when both roles run on the same x86_64 workstation.
+
+### Ownership and End-to-End Flow
+
+```mermaid
+flowchart LR
+    UI[Web or Tauri UI]
+    Web[Web bridge<br/>desired-config authority]
+    Orchestra[Orchestra Zenoh bridge<br/>fan-out and replay cache]
+    Rover[Rover Zenoh bridge]
+    Voice[edge_voice<br/>Supertonic worker]
+    Playback[audio_playback<br/>only speaker owner]
+    Capture[audio_capture]
+
+    UI -->|Socket.IO command/config/walkie| Web
+    Web -->|Dora command/config/walkie| Orchestra
+    Orchestra -->|Zenoh selected command/global config/walkie| Rover
+    Rover -->|Dora command/config| Voice
+    Voice -->|44.1 kHz F32 chunks| Playback
+    Rover -->|walkie F32 chunks| Playback
+    Playback -->|playback_state| Voice
+    Playback -->|playback_state| Capture
+    Voice -->|status/result| Rover
+    Rover -->|Zenoh status/result| Orchestra
+    Orchestra -->|Dora status/result| Web
+    Web -->|Socket.IO state/result| UI
+```
+
+Ownership invariants:
+
+- `web_bridge` owns desired global configuration and revision assignment. This
+  state is process-local; restart restores revision 0 and the default config.
+- `orchestra-bridge` caches only the latest accepted config for delivery and
+  late-rover replay. It does not become configuration authority.
+- Each `edge_voice` process owns its applied config, synthesis queue, engine,
+  and voice lifecycle. It never persists runtime state.
+- `audio_playback` is the only process that opens the physical speaker. It
+  reports samples actually consumed, not merely queued.
+- `audio_capture` combines user capture enablement with playback suppression;
+  neither state overwrites the other.
+
+### Frozen Transport Names
+
+Socket.IO client-to-server events:
+
+| Event | Payload |
+|---|---|
+| `tts_command` | Backward-compatible `{ text }`; server assigns command ID, timestamp, and priority |
+| `tts_config_update` | `{ base_revision, config }` compare-and-set request |
+
+Socket.IO server-to-client events:
+
+| Event | Payload |
+|---|---|
+| `tts_command_ack` | Immediate `web_bridge` admission decision; not playback completion |
+| `tts_command_result` | Terminal completed/rejected/interrupted/failed result |
+| `tts_config_state` | Desired revision/config plus active/applied rover convergence |
+| `voice_status` | Per-rover loading/ready/speaking/error/unavailable state |
+
+Zenoh topics:
+
+```text
+rover/{entity_id}/cmd/tts
+rover/{entity_id}/cmd/voice/config
+rover/{entity_id}/voice/status
+rover/{entity_id}/voice/result
+```
+
+Planned Dora port names:
+
+| Owner | Inputs | Outputs |
+|---|---|---|
+| `web-bridge` | `voice_status`, `tts_command_result` | `tts_command`, `tts_config_command` |
+| `orchestra-bridge` | `tts_command_web`, `tts_config_command` | `voice_status`, `tts_command_result` |
+| `rover zenoh-bridge` | `voice_status`, `tts_command_result` | `tts_command`, `tts_config_command` |
+| `edge-voice` | `tts_command`, `tts_config_command`, `playback_state`, `stop` | `tts_audio`, `voice_status`, `tts_command_result`, `metrics` |
+| `audio-playback` | `walkie_audio`, `tts_audio` | `playback_state` |
+| `audio-capture` | `audio_control`, `playback_state` | `audio` |
+
+Direct rover mode uses the same `web-bridge`, `edge-voice`, playback, and
+capture port names but omits both Zenoh bridge hops. The Socket.IO wire shape
+is identical in direct and Orchestra modes.
+
+### Desired and Applied Configuration
+
+Default revision 0 is English, M1/SID 5, speed 1.0, 8 steps, volume 0.8.
+Clients can select only bounded language, speaker ID, speed, step count, and
+volume values; they cannot select a provider or filesystem path.
+
+```text
+client             web_bridge          orchestra bridge       rover edge_voice
+  | update(base=r)     |                       |                       |
+  |------------------->| compare desired r    |                       |
+  |                    | assign r+1           |                       |
+  |<-- config_state ---| applied N/active M   |                       |
+  |                    | config(r+1)--------->| fan out ------------>|
+  |                    |                       |<------ status(r+1) ---|
+  |<-- config_state ---| store rover status <-|                       |
+```
+
+- A stale `base_revision` does not mutate desired state; the server returns
+  current `tts_config_state`.
+- Publish success does not count as applied. A rover counts only after a valid
+  `voice_status.applied_revision` equals the desired revision.
+- Older or duplicate rover statuses cannot regress recorded applied state.
+- A newly active rover receives the latest cached config immediately.
+
+### Command and Playback Lifecycle
+
+```text
+Socket tts_command{text}
+  -> validate/auth/rate limit
+  -> assign UUID command_id
+  -> reject immediately if selected rover is inactive or walkie is active at ingress
+  -> tts_command_ack(accepted)
+  -> selected rover queue
+  -> voice_status(speaking, command_id)
+  -> F32 PCM consumed by audio_playback
+  -> tts_command_result(completed)
+  -> voice_status(ready)
+```
+
+`web_bridge` owns the immediate ack decision because it is the Socket.IO
+ingress and the selected-target authority. In Phase 01 it rejects only on
+facts already known locally at ingress: invalid command text, no active
+selected rover, or an active walkie stream window for the selected target.
+That preserves the natural downstream Dora node behavior while still blocking
+unsafe overlap before transport. Later fleet-transport/runtime-authority work
+mirrors rover `voice_status` and `playback_state` back to `web_bridge` for
+richer readiness admission without changing the downstream node contract.
+Acceptance only confirms that the command entered the distributed transport
+path.
+`completed` is emitted only after synthesis succeeds and the final PCM sample
+has been consumed. Any downstream refusal after an accepted ack, such as rover
+queue saturation, is a terminal `tts_command_result(state=rejected)` on the
+existing result channel. Accepted commands always terminate as completed,
+rejected, interrupted, or failed.
+
+Walkie preemption is a safety transition:
+
+```text
+Idle -> TtsActive -> Idle
+Idle -> WalkieActive -> Idle
+TtsActive -- first valid walkie frame --> WalkieActive + interrupted_by_walkie
+WalkieActive -- TTS request --> rejected(walkie_active)
+```
+
+The first valid walkie frame clears queued TTS audio and reports playback state
+with the interrupted command ID. `edge_voice` cancels active synthesis and
+emits the terminal interrupted result. `web_bridge` marks walkie active as soon
+as it forwards the first valid frame for the selected target, then rejects
+subsequent TTS admissions while that local walkie window remains active.
+Walkie remains active until 750 ms after its last valid frame. Rover
+microphone publication is suppressed throughout any playback and for 400 ms
+after playback becomes idle; browser-origin STT is not suppressed.
+
+### PCM and Error Contracts
+
+PCM payloads are Arrow `Float32Array` values. `AudioFrameMetadata` remains the
+dimension and payload-length validator. Dora parameters carry:
+
+```text
+source_kind=tts|walkie
+command_id=<UUID> or stream_id=<UUID>
+frame_id=<u64>
+capture_timestamp_ms=<u64>
+sample_rate=<u32>
+channels=<u16>
+sample_count=<u32 scalar samples>
+format=f32le
+priority=low|normal|high|emergency
+```
+
+TTS uses its command UUID as the metadata stream identity and also supplies
+`command_id`; walkie uses `stream_id`. Source-specific fields stay in Dora
+parameters rather than duplicating PCM samples inside JSON.
+
+All externally visible failures use a bounded `VoiceReasonCode` plus optional
+sanitized detail of at most 256 characters. Unknown enum values, non-finite
+floats, out-of-range config, malformed UUIDs, absolute model paths, and invalid
+state/source combinations are rejected before publication.
+
 ## References
 
 - **Zenoh Protocol**: https://zenoh.io

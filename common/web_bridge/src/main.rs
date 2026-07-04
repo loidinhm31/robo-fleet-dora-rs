@@ -13,7 +13,7 @@ use robo_rover_lib::{
     AudioAction, AudioControl, AudioFrameMetadata, AudioFrameSequenceTracker, CameraAction,
     CameraControl, CommandMetadata, CommandPriority, FrameSequenceTracker, InputSource,
     MetricWindow, PcmSampleFormat, RoverCommand, RoverCommandWithMetadata, StreamCommand,
-    StreamControl,
+    StreamControl, TtsAckState, TtsCommand, TtsCommandAck, VoiceReasonCode,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -395,6 +395,30 @@ pub struct WebAudioStream {
     pub audio_data: Vec<f32>, // Float32 audio samples from Web UI microphone
 }
 
+const WALKIE_ACTIVITY_TTL: Duration = Duration::from_millis(750);
+
+#[derive(Debug, Default)]
+struct VoiceAdmissionState {
+    walkie_activity: HashMap<String, Instant>,
+}
+
+impl VoiceAdmissionState {
+    fn note_walkie_frame(&mut self, entity_id: &str, now: Instant) {
+        self.prune_expired(now);
+        self.walkie_activity.insert(entity_id.to_owned(), now);
+    }
+
+    fn is_walkie_active(&mut self, entity_id: &str, now: Instant) -> bool {
+        self.prune_expired(now);
+        self.walkie_activity.contains_key(entity_id)
+    }
+
+    fn prune_expired(&mut self, now: Instant) {
+        self.walkie_activity
+            .retain(|_, last_seen| now.duration_since(*last_seen) <= WALKIE_ACTIVITY_TTL);
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WebFleetSubscriptionCommand {
     pub action: String,                  // "activate", "deactivate", "set_active"
@@ -410,7 +434,7 @@ struct SharedState {
     pub audio_command_queue: Arc<Mutex<Vec<WebAudioCommand>>>,
     pub stream_command_queue: Arc<Mutex<Vec<StreamControl>>>,
     pub tracking_command_queue: Arc<Mutex<Vec<WebTrackingCommand>>>,
-    pub tts_command_queue: Arc<Mutex<Vec<WebTtsCommand>>>,
+    pub tts_command_queue: Arc<Mutex<Vec<TtsCommand>>>,
     pub audio_stream_queue: Arc<Mutex<Vec<WebAudioStream>>>,
     pub stt_bridge: Arc<SttBridge>,
     pub fleet_subscription_command_queue: Arc<Mutex<Vec<WebFleetSubscriptionCommand>>>,
@@ -423,6 +447,7 @@ struct SharedState {
     pub session_registry: Arc<SessionRegistry>,
     pub fleet_status: Arc<Mutex<FleetStatus>>,
     pub active_rovers_status: Arc<Mutex<ActiveRoversStatus>>,
+    pub voice_admission: Arc<Mutex<VoiceAdmissionState>>,
     /// Process-level cumulative audio delivery counters. Lives in
     /// `SharedState` (not on `ClientState`) so lifetime totals survive
     /// client disconnects. See `audio_counters::AudioDeliveryCounters`.
@@ -477,6 +502,7 @@ impl SharedState {
             session_registry: Arc::new(SessionRegistry::new()),
             fleet_status: Arc::new(Mutex::new(fleet_status)),
             active_rovers_status: Arc::new(Mutex::new(active_rovers_status)),
+            voice_admission: Arc::new(Mutex::new(VoiceAdmissionState::default())),
             audio_counters: Arc::new(AudioDeliveryCounters::new()),
         }
     }
@@ -839,19 +865,67 @@ fn setup_socketio(
                 touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
 
                 if let Ok(web_cmd) = serde_json::from_value::<WebTtsCommand>(data) {
+                    let selected_target = selected_target_entity(&shared_state_clone);
+                    let tts_command = convert_web_command_to_tts_command(&web_cmd);
                     // Validate TTS text
                     if let Err(e) = security::validation::validate_tts_text(&web_cmd.text) {
                         log_validation_error(&socket_id_clone, &format!("TTS text: {}", e));
                         tracing::warn!("TTS command validation failed: {}", e);
+                        emit_tts_ack(
+                            &socket,
+                            &build_tts_ack(
+                                &tts_command.command_id,
+                                &selected_target,
+                                TtsAckState::Rejected,
+                                Some(VoiceReasonCode::InvalidCommand),
+                                Some("invalid tts text".to_string()),
+                            ),
+                        );
+                        return;
+                    }
+                    if !is_target_active(&shared_state_clone, &selected_target) {
+                        emit_tts_ack(
+                            &socket,
+                            &build_tts_ack(
+                                &tts_command.command_id,
+                                &selected_target,
+                                TtsAckState::Rejected,
+                                Some(VoiceReasonCode::VoiceNotReady),
+                                Some("selected rover is not active".to_string()),
+                            ),
+                        );
+                        return;
+                    }
+                    if is_walkie_active(&shared_state_clone, &selected_target) {
+                        emit_tts_ack(
+                            &socket,
+                            &build_tts_ack(
+                                &tts_command.command_id,
+                                &selected_target,
+                                TtsAckState::Rejected,
+                                Some(VoiceReasonCode::WalkieActive),
+                                Some("walkie stream is active".to_string()),
+                            ),
+                        );
                         return;
                     }
 
                     tracing::debug!("Received TTS command: {}", web_cmd.text);
+                    emit_tts_ack(
+                        &socket,
+                        &build_tts_ack(
+                            &tts_command.command_id,
+                            &selected_target,
+                            TtsAckState::Accepted,
+                            None,
+                            None,
+                        ),
+                    );
                     shared_state_clone
                         .tts_command_queue
                         .lock()
                         .unwrap()
-                        .push(web_cmd);
+                        .push(tts_command);
                 }
             },
         );
@@ -881,6 +955,12 @@ fn setup_socketio(
                     }
 
                     tracing::debug!("Received audio stream: {} samples", web_audio.audio_data.len());
+                    let selected_target = selected_target_entity(&shared_state_clone);
+                    if is_target_active(&shared_state_clone, &selected_target) {
+                        if let Ok(mut admission) = shared_state_clone.voice_admission.lock() {
+                            admission.note_walkie_frame(&selected_target, Instant::now());
+                        }
+                    }
                     shared_state_clone
                         .audio_stream_queue
                         .lock()
@@ -1656,8 +1736,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             if let Ok(mut queue) = state_clone_tts.tts_command_queue.lock() {
                 if !queue.is_empty() {
-                    let web_cmd = queue.remove(0);
-                    let tts_cmd = convert_web_command_to_tts_command(&web_cmd);
+                    let tts_cmd = queue.remove(0);
                     if let Ok(serialized) = serde_json::to_vec(&tts_cmd) {
                         let arrow_data = BinaryArray::from_vec(vec![serialized.as_slice()]);
                         if let Ok(mut node_guard) = node_clone_tts.lock() {
@@ -2885,19 +2964,104 @@ mod tests {
         assert!(matches!(stop.command, StreamCommand::Stop));
         assert!(!stop.video_enabled);
     }
+
+    #[test]
+    fn walkie_activity_expires_after_ttl() {
+        let mut admission = VoiceAdmissionState::default();
+        let start = Instant::now();
+
+        admission.note_walkie_frame("rover-kiwi", start);
+        assert!(admission.is_walkie_active("rover-kiwi", start));
+        assert!(admission.is_walkie_active(
+            "rover-kiwi",
+            start + WALKIE_ACTIVITY_TTL - Duration::from_millis(1),
+        ));
+        assert!(!admission.is_walkie_active(
+            "rover-kiwi",
+            start + WALKIE_ACTIVITY_TTL + Duration::from_millis(1),
+        ));
+    }
+
+    #[test]
+    fn rejected_tts_ack_uses_contract_reason_codes() {
+        let ack = build_tts_ack(
+            "550e8400-e29b-41d4-a716-446655440000",
+            "rover-kiwi",
+            TtsAckState::Rejected,
+            Some(VoiceReasonCode::WalkieActive),
+            Some("walkie stream is active".into()),
+        );
+
+        assert_eq!(ack.target_entity_id, "rover-kiwi");
+        assert_eq!(ack.state, TtsAckState::Rejected);
+        assert_eq!(ack.reason_code, Some(VoiceReasonCode::WalkieActive));
+        ack.validate().unwrap();
+    }
+}
+
+fn current_timestamp_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+fn selected_target_entity(shared_state: &SharedState) -> String {
+    shared_state
+        .fleet_status
+        .lock()
+        .map(|status| status.selected_entity.clone())
+        .unwrap_or_else(|_| "rover-kiwi".to_string())
+}
+
+fn is_target_active(shared_state: &SharedState, entity_id: &str) -> bool {
+    shared_state
+        .active_rovers_status
+        .lock()
+        .map(|status| status.active_rovers.contains(&entity_id.to_string()))
+        .unwrap_or(false)
+}
+
+fn is_walkie_active(shared_state: &SharedState, entity_id: &str) -> bool {
+    shared_state
+        .voice_admission
+        .lock()
+        .map(|mut state| state.is_walkie_active(entity_id, Instant::now()))
+        .unwrap_or(false)
+}
+
+fn build_tts_ack(
+    command_id: &str,
+    target_entity_id: &str,
+    state: TtsAckState,
+    reason_code: Option<VoiceReasonCode>,
+    detail: Option<String>,
+) -> TtsCommandAck {
+    TtsCommandAck {
+        command_id: command_id.to_string(),
+        target_entity_id: target_entity_id.to_string(),
+        state,
+        timestamp: current_timestamp_ms(),
+        reason_code,
+        detail,
+    }
+}
+
+fn emit_tts_ack(socket: &SocketRef, ack: &TtsCommandAck) {
+    if let Err(error) = ack.validate() {
+        tracing::warn!(%error, "refusing to emit invalid tts_command_ack");
+        return;
+    }
+    socket.emit("tts_command_ack", ack).ok();
 }
 
 fn convert_web_command_to_tts_command(web_cmd: &WebTtsCommand) -> robo_rover_lib::TtsCommand {
     use robo_rover_lib::TtsPriority;
 
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
-
     robo_rover_lib::TtsCommand {
+        command_id: uuid::Uuid::new_v4().to_string(),
         text: web_cmd.text.clone(),
-        timestamp,
+        timestamp: current_timestamp_ms(),
         priority: TtsPriority::Normal,
     }
 }
@@ -2906,10 +3070,7 @@ fn create_metadata() -> CommandMetadata {
     CommandMetadata {
         source: InputSource::WebBridge,
         priority: CommandPriority::Normal,
-        timestamp: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64,
+        timestamp: current_timestamp_ms(),
         command_id: uuid::Uuid::new_v4().to_string(),
     }
 }
