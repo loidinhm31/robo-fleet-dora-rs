@@ -38,6 +38,8 @@ struct RoverSubscriptions {
     tracked_detections_sub: ZenohSubscriber,
     tracking_telemetry_sub: ZenohSubscriber,
     metrics_sub: ZenohSubscriber,
+    voice_status_sub: ZenohSubscriber,
+    tts_command_result_sub: ZenohSubscriber,
 }
 
 struct LegacyAudioState {
@@ -121,6 +123,20 @@ async fn subscribe_to_rover(
         .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", metrics_topic, e))?;
     tracing::info!("{}", metrics_topic);
 
+    let voice_status_topic = voice_status_topic(entity_id);
+    let voice_status_sub = session
+        .declare_subscriber(&voice_status_topic)
+        .await
+        .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", voice_status_topic, e))?;
+    tracing::info!("{}", voice_status_topic);
+
+    let voice_result_topic = voice_result_topic(entity_id);
+    let tts_command_result_sub = session
+        .declare_subscriber(&voice_result_topic)
+        .await
+        .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", voice_result_topic, e))?;
+    tracing::info!("{}", voice_result_topic);
+
     Ok(RoverSubscriptions {
         entity_id: entity_id.to_string(),
         video_sub,
@@ -132,6 +148,8 @@ async fn subscribe_to_rover(
         tracked_detections_sub,
         tracking_telemetry_sub,
         metrics_sub,
+        voice_status_sub,
+        tts_command_result_sub,
     })
 }
 
@@ -147,6 +165,7 @@ async fn handle_fleet_subscription_command(
     active_rovers: &mut HashMap<String, RoverSubscriptions>,
     session: &Arc<zenoh::Session>,
     data: dora_node_api::ArrowData,
+    latest_voice_config: Option<&[u8]>,
 ) -> Result<()> {
     if let Some(binary_array) = data.0.as_any().downcast_ref::<BinaryArray>() {
         if binary_array.len() > 0 {
@@ -158,6 +177,13 @@ async fn handle_fleet_subscription_command(
                     if !active_rovers.contains_key(&entity_id) {
                         tracing::info!("Activating rover: {}", entity_id);
                         let subs = subscribe_to_rover(session, &entity_id).await?;
+                        if let Some(config) = latest_voice_config {
+                            queue_voice_config_publish(
+                                session.clone(),
+                                entity_id.clone(),
+                                config.to_vec(),
+                            );
+                        }
                         active_rovers.insert(entity_id, subs);
                     } else {
                         tracing::warn!("Rover {} already active", entity_id);
@@ -195,6 +221,13 @@ async fn handle_fleet_subscription_command(
                         if !active_rovers.contains_key(&rover_id) {
                             tracing::info!("  + Adding: {}", rover_id);
                             let subs = subscribe_to_rover(session, &rover_id).await?;
+                            if let Some(config) = latest_voice_config {
+                                queue_voice_config_publish(
+                                    session.clone(),
+                                    rover_id.clone(),
+                                    config.to_vec(),
+                                );
+                            }
                             active_rovers.insert(rover_id, subs);
                         }
                     }
@@ -337,6 +370,8 @@ async fn main() -> Result<()> {
     let tracked_detections_output = DataId::from("tracked_detections".to_owned());
     let tracking_telemetry_output = DataId::from("tracking_telemetry".to_owned());
     let performance_metrics_output = DataId::from("performance_metrics".to_owned());
+    let voice_status_output = DataId::from("voice_status".to_owned());
+    let tts_command_result_output = DataId::from("tts_command_result".to_owned());
 
     // Statistics per rover
     let video_counts: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -350,6 +385,7 @@ async fn main() -> Result<()> {
     let mut legacy_audio_states: HashMap<String, LegacyAudioState> = HashMap::new();
     let mut audio_errors = 0u64;
     let mut audio_sequence_drops = 0u64;
+    let mut latest_voice_config: Option<Vec<u8>> = None;
 
     // Create channel to bridge Dora's sync events to async
     let (dora_tx, dora_rx) = flume::unbounded();
@@ -382,7 +418,8 @@ async fn main() -> Result<()> {
                                 if let Err(e) = handle_fleet_subscription_command(
                                     &mut active_rovers,
                                     &session,
-                                    data
+                                    data,
+                                    latest_voice_config.as_deref(),
                                 ).await {
                                     tracing::error!("Fleet subscription error: {}", e);
                                 }
@@ -442,6 +479,16 @@ async fn main() -> Result<()> {
                                         let bytes = binary_array.value(0);
                                         let input_id = id.as_str();
 
+                                        if input_id == "tts_config_command" {
+                                            latest_voice_config = Some(bytes.to_vec());
+                                            queue_voice_config_fanout(
+                                                session.clone(),
+                                                snapshot_active_rover_ids(&active_rovers),
+                                                bytes.to_vec(),
+                                            );
+                                            continue;
+                                        }
+
                                         // ----------------------------------------------------------------
                                         // PARSER inputs: must carry an authoritative target_entity_id.
                                         // Never fall back to the selected rover for parser commands.
@@ -492,15 +539,24 @@ async fn main() -> Result<()> {
                                                         );
                                                     } else {
                                                         let topic = match input_id {
-                                                            "rover_command_parser" => {
-                                                                Some(format!("rover/{}/cmd/movement", target_id))
-                                                            }
-                                                            "camera_control_parser" => {
-                                                                Some(format!("rover/{}/cmd/camera", target_id))
-                                                            }
-                                                            "tracking_command_parser" => {
-                                                                Some(format!("rover/{}/cmd/tracking", target_id))
-                                                            }
+                                                            "rover_command_parser" => Some(
+                                                                format!(
+                                                                    "rover/{}/cmd/movement",
+                                                                    target_id
+                                                                ),
+                                                            ),
+                                                            "camera_control_parser" => Some(
+                                                                format!(
+                                                                    "rover/{}/cmd/camera",
+                                                                    target_id
+                                                                ),
+                                                            ),
+                                                            "tracking_command_parser" => Some(
+                                                                format!(
+                                                                    "rover/{}/cmd/tracking",
+                                                                    target_id
+                                                                ),
+                                                            ),
                                                             _ => None,
                                                         };
                                                         if let Some(topic) = topic {
@@ -521,30 +577,7 @@ async fn main() -> Result<()> {
                                             // ----------------------------------------------------------------
                                             if let Some(ref entity_id) = selected_entity {
                                                 if active_rovers.contains_key(entity_id) {
-                                                    let topic = match input_id {
-                                                        "rover_command_web" => {
-                                                            Some(format!("rover/{}/cmd/movement", entity_id))
-                                                        }
-                                                        "arm_command_web" => {
-                                                            Some(format!("rover/{}/cmd/arm", entity_id))
-                                                        }
-                                                        "camera_command_web" => {
-                                                            Some(format!("rover/{}/cmd/camera", entity_id))
-                                                        }
-                                                        "audio_command_web" => {
-                                                            Some(format!("rover/{}/cmd/audio", entity_id))
-                                                        }
-                                                        "stream_command_web" => {
-                                                            Some(format!("rover/{}/cmd/stream/v1", entity_id))
-                                                        }
-                                                        "tracking_command_web" => {
-                                                            Some(format!("rover/{}/cmd/tracking", entity_id))
-                                                        }
-                                                        "tts_command_web" => {
-                                                            Some(format!("rover/{}/cmd/tts", entity_id))
-                                                        }
-                                                        _ => None,
-                                                    };
+                                                    let topic = web_command_topic(input_id, entity_id);
 
                                                     if let Some(topic) = topic {
                                                         tracing::debug!("Routing web command to {}: {}", entity_id, topic);
@@ -797,6 +830,18 @@ async fn main() -> Result<()> {
                     );
                 }
             }
+
+            result = receive_from_rovers(&active_rovers, |subs| &subs.voice_status_sub) => {
+                if let Some((_entity_id, sample)) = result {
+                    forward_binary_output(&mut node, &voice_status_output, sample);
+                }
+            }
+
+            result = receive_from_rovers(&active_rovers, |subs| &subs.tts_command_result_sub) => {
+                if let Some((_entity_id, sample)) = result {
+                    forward_binary_output(&mut node, &tts_command_result_output, sample);
+                }
+            }
         }
     }
 
@@ -869,6 +914,73 @@ fn forward_telemetry_with_entity_id(
             let arrow_data = BinaryArray::from_vec(vec![serialized.as_slice()]);
             let _ = node.send_output(output_id.clone(), Default::default(), arrow_data);
         }
+    }
+}
+
+fn forward_binary_output(node: &mut DoraNode, output_id: &DataId, sample: zenoh::sample::Sample) {
+    let payload = sample.payload().to_bytes();
+    let arrow_data = BinaryArray::from_vec(vec![payload.as_ref()]);
+    let _ = node.send_output(output_id.clone(), Default::default(), arrow_data);
+}
+
+fn voice_config_topic(entity_id: &str) -> String {
+    format!("rover/{entity_id}/cmd/voice/config")
+}
+
+fn voice_status_topic(entity_id: &str) -> String {
+    format!("rover/{entity_id}/voice/status")
+}
+
+fn voice_result_topic(entity_id: &str) -> String {
+    format!("rover/{entity_id}/voice/result")
+}
+
+fn web_command_topic(input_id: &str, entity_id: &str) -> Option<String> {
+    match input_id {
+        "rover_command_web" => Some(format!("rover/{entity_id}/cmd/movement")),
+        "arm_command_web" => Some(format!("rover/{entity_id}/cmd/arm")),
+        "camera_command_web" => Some(format!("rover/{entity_id}/cmd/camera")),
+        "audio_command_web" => Some(format!("rover/{entity_id}/cmd/audio")),
+        "stream_command_web" => Some(format!("rover/{entity_id}/cmd/stream/v1")),
+        "tracking_command_web" => Some(format!("rover/{entity_id}/cmd/tracking")),
+        "tts_command_web" => Some(format!("rover/{entity_id}/cmd/tts")),
+        _ => None,
+    }
+}
+
+fn snapshot_active_rover_ids(active_rovers: &HashMap<String, RoverSubscriptions>) -> Vec<String> {
+    let mut entity_ids: Vec<String> = active_rovers.keys().cloned().collect();
+    entity_ids.sort();
+    entity_ids
+}
+
+async fn publish_voice_config(
+    session: Arc<zenoh::Session>,
+    entity_id: String,
+    payload: Vec<u8>,
+) -> Result<()> {
+    session
+        .put(voice_config_topic(&entity_id), payload)
+        .await
+        .map_err(|error| eyre::eyre!("Failed to publish voice config to {entity_id}: {error}"))?;
+    Ok(())
+}
+
+fn queue_voice_config_publish(session: Arc<zenoh::Session>, entity_id: String, payload: Vec<u8>) {
+    tokio::spawn(async move {
+        if let Err(error) = publish_voice_config(session, entity_id.clone(), payload).await {
+            tracing::error!(%error, %entity_id, "failed to publish voice config");
+        }
+    });
+}
+
+fn queue_voice_config_fanout(
+    session: Arc<zenoh::Session>,
+    entity_ids: Vec<String>,
+    payload: Vec<u8>,
+) {
+    for entity_id in entity_ids {
+        queue_voice_config_publish(session.clone(), entity_id, payload.clone());
     }
 }
 
@@ -1068,6 +1180,7 @@ mod routing_tests {
         assert!(!is_parser_input("tracking_command_web"));
         assert!(!is_parser_input("camera_command_web"));
         assert!(!is_parser_input("tts_command_web"));
+        assert!(!is_parser_input("tts_config_command"));
         assert!(!is_parser_input("audio_command_web"));
         assert!(!is_parser_input("stream_command_web"));
         assert!(!is_parser_input("audio_stream_web"));
@@ -1197,5 +1310,33 @@ mod routing_tests {
         // Routing should use target_at_stream_start
         let routed_topic = format!("rover/{}/cmd/movement", target_at_stream_start);
         assert_eq!(routed_topic, "rover/rover-a/cmd/movement");
+    }
+
+    #[test]
+    fn voice_topic_names_follow_contract() {
+        assert_eq!(
+            super::voice_config_topic("rover-a"),
+            "rover/rover-a/cmd/voice/config"
+        );
+        assert_eq!(
+            super::voice_status_topic("rover-a"),
+            "rover/rover-a/voice/status"
+        );
+        assert_eq!(
+            super::voice_result_topic("rover-a"),
+            "rover/rover-a/voice/result"
+        );
+    }
+
+    #[test]
+    fn web_tts_routing_stays_selected_targeted() {
+        assert_eq!(
+            super::web_command_topic("tts_command_web", "rover-a").as_deref(),
+            Some("rover/rover-a/cmd/tts")
+        );
+        assert_eq!(
+            super::web_command_topic("tts_config_command", "rover-a"),
+            None
+        );
     }
 }

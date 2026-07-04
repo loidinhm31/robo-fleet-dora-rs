@@ -50,6 +50,7 @@ nodes:
       camera_control_parser: command-parser/camera_control
       # Web/manual commands (routed to currently selected rover)
       tts_command_web: web-bridge/tts_command
+      tts_config_command: web-bridge/tts_config_command
       rover_command_web: web-bridge/rover_command
       arm_command_web: web-bridge/arm_command
       tracking_command_web: web-bridge/tracking_command
@@ -70,6 +71,8 @@ nodes:
       - tracked_detections  # DetectionFrame with tracking IDs from rover (with entity_id)
       - tracking_telemetry  # Object tracking telemetry from rover (with entity_id)
       - performance_metrics # System metrics from rover (with entity_id)
+      - voice_status        # Per-rover voice lifecycle state
+      - tts_command_result  # Terminal TTS lifecycle result
     env:
       RUST_LOG: info
       ZENOH_MODE: "peer"
@@ -122,18 +125,6 @@ nodes:
       RUST_LOG: info
       CONFIDENCE_THRESHOLD: "0.7"
 
-  # Kokoro TTS - High-quality neural TTS for workstation audio
-  # Note: tts_command_parser removed in Phase 02; only manual UI TTS remains.
-  - id: kokoro-tts
-    build: cargo build --release -p kokoro_tts
-    path: ../target/release/kokoro_tts
-    inputs:
-      tts_command_web: web-bridge/tts_command
-    env:
-      RUST_LOG: info
-      TTS_VOICE: "bf_emma"
-      TTS_VOLUME: "0.8"
-
   # Web bridge - Fleet control with entity selection
   - id: web-bridge
     build: cargo build --release -p web_bridge
@@ -161,6 +152,8 @@ nodes:
       detections: orchestra-bridge/detections
       tracked_detections: orchestra-bridge/tracked_detections
       tracking_telemetry: orchestra-bridge/tracking_telemetry
+      voice_status: orchestra-bridge/voice_status
+      tts_command_result: orchestra-bridge/tts_command_result
       transcription: central-speech-recognizer/transcription
       stt_status: central-speech-recognizer/stt_status
       command_feedback: command-parser/feedback
@@ -173,6 +166,7 @@ nodes:
       - audio_command
       - stream_command
       - tts_command
+      - tts_config_command
       - audio_stream          # Direct audio to rover speakers
       - voice_command_audio   # Audio for STT processing
       - voice_command_control # Browser STT start/stop lifecycle
@@ -202,6 +196,7 @@ nodes:
       # Rate Limiting
       RATE_LIMIT_AUTH_PER_MINUTE: "5"
       RATE_LIMIT_COMMANDS_PER_SECOND: "100"
+      RATE_LIMIT_TTS_CONFIG_PER_SECOND: "4"
       WEB_STT_QUEUE_CAPACITY: "64"          # 8x central decode queue; newest audio drops
       WEB_STT_STREAM_IDLE_SECONDS: "30"
       WEB_STT_CLOSING_SECONDS: "30"
@@ -210,6 +205,11 @@ nodes:
       MAX_TTS_TEXT_LENGTH: "1000"
       MAX_AUDIO_SAMPLES_PER_MESSAGE: "16000"
       MAX_WHEEL_VELOCITY: "2.0"
+      TTS_DEFAULT_LANGUAGE: "${TTS_DEFAULT_LANGUAGE:-en}"
+      TTS_DEFAULT_SPEAKER_ID: "${TTS_DEFAULT_SPEAKER_ID:-5}"
+      TTS_DEFAULT_SPEED: "${TTS_DEFAULT_SPEED:-1.0}"
+      TTS_DEFAULT_STEPS: "${TTS_DEFAULT_STEPS:-8}"
+      TTS_DEFAULT_VOLUME: "${TTS_DEFAULT_VOLUME:-0.8}"
 
       # Security
       ENABLE_AUDIT_LOGGING: "true"

@@ -41,7 +41,7 @@ nodes:
     path: ../target/release/edge_voice
     inputs:
       tts_command: zenoh-bridge/tts_command
-      # tts_config_command: zenoh-bridge/tts_config_command
+      tts_config_command: zenoh-bridge/tts_config_command
       playback_state: audio-playback/walkie_state
       playback_result: audio-playback/playback_result
     outputs:
@@ -223,8 +223,8 @@ nodes:
       # arm_telemetry: sim-interface/arm_telemetry
       servo_telemetry: visual-servo-controller/servo_telemetry
       performance_metrics: performance-monitor/metrics
-      # voice_status: edge-voice/voice_status
-      # tts_command_result: edge-voice/tts_command_result
+      voice_status: edge-voice/voice_status
+      tts_command_result: edge-voice/tts_command_result
       detections: gst-camera/detections                   # DetectionFrame (detection-only mode)
       tracked_detections: gst-camera/tracked_detections   # DetectionFrame with tracking IDs
       tracking_telemetry: gst-camera/tracking_telemetry   # TrackingTelemetry
@@ -236,6 +236,7 @@ nodes:
       - stream_command     # Routed to gst-camera (gates view output only)
       - tracking_command    # Routed to gst-camera (gates vision pipeline)
       - tts_command
+      - tts_config_command
       - audio_stream
     env:
       RUST_LOG: info

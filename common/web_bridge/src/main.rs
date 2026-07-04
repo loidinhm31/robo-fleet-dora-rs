@@ -13,7 +13,8 @@ use robo_rover_lib::{
     AudioAction, AudioControl, AudioFrameMetadata, AudioFrameSequenceTracker, CameraAction,
     CameraControl, CommandMetadata, CommandPriority, FrameSequenceTracker, InputSource,
     MetricWindow, PcmSampleFormat, RoverCommand, RoverCommandWithMetadata, StreamCommand,
-    StreamControl, TtsAckState, TtsCommand, TtsCommandAck, VoiceReasonCode,
+    StreamControl, TtsAckState, TtsCommand, TtsCommandAck, TtsCommandResult, TtsConfigState,
+    TtsConfigUpdate, TtsLanguage, TtsRuntimeConfig, VoiceReasonCode, VoiceStatus,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -51,11 +52,13 @@ mod stt_socket_delivery;
 mod stt_stream_registry;
 mod stt_stream_state;
 mod stt_transcript_routing;
+mod voice_runtime;
 #[path = "walkie-audio.rs"]
 mod walkie_audio;
 use stt_bridge::{SttBridge, SttBridgeConfig, TranscriptRoute};
 use stt_protocol::{send_dora_message, SttOutputIds, VoiceCommandAudioFrame, VoiceCommandControl};
 use stt_socket_delivery::{emit_authenticated, AUTHENTICATED_ROOM};
+use voice_runtime::{ConfigUpdateOutcome, VoiceRuntimeState};
 use walkie_audio::WalkieMetadataSequence;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -447,9 +450,11 @@ struct SharedState {
     pub auth_rate_limiter: Arc<AuthRateLimiter>,
     pub ip_rate_limiter: Arc<IpRateLimiter>,
     pub command_rate_limiter: Arc<CommandRateLimiter>,
+    pub tts_config_rate_limiter: Arc<CommandRateLimiter>,
     pub session_registry: Arc<SessionRegistry>,
     pub fleet_status: Arc<Mutex<FleetStatus>>,
     pub active_rovers_status: Arc<Mutex<ActiveRoversStatus>>,
+    pub voice_runtime: Arc<Mutex<VoiceRuntimeState>>,
     pub voice_admission: Arc<Mutex<VoiceAdmissionState>>,
     /// Process-level cumulative audio delivery counters. Lives in
     /// `SharedState` (not on `ClientState`) so lifetime totals survive
@@ -481,6 +486,10 @@ impl SharedState {
 
         let fleet_status = FleetStatus::new(selected_entity, fleet_roster);
         let active_rovers_status = ActiveRoversStatus::new(active_rovers);
+        let voice_runtime = VoiceRuntimeState::new(
+            active_rovers_status.active_rovers.clone(),
+            default_tts_runtime_from_env(),
+        );
 
         tracing::info!("Fleet roster: {:?}", fleet_status.fleet_roster);
         tracing::info!("Active rovers: {:?}", active_rovers_status.active_rovers);
@@ -502,9 +511,11 @@ impl SharedState {
             auth_rate_limiter: Arc::new(AuthRateLimiter::new()),
             ip_rate_limiter: Arc::new(IpRateLimiter::new()),
             command_rate_limiter: Arc::new(CommandRateLimiter::new()),
+            tts_config_rate_limiter: Arc::new(CommandRateLimiter::new_tts_config()),
             session_registry: Arc::new(SessionRegistry::new()),
             fleet_status: Arc::new(Mutex::new(fleet_status)),
             active_rovers_status: Arc::new(Mutex::new(active_rovers_status)),
+            voice_runtime: Arc::new(Mutex::new(voice_runtime)),
             voice_admission: Arc::new(Mutex::new(VoiceAdmissionState::default())),
             audio_counters: Arc::new(AudioDeliveryCounters::new()),
         }
@@ -545,8 +556,46 @@ fn stt_bridge_config() -> SttBridgeConfig {
     }
 }
 
+fn default_tts_runtime_from_env() -> TtsRuntimeConfig {
+    let default = TtsRuntimeConfig::default();
+    let language = match env::var("TTS_DEFAULT_LANGUAGE") {
+        Ok(value) if value.eq_ignore_ascii_case("vi") => TtsLanguage::Vi,
+        Ok(value) if value.eq_ignore_ascii_case("en") => TtsLanguage::En,
+        Ok(_) | Err(env::VarError::NotUnicode(_)) => default.language,
+        Err(env::VarError::NotPresent) => default.language,
+    };
+
+    let parse_or_default =
+        |name: &str, fallback: String| -> String { env::var(name).unwrap_or(fallback) };
+
+    let config = TtsRuntimeConfig {
+        language,
+        speaker_id: parse_or_default("TTS_DEFAULT_SPEAKER_ID", default.speaker_id.to_string())
+            .parse()
+            .unwrap_or(default.speaker_id),
+        speed: parse_or_default("TTS_DEFAULT_SPEED", default.speed.to_string())
+            .parse()
+            .unwrap_or(default.speed),
+        num_steps: parse_or_default("TTS_DEFAULT_STEPS", default.num_steps.to_string())
+            .parse()
+            .unwrap_or(default.num_steps),
+        volume: parse_or_default("TTS_DEFAULT_VOLUME", default.volume.to_string())
+            .parse()
+            .unwrap_or(default.volume),
+    };
+
+    if let Err(error) = config.validate() {
+        tracing::warn!(%error, "invalid web_bridge TTS defaults; falling back to code defaults");
+        default
+    } else {
+        config
+    }
+}
+
 fn setup_socketio(
     shared_state: SharedState,
+    node_handle: Arc<Mutex<DoraNode>>,
+    tts_config_command_output: DataId,
     user_collection: Arc<Collection<security::User>>,
     jwt_secret: Arc<String>,
     session_ttl_secs: u64,
@@ -566,11 +615,14 @@ fn setup_socketio(
     // Clone io for use inside the closure
     let io_for_fleet = io.clone();
     let io_for_active_rovers = io.clone();
+    let io_for_voice = io.clone();
 
     io.ns("/", move |socket: SocketRef, TryData::<AuthCredentials>(auth)| {
         let user_collection = user_collection.clone();
         let jwt_secret = jwt_secret.clone();
         let shared_state = shared_state.clone();
+        let node_handle = node_handle.clone();
+        let tts_config_command_output = tts_config_command_output.clone();
 
         async move {
         let socket_id = socket.id.to_string();
@@ -643,6 +695,10 @@ fn setup_socketio(
         // Send fleet status to newly connected client
         let fleet_status = shared_state.fleet_status.lock().unwrap().clone();
         socket.emit("fleet_status", fleet_status).ok();
+        emit_tts_config_state(&socket, &current_tts_config_state(&shared_state));
+        for status in current_voice_statuses(&shared_state) {
+            emit_voice_status(&socket, &status);
+        }
 
         // STT status is authoritative and process-wide. Reconnects either receive
         // the cached lifecycle state or trigger a fresh response from central STT.
@@ -847,6 +903,104 @@ fn setup_socketio(
                         .lock()
                         .unwrap()
                         .push(web_cmd);
+                }
+            },
+        );
+
+        let shared_state_clone = shared_state.clone();
+        let socket_id_clone = socket_id.clone();
+        let io_for_voice_clone = io_for_voice.clone();
+        socket.on(
+            "tts_config_update",
+            move |socket: SocketRef, Data::<Value>(data)| {
+                if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
+                    socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                    socket.disconnect().ok();
+                    return;
+                }
+                if !shared_state_clone
+                    .tts_config_rate_limiter
+                    .check_command(&socket_id_clone)
+                {
+                    log_rate_limit_exceeded(&socket_id_clone, "tts_config_update");
+                    return;
+                }
+                touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
+
+                let update = match serde_json::from_value::<TtsConfigUpdate>(data) {
+                    Ok(update) => update,
+                    Err(error) => {
+                        log_validation_error(&socket_id_clone, &format!("TTS config: {error}"));
+                        emit_tts_config_state(
+                            &socket,
+                            &current_tts_config_state(&shared_state_clone),
+                        );
+                        return;
+                    }
+                };
+
+                if let Err(error) = update.validate() {
+                    log_validation_error(&socket_id_clone, &format!("TTS config: {error}"));
+                    emit_tts_config_state(&socket, &current_tts_config_state(&shared_state_clone));
+                    return;
+                }
+
+                let outcome = {
+                    let runtime = shared_state_clone.voice_runtime.lock().unwrap();
+                    runtime.preview_config_update(update, current_timestamp_ms())
+                };
+
+                match outcome {
+                    ConfigUpdateOutcome::Accepted { command, .. } => {
+                        let serialized = match serde_json::to_vec(&command) {
+                            Ok(serialized) => serialized,
+                            Err(error) => {
+                                tracing::error!(%error, "failed to serialize TTS config command");
+                                emit_tts_config_state(
+                                    &socket,
+                                    &current_tts_config_state(&shared_state_clone),
+                                );
+                                return;
+                            }
+                        };
+                        let arrow_data = BinaryArray::from_vec(vec![serialized.as_slice()]);
+                        let sent = node_handle
+                            .lock()
+                            .ok()
+                            .and_then(|mut node_guard| {
+                                node_guard
+                                    .send_output(
+                                        tts_config_command_output.clone(),
+                                        Default::default(),
+                                        arrow_data,
+                                    )
+                                    .ok()
+                            })
+                            .is_some();
+
+                        if !sent {
+                            tracing::error!("failed to send tts_config_command to Dora");
+                            emit_tts_config_state(
+                                &socket,
+                                &current_tts_config_state(&shared_state_clone),
+                            );
+                            return;
+                        }
+
+                        let state = {
+                            let mut runtime = shared_state_clone.voice_runtime.lock().unwrap();
+                            match runtime.commit_config_command(command) {
+                                ConfigUpdateOutcome::Accepted { state, .. } => state,
+                                ConfigUpdateOutcome::Stale { state } => state,
+                            }
+                        };
+                        broadcast_tts_config_state(
+                            &io_for_voice_clone,
+                            &shared_state_clone.session_registry,
+                            &state,
+                        );
+                    }
+                    ConfigUpdateOutcome::Stale { state } => emit_tts_config_state(&socket, &state),
                 }
             },
         );
@@ -1115,6 +1269,7 @@ fn setup_socketio(
         let shared_state_clone = shared_state.clone();
         let socket_id_clone = socket_id.clone();
         let io_for_active_rovers = io_for_active_rovers.clone();
+        let io_for_voice_clone = io_for_voice.clone();
         socket.on(
             "fleet_subscription",
             move |socket: SocketRef, Data::<Value>(data)| {
@@ -1181,7 +1336,19 @@ fn setup_socketio(
                     let status_clone = active_rovers.clone();
                     drop(active_rovers); // Release lock before async operation
 
-                    io_for_active_rovers.emit("active_rovers_status", status_clone).ok();
+                    io_for_active_rovers
+                        .emit("active_rovers_status", &status_clone)
+                        .ok();
+                    let voice_state = {
+                        let mut runtime = shared_state_clone.voice_runtime.lock().unwrap();
+                        runtime.sync_active_rovers(status_clone.active_rovers.clone());
+                        runtime.config_state(current_timestamp_ms())
+                    };
+                    broadcast_tts_config_state(
+                        &io_for_voice_clone,
+                        &shared_state_clone.session_registry,
+                        &voice_state,
+                    );
                     tracing::info!("Active rovers status updated and broadcast");
                 }
             },
@@ -1353,6 +1520,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stream_command_output = DataId::from("stream_command".to_owned());
     let tracking_command_output = DataId::from("tracking_command".to_owned());
     let tts_command_output = DataId::from("tts_command".to_owned());
+    let tts_config_command_output = DataId::from("tts_config_command".to_owned());
     let audio_stream_output = DataId::from("audio_stream".to_owned());
     let stt_outputs = SttOutputIds {
         audio: DataId::from("voice_command_audio".to_owned()),
@@ -1362,9 +1530,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let fleet_subscription_command_output = DataId::from("fleet_subscription_command".to_owned());
     let fleet_select_command_output = DataId::from("fleet_select_command".to_owned());
 
+    let node_handle = Arc::new(Mutex::new(node));
     let shared_state = SharedState::new();
     let (io, layer) = setup_socketio(
         shared_state.clone(),
+        node_handle.clone(),
+        tts_config_command_output.clone(),
         user_collection,
         jwt_secret.clone(),
         session_ttl_secs,
@@ -1532,7 +1703,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Process commands
-    let node_clone_arm = Arc::new(Mutex::new(node));
+    let node_clone_arm = node_handle.clone();
     let node_clone_rover = node_clone_arm.clone();
     let node_clone_camera = node_clone_arm.clone();
     let node_clone_audio = node_clone_arm.clone();
@@ -2587,6 +2758,92 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
+                    "voice_status" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() > 0 {
+                                match serde_json::from_slice::<VoiceStatus>(binary_array.value(0)) {
+                                    Ok(status) => {
+                                        if let Err(error) = status.validate() {
+                                            tracing::warn!(%error, "Rejected invalid voice status");
+                                            continue;
+                                        }
+                                        let accepted = {
+                                            let mut runtime =
+                                                state_for_video.voice_runtime.lock().unwrap();
+                                            runtime.record_voice_status(status.clone())
+                                        };
+                                        if !accepted {
+                                            tracing::debug!(
+                                                entity_id = %status.entity_id,
+                                                revision = status.applied_revision,
+                                                timestamp = status.timestamp,
+                                                "Ignored stale voice status"
+                                            );
+                                            continue;
+                                        }
+                                        if let Some(ref io) = *io_for_video.lock().unwrap() {
+                                            if let Some(namespace) = io.of("/") {
+                                                emit_authenticated(
+                                                    namespace,
+                                                    &state_for_video.session_registry,
+                                                    "voice_status",
+                                                    serde_json::to_value(&status)
+                                                        .unwrap_or(Value::Null),
+                                                );
+                                            }
+                                            if let Some(namespace) = io.of("/") {
+                                                let config_state =
+                                                    current_tts_config_state(&state_for_video);
+                                                emit_authenticated(
+                                                    namespace,
+                                                    &state_for_video.session_registry,
+                                                    "tts_config_state",
+                                                    serde_json::to_value(config_state)
+                                                        .unwrap_or(Value::Null),
+                                                );
+                                            }
+                                        }
+                                    }
+                                    Err(error) => {
+                                        tracing::error!(
+                                            %error,
+                                            "Failed to deserialize voice status"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "tts_command_result" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() > 0 {
+                                match serde_json::from_slice::<TtsCommandResult>(
+                                    binary_array.value(0),
+                                ) {
+                                    Ok(result) => {
+                                        if let Err(error) = result.validate() {
+                                            tracing::warn!(%error, "Rejected invalid TTS result");
+                                            continue;
+                                        }
+                                        if let Some(ref io) = *io_for_video.lock().unwrap() {
+                                            if let Some(namespace) = io.of("/") {
+                                                emit_authenticated(
+                                                    namespace,
+                                                    &state_for_video.session_registry,
+                                                    "tts_command_result",
+                                                    serde_json::to_value(result)
+                                                        .unwrap_or(Value::Null),
+                                                );
+                                            }
+                                        }
+                                    }
+                                    Err(error) => {
+                                        tracing::error!(%error, "Failed to deserialize TTS result");
+                                    }
+                                }
+                            }
+                        }
+                    }
                     "performance_metrics" => {
                         // Handle performance metrics from performance_monitor
                         // Only forward if monitoring is enabled
@@ -3014,6 +3271,64 @@ fn current_timestamp_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64
+}
+
+fn current_tts_config_state(shared_state: &SharedState) -> TtsConfigState {
+    shared_state
+        .voice_runtime
+        .lock()
+        .map(|runtime| runtime.config_state(current_timestamp_ms()))
+        .unwrap_or_else(|_| TtsConfigState {
+            desired_revision: 0,
+            desired_config: TtsRuntimeConfig::default(),
+            applied_rovers: 0,
+            active_rovers: 0,
+            rovers: Vec::new(),
+            timestamp: current_timestamp_ms(),
+        })
+}
+
+fn current_voice_statuses(shared_state: &SharedState) -> Vec<VoiceStatus> {
+    shared_state
+        .voice_runtime
+        .lock()
+        .map(|runtime| runtime.active_voice_statuses(current_timestamp_ms()))
+        .unwrap_or_default()
+}
+
+fn emit_tts_config_state(socket: &SocketRef, state: &TtsConfigState) {
+    if let Err(error) = state.validate() {
+        tracing::warn!(%error, "refusing to emit invalid tts_config_state");
+        return;
+    }
+    socket.emit("tts_config_state", state).ok();
+}
+
+fn emit_voice_status(socket: &SocketRef, status: &VoiceStatus) {
+    if let Err(error) = status.validate() {
+        tracing::warn!(%error, "refusing to emit invalid voice_status");
+        return;
+    }
+    socket.emit("voice_status", status).ok();
+}
+
+fn broadcast_tts_config_state(
+    io: &SocketIo,
+    session_registry: &SessionRegistry,
+    state: &TtsConfigState,
+) {
+    if let Err(error) = state.validate() {
+        tracing::warn!(%error, "refusing to broadcast invalid tts_config_state");
+        return;
+    }
+    if let Some(namespace) = io.of("/") {
+        emit_authenticated(
+            namespace,
+            session_registry,
+            "tts_config_state",
+            serde_json::to_value(state).unwrap_or(Value::Null),
+        );
+    }
 }
 
 fn selected_target_entity(shared_state: &SharedState) -> String {

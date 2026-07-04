@@ -35,7 +35,7 @@ A hybrid robotic rover control system with autonomous object tracking and visual
 - **Natural Language Understanding** with Aho-Corasick pattern matching
 - **Text-to-Speech** with dual implementation:
   - **Rover**: `edge_voice` with Sherpa-ONNX Supertonic 3 INT8 (edge-resident synthesis)
-  - **Orchestra**: Kokoro-82M (high-quality, currently wired into the orchestra dataflow as `kokoro-tts`)
+  - **Orchestra**: Kokoro-82M support is documented here; whether `kokoro-tts` is active depends on the current Phase 05 transport setup
 - **Audio Playback** for walkie-talkie/intercom functionality
 - **Multi-modal Voice Communication** (command, feedback, and direct streaming)
 - **Rover TTS Caveat**: `edge_voice` emits PCM chunks/status/results; playback consumption and mic suppression are completed in follow-up phases.
@@ -140,7 +140,7 @@ dora up
 dora start web-dataflow.yml --name robo-rover-web --attach
 ```
 
-**Development dataflow** (keyboard control):
+**Development dataflow** (keyboard control, local/dev use):
 ```shell
 dora start dev-dataflow.yml --name robo-rover-dev --attach
 ```
@@ -330,7 +330,7 @@ edge-voice:
     TTS_DEFAULT_STEPS: "8"                       # Supertonic diffusion steps
     TTS_DEFAULT_VOLUME: "0.8"                    # PCM gain before playback
 
-# Orchestra TTS (High-quality, currently wired into the orchestra dataflow)
+# Orchestra TTS (high-quality Kokoro path; enable only if the current transport setup includes it)
 kokoro-tts:
   env:
     TTS_VOICE: "bf_emma"                         # Voice style
@@ -549,7 +549,7 @@ pnpm check-types
 
 **TTS not working on orchestra** (if enabled):
 - Verify Kokoro models downloaded: `ls -lh models/.cache/kokoros/kokoro-v1.0.onnx`
-- Confirm the `kokoro-tts` node is active in `orchestra-dataflow.yml` (no longer commented out by default)
+- Confirm whether the current `orchestra-dataflow.yml` includes `kokoro-tts` before relying on orchestra-side TTS
 - Check audio output device: `pactl list sinks`
 - Increase `TTS_VOLUME` in kokoro-tts config
 

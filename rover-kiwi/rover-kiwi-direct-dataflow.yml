@@ -38,6 +38,7 @@ nodes:
     path: ../target/release/edge_voice
     inputs:
       tts_command: web-bridge/tts_command
+      tts_config_command: web-bridge/tts_config_command
       playback_state: audio-playback/walkie_state
       playback_result: audio-playback/playback_result
     outputs:
@@ -193,8 +194,8 @@ nodes:
       tracked_detections: gst-camera/tracked_detections
       tracking_telemetry: gst-camera/tracking_telemetry
       performance_metrics: performance-monitor/metrics
-      # voice_status: edge-voice/voice_status
-      # tts_command_result: edge-voice/tts_command_result
+      voice_status: edge-voice/voice_status
+      tts_command_result: edge-voice/tts_command_result
     outputs:
       - rover_command
       - arm_command
@@ -203,6 +204,7 @@ nodes:
       - stream_command
       - tracking_command
       - tts_command
+      - tts_config_command
       - audio_stream
       - voice_command_audio
     env:
@@ -215,11 +217,17 @@ nodes:
       JWT_SECRET: "${JWT_SECRET:-}"
       SESSION_TTL_SECONDS: "3600"
       ALLOW_DEFAULT_CREDENTIALS: "${ALLOW_DEFAULT_CREDENTIALS:-false}"
-      ALLOWED_ORIGINS: "*"
+      ALLOWED_ORIGINS: "http://localhost:1420,http://127.0.0.1:1420,http://localhost:25010,http://127.0.0.1:25010"
       SELECTED_ENTITY_ID: "rover-kiwi"
       FLEET_ROSTER: "rover-kiwi"
       RATE_LIMIT_AUTH_PER_MINUTE: "5"
       RATE_LIMIT_COMMANDS_PER_SECOND: "100"
+      RATE_LIMIT_TTS_CONFIG_PER_SECOND: "4"
       MAX_TTS_TEXT_LENGTH: "1000"
       MAX_AUDIO_SAMPLES_PER_MESSAGE: "16000"
       MAX_WHEEL_VELOCITY: "2.0"
+      TTS_DEFAULT_LANGUAGE: "${TTS_DEFAULT_LANGUAGE:-en}"
+      TTS_DEFAULT_SPEAKER_ID: "${TTS_DEFAULT_SPEAKER_ID:-5}"
+      TTS_DEFAULT_SPEED: "${TTS_DEFAULT_SPEED:-1.0}"
+      TTS_DEFAULT_STEPS: "${TTS_DEFAULT_STEPS:-8}"
+      TTS_DEFAULT_VOLUME: "${TTS_DEFAULT_VOLUME:-0.8}"

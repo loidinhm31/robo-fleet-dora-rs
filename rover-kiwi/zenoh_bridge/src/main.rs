@@ -153,6 +153,20 @@ async fn main() -> Result<()> {
         })?;
     tracing::info!("Publisher: {}", tracking_telemetry_topic);
 
+    let voice_status_topic = format!("rover/{}/voice/status", entity_id);
+    let voice_status_pub = session
+        .declare_publisher(&voice_status_topic)
+        .await
+        .map_err(|e| eyre::eyre!("Failed to declare publisher {}: {}", voice_status_topic, e))?;
+    tracing::info!("Publisher: {}", voice_status_topic);
+
+    let voice_result_topic = format!("rover/{}/voice/result", entity_id);
+    let tts_command_result_pub = session
+        .declare_publisher(&voice_result_topic)
+        .await
+        .map_err(|e| eyre::eyre!("Failed to declare publisher {}: {}", voice_result_topic, e))?;
+    tracing::info!("Publisher: {}", voice_result_topic);
+
     // =========================================================================
     // SUBSCRIBERS: Receive commands FROM orchestra via Zenoh
     // =========================================================================
@@ -206,6 +220,13 @@ async fn main() -> Result<()> {
         .map_err(|e| eyre::eyre!("Failed to declare subscriber {}: {}", tts_cmd_topic, e))?;
     tracing::info!("Subscriber: {}", tts_cmd_topic);
 
+    let tts_config_topic = format!("rover/{}/cmd/voice/config", entity_id);
+    let tts_config_sub = session
+        .declare_subscriber(&tts_config_topic)
+        .await
+        .map_err(|e| eyre::eyre!("Failed to declare subscriber {}: {}", tts_config_topic, e))?;
+    tracing::info!("Subscriber: {}", tts_config_topic);
+
     let audio_stream_topic = format!("rover/{}/cmd/audio_stream", entity_id);
     let audio_stream_sub = session
         .declare_subscriber(&audio_stream_topic)
@@ -224,6 +245,7 @@ async fn main() -> Result<()> {
     let stream_command_output = DataId::from("stream_command".to_owned());
     let tracking_command_output = DataId::from("tracking_command".to_owned());
     let tts_command_output = DataId::from("tts_command".to_owned());
+    let tts_config_command_output = DataId::from("tts_config_command".to_owned());
     let audio_stream_output = DataId::from("audio_stream".to_owned());
 
     // Statistics
@@ -417,6 +439,21 @@ async fn main() -> Result<()> {
                                             "tracking_telemetry" => {
                                                 let _ = tracking_telemetry_pub.put(bytes).await;
                                             }
+                                            "voice_status" => {
+                                                if let Err(error) = voice_status_pub.put(bytes).await {
+                                                    tracing::error!(%error, "failed to publish voice status");
+                                                }
+                                            }
+                                            "tts_command_result" => {
+                                                if let Err(error) =
+                                                    tts_command_result_pub.put(bytes).await
+                                                {
+                                                    tracing::error!(
+                                                        %error,
+                                                        "failed to publish TTS command result"
+                                                    );
+                                                }
+                                            }
                                             _ => {}
                                         }
                                     }
@@ -501,6 +538,16 @@ async fn main() -> Result<()> {
                 let payload = sample.payload().to_bytes();
                 let arrow_data = BinaryArray::from_vec(vec![payload.as_ref()]);
                 let _ = node.send_output(tts_command_output.clone(), Default::default(), arrow_data);
+            }
+
+            Ok(sample) = tts_config_sub.recv_async() => {
+                let payload = sample.payload().to_bytes();
+                let arrow_data = BinaryArray::from_vec(vec![payload.as_ref()]);
+                let _ = node.send_output(
+                    tts_config_command_output.clone(),
+                    Default::default(),
+                    arrow_data,
+                );
             }
 
             Ok(sample) = audio_stream_sub.recv_async() => {

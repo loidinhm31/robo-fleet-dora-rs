@@ -1,6 +1,6 @@
 use serde::{ser::Error as _, Deserialize, Serialize, Serializer};
 
-use super::{validation::validate_wire_integer, VoiceStatus};
+use super::{validation::validate_wire_integer, VoiceState, VoiceStatus};
 
 pub const MIN_TTS_SPEED: f32 = 0.5;
 pub const MAX_TTS_SPEED: f32 = 2.0;
@@ -132,7 +132,11 @@ impl TtsConfigState {
         let applied = self
             .rovers
             .iter()
-            .filter(|status| status.applied_revision == self.desired_revision)
+            .filter(|status| {
+                status.applied_revision == self.desired_revision
+                    && status.state != VoiceState::Unavailable
+                    && status.applied_config == self.desired_config
+            })
             .count();
         if applied != self.applied_rovers as usize {
             return Err("applied rover count does not match rover revisions".into());

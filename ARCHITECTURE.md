@@ -7,7 +7,7 @@ The robo-rover system uses a **distributed architecture** with two deployment ta
 - **Orchestra (Workstation)**: Heavy AI/ML processing, web interface, fleet control
 - **Rover-Kiwi (Raspberry Pi 5)**: Hardware I/O, motor control, low-latency control loops
 
-Communication between machines uses **Zenoh** (pub/sub protocol) for efficient real-time data exchange. Alternatively, the rover can run in **direct mode** (`ROVER_MODE=direct`) with `web_bridge` on the rover itself - no Zenoh or orchestra required.
+Communication between machines uses **Zenoh** (pub/sub protocol) for efficient real-time data exchange. A **direct mode** (`ROVER_MODE=direct`) exists for local/dev runs with `web_bridge` on the rover itself; it bypasses Zenoh and the orchestra bridge path.
 
 ## Architecture Diagram
 
@@ -543,9 +543,9 @@ Planned Dora port names:
 | `audio-playback` | `walkie_audio`, `tts_audio` | `playback_state` |
 | `audio-capture` | `audio_control`, `playback_state` | `audio` |
 
-Direct rover mode uses the same `web-bridge`, `edge-voice`, playback, and
-capture port names but omits both Zenoh bridge hops. The Socket.IO wire shape
-is identical in direct and Orchestra modes.
+Direct rover mode is for local/dev runs. It uses the same `web-bridge`,
+`edge-voice`, playback, and capture port names but omits both Zenoh bridge
+hops. The Socket.IO wire shape is identical in direct and Orchestra modes.
 
 ### Desired and Applied Configuration
 

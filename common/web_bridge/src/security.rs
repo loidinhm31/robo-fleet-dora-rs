@@ -105,10 +105,19 @@ pub struct CommandRateLimiter {
 
 impl CommandRateLimiter {
     pub fn new() -> Self {
-        let max_commands = env::var("RATE_LIMIT_COMMANDS_PER_SECOND")
+        Self::from_env("RATE_LIMIT_COMMANDS_PER_SECOND", 100)
+    }
+
+    pub fn new_tts_config() -> Self {
+        Self::from_env("RATE_LIMIT_TTS_CONFIG_PER_SECOND", 4)
+    }
+
+    fn from_env(env_key: &str, default: u32) -> Self {
+        let max_commands = env::var(env_key)
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(100);
+            .filter(|value| *value > 0)
+            .unwrap_or(default);
 
         Self {
             limiters: Arc::new(Mutex::new(HashMap::new())),

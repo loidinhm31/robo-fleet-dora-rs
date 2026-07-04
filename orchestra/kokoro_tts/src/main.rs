@@ -4,8 +4,6 @@ use eyre::{eyre, Result};
 use kokoro_tiny::TtsEngine;
 use robo_rover_lib::{init_tracing, TtsCommand};
 use std::env;
-use std::fs;
-use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() -> Result<()> {
