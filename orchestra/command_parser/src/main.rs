@@ -838,44 +838,152 @@ mod tests {
         // These cases document *actual* parser behavior (not idealized behavior).
         // Pre-existing limitation unrelated to Phase 02.
         vec![
-            IntentCase { input: "stop", expected: Intent::Stop },
-            IntentCase { input: "halt the rover", expected: Intent::Stop },
-            IntentCase { input: "forward", expected: Intent::MoveForward },
-            IntentCase { input: "move forward slowly", expected: Intent::MoveForward },
-            IntentCase { input: "go ahead", expected: Intent::MoveForward },
-            IntentCase { input: "backward", expected: Intent::MoveBackward },
-            IntentCase { input: "back up", expected: Intent::MoveBackward },
-            IntentCase { input: "left", expected: Intent::MoveLeft },
-            IntentCase { input: "strafe left", expected: Intent::MoveLeft },
-            IntentCase { input: "right", expected: Intent::MoveRight },
-            IntentCase { input: "strafe right", expected: Intent::MoveRight },
+            IntentCase {
+                input: "stop",
+                expected: Intent::Stop,
+            },
+            IntentCase {
+                input: "halt the rover",
+                expected: Intent::Stop,
+            },
+            IntentCase {
+                input: "forward",
+                expected: Intent::MoveForward,
+            },
+            IntentCase {
+                input: "move forward slowly",
+                expected: Intent::MoveForward,
+            },
+            IntentCase {
+                input: "go ahead",
+                expected: Intent::MoveForward,
+            },
+            IntentCase {
+                input: "backward",
+                expected: Intent::MoveBackward,
+            },
+            IntentCase {
+                input: "back up",
+                expected: Intent::MoveBackward,
+            },
+            IntentCase {
+                input: "left",
+                expected: Intent::MoveLeft,
+            },
+            IntentCase {
+                input: "strafe left",
+                expected: Intent::MoveLeft,
+            },
+            IntentCase {
+                input: "right",
+                expected: Intent::MoveRight,
+            },
+            IntentCase {
+                input: "strafe right",
+                expected: Intent::MoveRight,
+            },
             // TurnLeft/TurnRight unreachable: "left"/"right" shadow them.
             // Arm direction inputs also shadowed by primitive direction keywords:
-            IntentCase { input: "arm up", expected: Intent::MoveArmUp },
-            IntentCase { input: "raise the arm", expected: Intent::MoveArmUp },
-            IntentCase { input: "arm down", expected: Intent::MoveArmDown },
-            IntentCase { input: "lower the arm", expected: Intent::MoveArmDown },
-            IntentCase { input: "arm left", expected: Intent::MoveLeft },      // shadowed
-            IntentCase { input: "arm right", expected: Intent::MoveRight },     // shadowed
-            IntentCase { input: "arm forward", expected: Intent::MoveForward }, // shadowed
-            IntentCase { input: "arm in", expected: Intent::MoveArmBackward },  // "in" unique
-            IntentCase { input: "open gripper", expected: Intent::OpenGripper },
-            IntentCase { input: "close gripper", expected: Intent::CloseGripper },
-            IntentCase { input: "grab", expected: Intent::CloseGripper },
-            IntentCase { input: "release", expected: Intent::OpenGripper },
-            IntentCase { input: "track person", expected: Intent::TrackObject },
-            IntentCase { input: "start tracking", expected: Intent::TrackObject },
-            IntentCase { input: "follow dog", expected: Intent::FollowObject },
-            IntentCase { input: "stop tracking", expected: Intent::Stop },   // "stop" shadows
-            IntentCase { input: "stop following", expected: Intent::Stop },  // "stop" shadows
-            IntentCase { input: "start camera", expected: Intent::StartCamera },
-            IntentCase { input: "stop camera", expected: Intent::Stop },     // "stop" shadows
-            IntentCase { input: "turn on the camera", expected: Intent::StartCamera },
-            IntentCase { input: "turn off the camera", expected: Intent::StopCamera },
-            IntentCase { input: "start audio", expected: Intent::StartAudio },
-            IntentCase { input: "stop audio", expected: Intent::Stop },      // "stop" shadows
-            IntentCase { input: "start microphone", expected: Intent::StartAudio },
-            IntentCase { input: "stop microphone", expected: Intent::Stop }, // "stop" shadows
+            IntentCase {
+                input: "arm up",
+                expected: Intent::MoveArmUp,
+            },
+            IntentCase {
+                input: "raise the arm",
+                expected: Intent::MoveArmUp,
+            },
+            IntentCase {
+                input: "arm down",
+                expected: Intent::MoveArmDown,
+            },
+            IntentCase {
+                input: "lower the arm",
+                expected: Intent::MoveArmDown,
+            },
+            IntentCase {
+                input: "arm left",
+                expected: Intent::MoveLeft,
+            }, // shadowed
+            IntentCase {
+                input: "arm right",
+                expected: Intent::MoveRight,
+            }, // shadowed
+            IntentCase {
+                input: "arm forward",
+                expected: Intent::MoveForward,
+            }, // shadowed
+            IntentCase {
+                input: "arm in",
+                expected: Intent::MoveArmBackward,
+            }, // "in" unique
+            IntentCase {
+                input: "open gripper",
+                expected: Intent::OpenGripper,
+            },
+            IntentCase {
+                input: "close gripper",
+                expected: Intent::CloseGripper,
+            },
+            IntentCase {
+                input: "grab",
+                expected: Intent::CloseGripper,
+            },
+            IntentCase {
+                input: "release",
+                expected: Intent::OpenGripper,
+            },
+            IntentCase {
+                input: "track person",
+                expected: Intent::TrackObject,
+            },
+            IntentCase {
+                input: "start tracking",
+                expected: Intent::TrackObject,
+            },
+            IntentCase {
+                input: "follow dog",
+                expected: Intent::FollowObject,
+            },
+            IntentCase {
+                input: "stop tracking",
+                expected: Intent::Stop,
+            }, // "stop" shadows
+            IntentCase {
+                input: "stop following",
+                expected: Intent::Stop,
+            }, // "stop" shadows
+            IntentCase {
+                input: "start camera",
+                expected: Intent::StartCamera,
+            },
+            IntentCase {
+                input: "stop camera",
+                expected: Intent::Stop,
+            }, // "stop" shadows
+            IntentCase {
+                input: "turn on the camera",
+                expected: Intent::StartCamera,
+            },
+            IntentCase {
+                input: "turn off the camera",
+                expected: Intent::StopCamera,
+            },
+            IntentCase {
+                input: "start audio",
+                expected: Intent::StartAudio,
+            },
+            IntentCase {
+                input: "stop audio",
+                expected: Intent::Stop,
+            }, // "stop" shadows
+            IntentCase {
+                input: "start microphone",
+                expected: Intent::StartAudio,
+            },
+            IntentCase {
+                input: "stop microphone",
+                expected: Intent::Stop,
+            }, // "stop" shadows
         ]
     }
 
@@ -907,7 +1015,8 @@ mod tests {
         let parser = make_parser();
         let parsed = parser.parse("forward").unwrap();
         let target = make_target();
-        let cmd = convert_to_rover_command(&parsed, &target).expect("should produce a rover command");
+        let cmd =
+            convert_to_rover_command(&parsed, &target).expect("should produce a rover command");
         assert_eq!(cmd.target_entity_id.as_deref(), Some("rover-kiwi"));
     }
 
@@ -916,7 +1025,8 @@ mod tests {
         let parser = make_parser();
         let parsed = parser.parse("stop").unwrap();
         let target = make_rover_target("rover-a");
-        let cmd = convert_to_rover_command(&parsed, &target).expect("should produce a rover command");
+        let cmd =
+            convert_to_rover_command(&parsed, &target).expect("should produce a rover command");
         assert_eq!(cmd.target_entity_id.as_deref(), Some("rover-a"));
         // InputSource::VoiceCommand is set by build_command_metadata — verify indirectly via JSON
         let json = serde_json::to_value(&cmd).unwrap();
@@ -982,7 +1092,10 @@ mod tests {
         let parsed = parser.parse("stop tracking the target").unwrap();
         // AhoCorasick finds "stop" → Intent::Stop (pre-existing parser limitation).
         // Verify at least the command produces no tracking command when stop is parsed:
-        assert!(convert_to_tracking_command(&parsed).is_none() || matches!(parsed.intent, Intent::Stop | Intent::StopTracking));
+        assert!(
+            convert_to_tracking_command(&parsed).is_none()
+                || matches!(parsed.intent, Intent::Stop | Intent::StopTracking)
+        );
     }
 
     #[test]
@@ -990,7 +1103,13 @@ mod tests {
         let parser = make_parser();
         let parsed = parser.parse("start camera").unwrap();
         let cmd = convert_to_camera_control(&parsed);
-        assert!(matches!(cmd, Some(CameraControl { command: CameraAction::Start, .. })));
+        assert!(matches!(
+            cmd,
+            Some(CameraControl {
+                command: CameraAction::Start,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -1000,7 +1119,13 @@ mod tests {
         let parser = make_parser();
         let parsed = parser.parse("turn off the camera").unwrap();
         let cmd = convert_to_camera_control(&parsed);
-        assert!(matches!(cmd, Some(CameraControl { command: CameraAction::Stop, .. })));
+        assert!(matches!(
+            cmd,
+            Some(CameraControl {
+                command: CameraAction::Stop,
+                ..
+            })
+        ));
     }
 
     // --- Non-actuator intents produce no rover/tracking/camera command ---

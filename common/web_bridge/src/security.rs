@@ -515,7 +515,6 @@ pub mod validation {
         }
         validate_audio_data(samples)
     }
-
 }
 
 /// Extracts the client IP from request headers.

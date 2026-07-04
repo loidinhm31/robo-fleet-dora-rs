@@ -33,5 +33,9 @@ build/
 # Tools
 .claude/
 .codegraph/
+.codex/
 .stfolder/
 third_party/
+
+# Local ML model artefacts (downloaded separately)
+yolo12n.pt

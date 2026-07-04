@@ -1115,7 +1115,10 @@ mod routing_tests {
         let bytes = serde_json::to_vec(&payload).unwrap();
         let target = extract_target(&bytes);
         // Extraction returns the raw string; the bridge then checks .trim().is_empty()
-        assert!(target.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true));
+        assert!(target
+            .as_deref()
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(true));
     }
 
     // --- Simulated routing decisions ---
@@ -1126,9 +1129,7 @@ mod routing_tests {
     /// - with no target → should reject
     #[test]
     fn parser_routing_rejects_inactive_target() {
-        let active_rovers = std::collections::HashMap::from([
-            ("rover-a".to_string(), ()),
-        ]);
+        let active_rovers = std::collections::HashMap::from([("rover-a".to_string(), ())]);
 
         let target_inactive = "rover-b";
         assert!(!active_rovers.contains_key(target_inactive));
@@ -1139,9 +1140,7 @@ mod routing_tests {
 
     #[test]
     fn parser_routing_accepts_active_target() {
-        let active_rovers = std::collections::HashMap::from([
-            ("rover-kiwi".to_string(), ()),
-        ]);
+        let active_rovers = std::collections::HashMap::from([("rover-kiwi".to_string(), ())]);
         let target = "rover-kiwi";
         assert!(active_rovers.contains_key(target));
     }
@@ -1150,9 +1149,7 @@ mod routing_tests {
     fn web_routing_uses_selected_rover_regardless_of_payload() {
         // Web command doesn't need target in payload — it uses selected_entity
         let selected = Some("rover-kiwi".to_string());
-        let active_rovers = std::collections::HashMap::from([
-            ("rover-kiwi".to_string(), ()),
-        ]);
+        let active_rovers = std::collections::HashMap::from([("rover-kiwi".to_string(), ())]);
         let entity_id = selected.as_ref().unwrap();
         assert!(active_rovers.contains_key(entity_id.as_str()));
     }
@@ -1186,11 +1183,13 @@ mod routing_tests {
 
         // The parser uses target_at_stream_start (from SpeechTranscription)
         // NOT selected_after_change
-        assert_ne!(Some(target_at_stream_start), selected_after_change.as_deref());
+        assert_ne!(
+            Some(target_at_stream_start),
+            selected_after_change.as_deref()
+        );
 
         // Routing should use target_at_stream_start
         let routed_topic = format!("rover/{}/cmd/movement", target_at_stream_start);
         assert_eq!(routed_topic, "rover/rover-a/cmd/movement");
     }
 }
-
