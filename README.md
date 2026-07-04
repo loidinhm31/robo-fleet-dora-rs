@@ -34,11 +34,11 @@ A hybrid robotic rover control system with autonomous object tracking and visual
 - **Speech Recognition** using central Sherpa VAD/offline STT for voice commands
 - **Natural Language Understanding** with Aho-Corasick pattern matching
 - **Text-to-Speech** with dual implementation:
-  - **Rover**: Sherpa-ONNX VITS-Piper (lightweight, edge-optimized)
+  - **Rover**: `edge_voice` with Sherpa-ONNX Supertonic 3 INT8 (edge-resident synthesis)
   - **Orchestra**: Kokoro-82M (high-quality, currently wired into the orchestra dataflow as `kokoro-tts`)
 - **Audio Playback** for walkie-talkie/intercom functionality
 - **Multi-modal Voice Communication** (command, feedback, and direct streaming)
-- **Rover TTS Caveat**: rover-side Sherpa TTS is still operator-triggered/manual; simultaneous mic + speaker playback suppression/AEC is not yet complete.
+- **Rover TTS Caveat**: `edge_voice` emits PCM chunks/status/results; playback consumption and mic suppression are completed in follow-up phases.
 
 ## Prerequisites
 
@@ -213,7 +213,7 @@ Check - [ARCHITECTURE](ARCHITECTURE.md)
 - **audio-capture**: cpal-based audio capture (Rust)
 - **central-speech-recognizer**: Sherpa VAD/offline speech-to-text with browser-private and rover source-aware routing
 - **command-parser**: NLU for voice command intent extraction
-- **sherpa-tts** (rover): Lightweight VITS-Piper TTS for edge devices
+- **edge-voice** (rover): Supertonic 3 INT8 TTS service for edge synthesis
 - **kokoro-tts** (orchestra): High-quality Kokoro-82M TTS (currently wired into the orchestra dataflow)
 - **audio-playback**: Real-time audio playback for walkie-talkie mode
 
@@ -318,15 +318,17 @@ command-parser:
   env:
     # No configuration needed - uses built-in pattern matching
 
-# Legacy rover TTS example (current runtime wiring before later migration phases)
-sherpa-tts:
+# Rover edge TTS
+edge-voice:
   env:
-    TTS_MODEL_DIR: "/home/user/.cache/sherpa-onnx/vits-piper-en_US-lessac-medium"
-    TTS_VOLUME: "0.8"                            # Audio volume (0.0-1.0)
-    TTS_SPEED: "1.0"                             # Speech speed multiplier
-    TTS_NUM_THREADS: "2"                         # CPU threads for inference
-    TTS_PROVIDER: "cpu"                          # Execution provider
-    LD_LIBRARY_PATH: "target/release"            # sherpa-onnx library path
+    EDGE_VOICE_MODEL_DIR: "models/.cache/sherpa-onnx/tts/sherpa-onnx-supertonic-3-tts-int8-2026-05-11"
+    EDGE_VOICE_NUM_THREADS: "2"                  # CPU threads for inference
+    EDGE_VOICE_QUEUE_CAPACITY: "8"               # Bounded priority queue
+    TTS_DEFAULT_LANGUAGE: "en"                   # en or vi
+    TTS_DEFAULT_SPEAKER_ID: "5"                  # M1, valid range 0-9
+    TTS_DEFAULT_SPEED: "1.0"                     # Speech speed multiplier
+    TTS_DEFAULT_STEPS: "8"                       # Supertonic diffusion steps
+    TTS_DEFAULT_VOLUME: "0.8"                    # PCM gain before playback
 
 # Orchestra TTS (High-quality, currently wired into the orchestra dataflow)
 kokoro-tts:
@@ -335,10 +337,10 @@ kokoro-tts:
     TTS_VOLUME: "0.8"                            # Audio volume (0.0-2.0)
 ```
 
-**Legacy Sherpa-ONNX Voice** (current rover runtime):
-- Single voice: `en_US-lessac-medium` (built into VITS-Piper model)
-- Optimized for edge devices with minimal resource usage
-- Apache 2.0 license
+**Supertonic Rover Voice**:
+- English and Vietnamese share one resident Supertonic engine
+- Ten voice SIDs are available; default M1 is SID 5
+- Supertonic OpenRAIL-M notice is tracked in `models/SUPERTONIC-OPENRAIL-M-NOTICE.txt`
 
 **Kokoro Voice Styles** (orchestra):
 - `af` / `af_sky` - American Female
@@ -538,13 +540,12 @@ pnpm check-types
 - Check `STT_MODEL_ROOT` points at `models/.cache/sherpa-onnx/asr`
 - Check `SAMPLE_RATE` matches audio-capture (must be 16000)
 
-**TTS not working on rover** (legacy current runtime path):
-- Verify Sherpa-ONNX model downloaded: `ls -lh ~/.cache/sherpa-onnx/vits-piper-en_US-lessac-medium/`
-- Check required files: `model.onnx`, `tokens.txt`, `espeak-ng-data/`
-- Verify library path: `ls -lh target/release/libsherpa-onnx-c-api.so`
-- Check audio output device: `pactl list sinks`
-- Increase `TTS_VOLUME` in sherpa-tts config
-- Check logs for initialization errors (typical: 2-3s initialization time)
+**TTS not working on rover**:
+- Verify the Supertonic bundle: `make check-models`
+- Check required files under `models/.cache/sherpa-onnx/tts/sherpa-onnx-supertonic-3-tts-int8-2026-05-11/`
+- Run `cargo test -p edge_voice` and inspect `edge-voice` logs for `voice_status` error detail
+- Confirm `EDGE_VOICE_MODEL_DIR` points at the Supertonic directory
+- Playback output is owned by `audio-playback`; Phase 04 wires `tts_audio` consumption and suppression
 
 **TTS not working on orchestra** (if enabled):
 - Verify Kokoro models downloaded: `ls -lh models/.cache/kokoros/kokoro-v1.0.onnx`
@@ -718,8 +719,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 **Audio & Voice:**
 - [cpal](https://github.com/RustAudio/cpal) - Cross-platform audio I/O
-- [Sherpa-ONNX](https://github.com/k2-fsa/sherpa-onnx) - Lightweight edge TTS (rover)
-- [sherpa-rs](https://github.com/thewh1teagle/sherpa-rs) - Rust bindings for Sherpa-ONNX
+- [Sherpa-ONNX](https://github.com/k2-fsa/sherpa-onnx) - STT and Supertonic TTS runtime
 - [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) - High-quality TTS (orchestra)
 - [Aho-Corasick](https://docs.rs/aho-corasick/) - Efficient pattern matching
 

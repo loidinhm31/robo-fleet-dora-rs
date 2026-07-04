@@ -210,12 +210,12 @@ services:
       # Override: PULSE_UID=$(id -u) make up-rover  (default 1000 = Pi default user)
       PULSE_SERVER: "unix:/run/user/${PULSE_UID:-1000}/pulse/native"
 
-      # TTS (Sherpa-ONNX)
-      TTS_MODEL_DIR: /models/sherpa-onnx/vits-piper-en_US-lessac-medium
-      TTS_VOLUME: "0.8"
-      TTS_SPEED: "1.0"
-      TTS_NUM_THREADS: "2"
-      TTS_PROVIDER: "cpu"
+      # TTS (Supertonic through edge_voice)
+      EDGE_VOICE_MODEL_DIR: /models/sherpa-onnx/tts/sherpa-onnx-supertonic-3-tts-int8-2026-05-11
+      EDGE_VOICE_NUM_THREADS: "2"
+      EDGE_VOICE_QUEUE_CAPACITY: "8"
+      TTS_DEFAULT_VOLUME: "0.8"
+      TTS_DEFAULT_SPEED: "1.0"
       LD_LIBRARY_PATH: "/usr/local/lib:/app/bin"
 
       # Arm controller

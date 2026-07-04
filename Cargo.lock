@@ -2046,6 +2046,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
+name = "edge_voice"
+version = "0.1.0"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+ "robo_rover_lib",
+ "serde",
+ "serde_json",
+ "sherpa-onnx",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "educe"
 version = "0.5.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6490,53 +6504,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sherpa-rs"
-version = "0.6.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81835d89a3fc44482a6829e3e2483ac83f7b4d1623c76f196c77c9ecf5c18203"
-dependencies = [
- "eyre",
- "hound",
- "sherpa-rs-sys",
- "tracing",
-]
-
-[[package]]
-name = "sherpa-rs-sys"
-version = "0.6.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "591c9432b20f41d47f622a73c2888b188c321e313d820824df7d9fa51dbada43"
-dependencies = [
- "bindgen 0.69.5",
- "bzip2",
- "cmake",
- "dirs 5.0.1",
- "flate2",
- "glob",
- "lazy_static",
- "serde",
- "serde_json",
- "sha2",
- "tar",
- "ureq 2.12.1",
-]
-
-[[package]]
-name = "sherpa_tts"
-version = "0.1.0"
-dependencies = [
- "dirs 5.0.1",
- "dora-node-api",
- "eyre",
- "robo_rover_lib",
- "rodio",
- "serde",
- "serde_json",
- "sherpa-rs",
- "tracing",
-]
-
-[[package]]
 name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7925,7 +7892,6 @@ dependencies = [
  "once_cell",
  "rustls 0.23.35",
  "rustls-pki-types",
- "socks",
  "url",
  "webpki-roots 0.26.11",
 ]

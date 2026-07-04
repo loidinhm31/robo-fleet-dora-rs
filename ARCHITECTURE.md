@@ -79,7 +79,7 @@ robo-rover-dora/
 │   ├── arm_controller/             # Arm servo control
 │   ├── rover_controller/           # Motor control
 │   ├── visual_servo_controller/    # PID autonomous following
-│   ├── sherpa_tts/                 # Lightweight edge TTS (VITS-Piper, rover speakers)
+│   ├── edge_voice/                 # Supertonic edge TTS service (PCM only)
 │   ├── performance_monitor/        # System metrics
 │   ├── dispatcher_keyboard/        # Keyboard control (dev)
 │   ├── zenoh_bridge/               # Rover Zenoh bridge (rover-only)
@@ -249,16 +249,16 @@ cargo install dora-cli --locked
 **On Orchestra**:
 - Sherpa ASR bundles plus Silero VAD for the selected startup profile
 - Kokoro TTS models (optional, for workstation audio)
-- The shared `models/.cache/sherpa-onnx` cache holds the central STT bundles and rover Sherpa TTS assets.
+- The shared `models/.cache/sherpa-onnx` cache holds the central STT bundles and rover Supertonic TTS assets.
 
 **On Rover-Kiwi**:
 - GStreamer for camera
 - cpal for audio
-- ONNX Runtime for YOLO, ReID, and TTS
+- ONNX Runtime for YOLO and ReID; statically linked Sherpa-ONNX for TTS
 - YOLO model (yolo12n.onnx, ~6MB)
 - OSNet model (osnet_x0_25.onnx, ~0.85MB)
-- Sherpa-ONNX VITS-Piper model for lightweight edge TTS (~61MB)
-- Rover Sherpa TTS remains manual/operator-triggered; mic + speaker echo suppression is still follow-up work.
+- Sherpa-ONNX Supertonic 3 INT8 model for rover edge TTS
+- `edge_voice` emits PCM/status/results; playback consumption and mic suppression are follow-up work.
 
 ### Build and Deploy
 

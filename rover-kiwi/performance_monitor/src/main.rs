@@ -7,12 +7,11 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
-use sysinfo::{ProcessRefreshKind, RefreshKind, System};
+use sysinfo::System;
 
 /// Performance tracker for a single node
 struct NodePerformanceTracker {
     node_id: String,
-    frame_count: u64,
     dropped_frames: u64,
     processing_times: Vec<f32>,
     last_fps_calculation: Instant,
@@ -23,7 +22,6 @@ impl NodePerformanceTracker {
     fn new(node_id: String) -> Self {
         Self {
             node_id,
-            frame_count: 0,
             dropped_frames: 0,
             processing_times: Vec::with_capacity(100),
             last_fps_calculation: Instant::now(),
@@ -31,23 +29,7 @@ impl NodePerformanceTracker {
         }
     }
 
-    fn record_frame(&mut self, processing_time_ms: f32) {
-        self.frame_count += 1;
-        self.processing_times.push(processing_time_ms);
-
-        if processing_time_ms > self.max_processing_time {
-            self.max_processing_time = processing_time_ms;
-        }
-
-        // Keep only last 100 samples
-        if self.processing_times.len() > 100 {
-            self.processing_times.remove(0);
-        }
-    }
-
     fn calculate_metrics(&mut self, cpu_percent: f32, memory_mb: f32) -> NodeMetrics {
-        let elapsed = self.last_fps_calculation.elapsed().as_secs_f32();
-
         // Estimate FPS based on CPU activity
         // Nodes with higher CPU usage are likely processing more frames
         // This is a heuristic since we don't have direct frame counting
@@ -83,7 +65,6 @@ impl NodePerformanceTracker {
         };
 
         // Reset for next interval
-        self.frame_count = 0;
         self.last_fps_calculation = Instant::now();
         self.max_processing_time = 0.0;
 
@@ -165,7 +146,7 @@ fn main() -> Result<()> {
         "visual-servo-controller",
         "audio-capture",
         "audio-playback",
-        "sherpa-tts",
+        "edge-voice",
         "arm-controller",
         "rover-controller",
         "sim-interface",

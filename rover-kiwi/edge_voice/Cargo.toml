@@ -1,5 +1,5 @@
 [package]
-name = "sherpa_tts"
+name = "edge_voice"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,14 +9,9 @@ eyre = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
 
-# Sherpa-ONNX TTS - Lightweight, efficient neural TTS for edge devices
-sherpa-rs = { version = "0.6", features = ["tts", "download-binaries"] }
-
-# Audio playback
-rodio = "0.19"
-
-# Directory utilities
-dirs = "5.0"
+# Official Sherpa runtime. Static linkage keeps this isolated from rover vision ORT.
+sherpa-onnx = { version = "=1.13.3", default-features = false, features = ["static"] }
 
 robo_rover_lib = { path = "../../robo_rover_lib" }

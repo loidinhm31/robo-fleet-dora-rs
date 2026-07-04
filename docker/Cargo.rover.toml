@@ -14,7 +14,7 @@ members = [
     "rover-kiwi/audio_capture",
     "rover-kiwi/audio_converter",
     "rover-kiwi/audio_playback",
-    "rover-kiwi/sherpa_tts",
+    "rover-kiwi/edge_voice",
     "rover-kiwi/arm_controller",
     "rover-kiwi/rover_controller",
     "rover-kiwi/performance_monitor",

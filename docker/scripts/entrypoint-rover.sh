@@ -164,11 +164,18 @@ if [ ! -f "/models/reid/osnet_x0_25.onnx" ]; then
     MODELS_OK=false
 fi
 
-if [ ! -d "/models/sherpa-onnx/vits-piper-en_US-lessac-medium" ]; then
-    echo "WARNING: Sherpa-ONNX TTS model not found at /models/sherpa-onnx/vits-piper-en_US-lessac-medium"
-    echo "  TTS functionality will not work, but other nodes will continue"
+SUPERTONIC_DIR="/models/sherpa-onnx/tts/sherpa-onnx-supertonic-3-tts-int8-2026-05-11"
+if [ ! -f "$SUPERTONIC_DIR/duration_predictor.int8.onnx" ] || \
+   [ ! -f "$SUPERTONIC_DIR/text_encoder.int8.onnx" ] || \
+   [ ! -f "$SUPERTONIC_DIR/vector_estimator.int8.onnx" ] || \
+   [ ! -f "$SUPERTONIC_DIR/vocoder.int8.onnx" ] || \
+   [ ! -f "$SUPERTONIC_DIR/tts.json" ] || \
+   [ ! -f "$SUPERTONIC_DIR/unicode_indexer.bin" ] || \
+   [ ! -f "$SUPERTONIC_DIR/voice.bin" ]; then
+    echo "WARNING: Supertonic TTS model incomplete at $SUPERTONIC_DIR"
+    echo "  edge_voice will report an error state, but other nodes will continue"
 else
-    echo "✓ Sherpa-ONNX TTS model found"
+    echo "✓ Supertonic TTS model found"
 fi
 
 if [ "$MODELS_OK" = false ]; then
@@ -176,7 +183,7 @@ if [ "$MODELS_OK" = false ]; then
     echo "Please ensure the models are downloaded and mounted correctly:"
     echo "  - Host: ./models/.cache/yolo/yolo12n.onnx"
     echo "  - Host: ./models/.cache/reid/osnet_x0_25.onnx"
-    echo "  - Host: ./models/.cache/sherpa-onnx/vits-piper-en_US-lessac-medium/"
+    echo "  - Host: ./models/.cache/sherpa-onnx/tts/sherpa-onnx-supertonic-3-tts-int8-2026-05-11/"
     echo ""
     echo "To download and export models, run:"
     echo "  make models"
@@ -222,7 +229,7 @@ sed -i 's|path: target/release/|path: /app/bin/|g' "$DATAFLOW_TMP"
 # Update model paths from ${HOME}/.cache/ to /models/
 sed -i 's|MODEL_PATH: "${HOME}/.cache/yolo/yolo12n.onnx"|MODEL_PATH: "/models/yolo/yolo12n.onnx"|g' "$DATAFLOW_TMP"
 sed -i 's|REID_MODEL_PATH: "${HOME}/.cache/reid/osnet_x0_25.onnx"|REID_MODEL_PATH: "/models/reid/osnet_x0_25.onnx"|g' "$DATAFLOW_TMP"
-sed -i 's|TTS_MODEL_DIR: "${HOME}/.cache/sherpa-onnx/vits-piper-en_US-lessac-medium"|TTS_MODEL_DIR: "/models/sherpa-onnx/vits-piper-en_US-lessac-medium"|g' "$DATAFLOW_TMP"
+sed -i 's|EDGE_VOICE_MODEL_DIR: "${EDGE_VOICE_MODEL_DIR:-models/.cache/sherpa-onnx/tts/sherpa-onnx-supertonic-3-tts-int8-2026-05-11}"|EDGE_VOICE_MODEL_DIR: "/models/sherpa-onnx/tts/sherpa-onnx-supertonic-3-tts-int8-2026-05-11"|g' "$DATAFLOW_TMP"
 
 # Update LD_LIBRARY_PATH
 sed -i 's|LD_LIBRARY_PATH: "${HOME}/ws/robo-fleet-dora-rs/target/release"|LD_LIBRARY_PATH: "/usr/local/lib:/app/bin"|g' "$DATAFLOW_TMP"
