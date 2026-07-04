@@ -581,7 +581,9 @@ Socket tts_command{text}
   -> tts_command_ack(accepted)
   -> selected rover queue
   -> voice_status(speaking, command_id)
+  -> edge_voice synthesis complete -> internal tts_synthesis_state
   -> F32 PCM consumed by audio_playback
+  -> internal playback_result(completed)
   -> tts_command_result(completed)
   -> voice_status(ready)
 ```
@@ -602,6 +604,10 @@ queue saturation, is a terminal `tts_command_result(state=rejected)` on the
 existing result channel. Accepted commands always terminate as completed,
 rejected, interrupted, or failed.
 
+`tts_synthesis_state` and `playback_result` are rover-local Dora control edges.
+They keep synthesis completion distinct from public command completion and let
+bounded playback overflow or device failure terminate the command explicitly.
+
 Walkie preemption is a safety transition:
 
 ```text
@@ -616,7 +622,7 @@ with the interrupted command ID. `edge_voice` cancels active synthesis and
 emits the terminal interrupted result. `web_bridge` marks walkie active as soon
 as it forwards the first valid frame for the selected target, then rejects
 subsequent TTS admissions while that local walkie window remains active.
-Walkie remains active until 750 ms after its last valid frame. Rover
+Walkie remains active until 250 ms after its last valid frame. Rover
 microphone publication is suppressed throughout any playback and for 400 ms
 after playback becomes idle; browser-origin STT is not suppressed.
 

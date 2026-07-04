@@ -6,6 +6,7 @@ nodes:
     inputs:
       tick: dora/timer/millis/50  # 20 Hz
       audio_control: web-bridge/audio_command
+      playback_state: audio-playback/playback_state
     outputs:
       - audio  # Float32 audio data
     env:
@@ -13,27 +14,35 @@ nodes:
       CHANNELS: "1"  # preserve downstream mono contract; multichannel mics are downmixed in audio_capture
       CHUNK_SIZE: "800"
       # AUDIO_DEVICE: "USB Audio"  # optional manual override; uncomment to force deterministic device selection by substring
-  # Audio playback - Speaker output (walkie-talkie)
+  # Audio playback - sole speaker owner for walkie and rover TTS.
   - id: audio-playback
     build: cargo build --release -p audio_playback
     path: ../target/release/audio_playback
     inputs:
-      audio: web-bridge/audio_stream
+      tick: dora/timer/millis/20
+      walkie_audio: web-bridge/audio_stream
+      tts_audio: edge-voice/tts_audio
+      tts_synthesis_state: edge-voice/tts_synthesis_state
+    outputs:
+      - playback_state
+      - walkie_state
+      - playback_result
     env:
       RUST_LOG: info
-      SAMPLE_RATE: "16000"
-      CHANNELS: "1"
+      ENTITY_ID: "rover-kiwi"
+      PLAYBACK_VOLUME: "1.0"
 
-  # Edge voice - rover-side Supertonic synthesis. Playback consumption is completed
-  # in Phase 04 when audio-playback accepts the tts_audio input.
+  # Edge voice - rover-side Supertonic synthesis.
   - id: edge-voice
     build: cargo build --release -p edge_voice
     path: ../target/release/edge_voice
     inputs:
       tts_command: web-bridge/tts_command
-      # playback_state: audio-playback/playback_state
+      playback_state: audio-playback/walkie_state
+      playback_result: audio-playback/playback_result
     outputs:
       - tts_audio
+      - tts_synthesis_state
       - voice_status
       - tts_command_result
       - metrics

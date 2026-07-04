@@ -10,8 +10,8 @@ use dora_node_api::{
 };
 use eyre::{eyre, Result};
 use robo_rover_lib::{
-    init_tracing, TtsCommand, TtsConfigCommand, TtsResultState, TtsRuntimeConfig, VoiceReasonCode,
-    VoiceState,
+    init_tracing, TtsCommand, TtsCommandResult, TtsConfigCommand, TtsResultState, TtsRuntimeConfig,
+    VoiceReasonCode, VoiceState,
 };
 use serde_json::json;
 
@@ -86,6 +86,7 @@ struct Outputs {
     tts_audio: DataId,
     voice_status: DataId,
     tts_command_result: DataId,
+    tts_synthesis_state: DataId,
     metrics: DataId,
 }
 
@@ -95,6 +96,7 @@ impl Default for Outputs {
             tts_audio: DataId::from("tts_audio".to_string()),
             voice_status: DataId::from("voice_status".to_string()),
             tts_command_result: DataId::from("tts_command_result".to_string()),
+            tts_synthesis_state: DataId::from("tts_synthesis_state".to_string()),
             metrics: DataId::from("metrics".to_string()),
         }
     }
@@ -113,6 +115,8 @@ struct RuntimeState {
     active_command_id: Option<String>,
     active_config: Option<TtsRuntimeConfig>,
     active_revision: Option<u64>,
+    synthesis_finished: bool,
+    playback_failure_pending: bool,
 }
 
 impl RuntimeState {
@@ -129,6 +133,8 @@ impl RuntimeState {
             active_command_id: None,
             active_config: None,
             active_revision: None,
+            synthesis_finished: false,
+            playback_failure_pending: false,
         }
     }
 
@@ -202,7 +208,21 @@ fn handle_input(
             let state = parse_playback_state(binary_payload(data)?)?;
             if walkie_is_active(&state) {
                 runtime.walkie_active = true;
-                worker.cancel(VoiceReasonCode::InterruptedByWalkie);
+                if runtime.synthesis_finished {
+                    if let Some(command_id) = runtime.active_command_id.clone() {
+                        finish_active_command(
+                            node,
+                            outputs,
+                            runtime,
+                            &command_id,
+                            TtsResultState::Interrupted,
+                            Some(VoiceReasonCode::InterruptedByWalkie),
+                            None,
+                        )?;
+                    }
+                } else {
+                    worker.cancel(VoiceReasonCode::InterruptedByWalkie);
+                }
                 for command_id in runtime.queue.clear_ids() {
                     emit_result(
                         node,
@@ -218,6 +238,45 @@ fn handle_input(
                 }
             } else {
                 runtime.walkie_active = false;
+            }
+        }
+        "playback_result" => {
+            let result = serde_json::from_slice::<TtsCommandResult>(binary_payload(data)?)?;
+            validate_result(&result)?;
+            if result.entity_id != runtime.entity_id
+                || runtime.active_command_id.as_deref() != Some(&result.command_id)
+            {
+                return Err(eyre!("playback result does not match active command"));
+            }
+            match result.state {
+                TtsResultState::Completed if runtime.synthesis_finished => {
+                    finish_active_command(
+                        node,
+                        outputs,
+                        runtime,
+                        &result.command_id,
+                        TtsResultState::Completed,
+                        None,
+                        None,
+                    )?;
+                }
+                TtsResultState::Failed => {
+                    if runtime.synthesis_finished {
+                        finish_active_command(
+                            node,
+                            outputs,
+                            runtime,
+                            &result.command_id,
+                            TtsResultState::Failed,
+                            Some(VoiceReasonCode::PlaybackFailed),
+                            None,
+                        )?;
+                    } else {
+                        runtime.playback_failure_pending = true;
+                        worker.cancel(VoiceReasonCode::PlaybackFailed);
+                    }
+                }
+                _ => return Err(eyre!("invalid playback result state or ordering")),
             }
         }
         other => return Err(eyre!("unexpected edge_voice input: {other}")),
@@ -419,6 +478,8 @@ fn handle_worker_event(
             runtime.active_command_id = Some(command_id);
             runtime.active_revision = Some(revision);
             runtime.active_config = Some(config);
+            runtime.synthesis_finished = false;
+            runtime.playback_failure_pending = false;
             emit_status(
                 node,
                 outputs,
@@ -445,70 +506,105 @@ fn handle_worker_event(
             elapsed_ms,
             samples,
         } => {
-            runtime.busy = false;
-            runtime.active_command_id = None;
-            runtime.active_revision = None;
-            runtime.active_config = None;
-            emit_result(
-                node,
-                outputs,
-                command_result(
-                    &runtime.entity_id,
-                    &command_id,
-                    TtsResultState::Completed,
-                    None,
-                    None,
-                ),
-            )?;
-            emit_status(node, outputs, runtime.status(VoiceState::Ready, None, None))?;
+            if runtime.active_command_id.as_deref() != Some(&command_id) {
+                return Ok(());
+            }
             emit_metric(
                 node,
                 outputs,
-                json!({"event":"completed","command_id":command_id,"elapsed_ms":elapsed_ms,"samples":samples}),
+                json!({"event":"synthesis_completed","command_id":command_id,"elapsed_ms":elapsed_ms,"samples":samples}),
             )?;
-            dispatch_if_idle(runtime, worker, node, outputs)?;
+            if runtime.playback_failure_pending {
+                finish_active_command(
+                    node,
+                    outputs,
+                    runtime,
+                    &command_id,
+                    TtsResultState::Failed,
+                    Some(VoiceReasonCode::PlaybackFailed),
+                    None,
+                )?;
+                dispatch_if_idle(runtime, worker, node, outputs)?;
+            } else {
+                runtime.synthesis_finished = true;
+                emit_synthesis_state(
+                    node,
+                    outputs,
+                    command_result(
+                        &runtime.entity_id,
+                        &command_id,
+                        TtsResultState::Completed,
+                        None,
+                        None,
+                    ),
+                )?;
+            }
         }
         WorkerEvent::Interrupted { command_id, reason } => {
-            runtime.busy = false;
-            runtime.active_command_id = None;
-            runtime.active_revision = None;
-            runtime.active_config = None;
-            emit_result(
-                node,
-                outputs,
-                command_result(
-                    &runtime.entity_id,
+            if runtime.active_command_id.as_deref() == Some(&command_id) {
+                let playback_failed =
+                    runtime.playback_failure_pending || reason == VoiceReasonCode::PlaybackFailed;
+                let state = if playback_failed {
+                    TtsResultState::Failed
+                } else {
+                    TtsResultState::Interrupted
+                };
+                let terminal_reason = if playback_failed {
+                    VoiceReasonCode::PlaybackFailed
+                } else {
+                    reason
+                };
+                emit_synthesis_state(
+                    node,
+                    outputs,
+                    command_result(
+                        &runtime.entity_id,
+                        &command_id,
+                        state,
+                        Some(terminal_reason),
+                        None,
+                    ),
+                )?;
+                finish_active_command(
+                    node,
+                    outputs,
+                    runtime,
                     &command_id,
-                    TtsResultState::Interrupted,
-                    Some(reason),
+                    state,
+                    Some(terminal_reason),
                     None,
-                ),
-            )?;
-            emit_status(node, outputs, runtime.status(VoiceState::Ready, None, None))?;
-            dispatch_if_idle(runtime, worker, node, outputs)?;
+                )?;
+                dispatch_if_idle(runtime, worker, node, outputs)?;
+            }
         }
         WorkerEvent::Failed {
             command_id,
             reason,
             detail,
         } => {
-            runtime.busy = false;
-            runtime.active_command_id = None;
-            runtime.active_revision = None;
-            runtime.active_config = None;
-            emit_result(
-                node,
-                outputs,
-                command_result(
-                    &runtime.entity_id,
+            if runtime.active_command_id.as_deref() == Some(&command_id) {
+                emit_synthesis_state(
+                    node,
+                    outputs,
+                    command_result(
+                        &runtime.entity_id,
+                        &command_id,
+                        TtsResultState::Failed,
+                        Some(reason),
+                        Some(detail.clone()),
+                    ),
+                )?;
+                finish_active_command(
+                    node,
+                    outputs,
+                    runtime,
                     &command_id,
                     TtsResultState::Failed,
                     Some(reason),
                     Some(detail),
-                ),
-            )?;
-            emit_status(node, outputs, runtime.status(VoiceState::Ready, None, None))?;
-            dispatch_if_idle(runtime, worker, node, outputs)?;
+                )?;
+                dispatch_if_idle(runtime, worker, node, outputs)?;
+            }
         }
         WorkerEvent::Stopped => {}
     }
@@ -540,6 +636,44 @@ fn emit_result(
         Default::default(),
         to_binary(&result)?,
     )?;
+    Ok(())
+}
+
+fn emit_synthesis_state(
+    node: &mut DoraNode,
+    outputs: &Outputs,
+    result: TtsCommandResult,
+) -> Result<()> {
+    validate_result(&result)?;
+    node.send_output(
+        outputs.tts_synthesis_state.clone(),
+        Default::default(),
+        to_binary(&result)?,
+    )?;
+    Ok(())
+}
+
+fn finish_active_command(
+    node: &mut DoraNode,
+    outputs: &Outputs,
+    runtime: &mut RuntimeState,
+    command_id: &str,
+    state: TtsResultState,
+    reason: Option<VoiceReasonCode>,
+    detail: Option<String>,
+) -> Result<()> {
+    runtime.busy = false;
+    runtime.active_command_id = None;
+    runtime.active_revision = None;
+    runtime.active_config = None;
+    runtime.synthesis_finished = false;
+    runtime.playback_failure_pending = false;
+    emit_result(
+        node,
+        outputs,
+        command_result(&runtime.entity_id, command_id, state, reason, detail),
+    )?;
+    emit_status(node, outputs, runtime.status(VoiceState::Ready, None, None))?;
     Ok(())
 }
 

@@ -16,6 +16,10 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use zenoh::Config;
 
+#[path = "walkie-audio.rs"]
+mod walkie_audio;
+use walkie_audio::encode_walkie_packet;
+
 // Type alias for Zenoh subscriber (default handler)
 type ZenohSubscriber =
     zenoh::pubsub::Subscriber<zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>>;
@@ -371,7 +375,7 @@ async fn main() -> Result<()> {
             // Handle Dora events (commands and fleet management)
             Ok(event) = dora_rx.recv_async() => {
                 match event {
-                    Event::Input { id, data, .. } => {
+                    Event::Input { id, data, metadata } => {
                         match id.as_str() {
                             // Fleet subscription management
                             "fleet_subscription_command" => {
@@ -410,9 +414,16 @@ async fn main() -> Result<()> {
                                             if active_rovers.contains_key(entity_id) {
                                                 let audio_stream_topic = format!("rover/{}/cmd/audio_stream", entity_id);
 
-                                                let bytes = encode_f32le(float32_array.values().as_ref());
-                                                if let Err(error) = session.put(audio_stream_topic, bytes).await {
-                                                    tracing::error!(%error, "failed to publish speaker audio");
+                                                match encode_walkie_packet(
+                                                    &metadata.parameters,
+                                                    float32_array.values().as_ref(),
+                                                ) {
+                                                    Ok(packet) => {
+                                                        if let Err(error) = session.put(audio_stream_topic, packet).await {
+                                                            tracing::error!(%error, "failed to publish speaker audio");
+                                                        }
+                                                    }
+                                                    Err(error) => tracing::warn!(%error, "rejected invalid walkie frame"),
                                                 }
                                             } else {
                                                 tracing::warn!("Selected rover {} is not active", entity_id);
@@ -941,14 +952,6 @@ fn float32_to_s16le(samples: &[f32]) -> Vec<u8> {
     output
 }
 
-fn encode_f32le(samples: &[f32]) -> Vec<u8> {
-    let mut output = Vec::with_capacity(samples.len() * 4);
-    for sample in samples {
-        output.extend_from_slice(&sample.to_le_bytes());
-    }
-    output
-}
-
 fn audio_dora_parameters(
     metadata: AudioFrameMetadata,
     entity_id: &str,
@@ -1004,7 +1007,10 @@ mod audio_tests {
     #[test]
     fn legacy_audio_decode_is_bounded_and_converts_to_s16le() {
         let mut states = HashMap::new();
-        let input = encode_f32le(&[-1.0, 0.0, 1.0]);
+        let input: Vec<u8> = [-1.0_f32, 0.0, 1.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
         let frame = decode_rover_audio(&input, "rover-a", &mut states, 16_000, 1).unwrap();
         assert!(frame.legacy);
         assert_eq!(frame.payload.len(), 6);

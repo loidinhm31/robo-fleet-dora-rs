@@ -1,6 +1,8 @@
 mod audio_dump;
+mod capture_gate;
 mod signal_metrics;
 
+use capture_gate::CaptureGate;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream};
 use dora_node_api::arrow::array::{Array, BinaryArray, Float32Array};
@@ -8,6 +10,7 @@ use dora_node_api::dora_core::config::DataId;
 use dora_node_api::{DoraNode, Event, MetadataParameters, Parameter};
 use eyre::Result;
 use ringbuf::{traits::*, HeapRb};
+use robo_rover_lib::PlaybackState;
 use robo_rover_lib::{
     describe_device_preference, init_tracing, matches_device_override, select_input_capture_plan,
     select_preferred_device_name, AudioAction, AudioControl, InputCapturePlan, MetricWindow,
@@ -101,6 +104,7 @@ fn main() -> Result<()> {
     let mut preflight_probe =
         PreflightSignalProbe::new(sample_rate, channels, PRE_FLIGHT_DURATION_MS);
     let mut audio_buffer = Vec::with_capacity(chunk_size);
+    let mut capture_gate = CaptureGate::new(true);
     tracing::info!(%stream_id, "audio capture stream identity created");
 
     loop {
@@ -112,8 +116,12 @@ fn main() -> Result<()> {
                         samples_rejected = samples_rejected.saturating_add(rejected);
                         capture_metrics.record_drops(rejected);
                     }
-                    // Only process audio if stream is active
-                    if stream_opt.is_some() {
+                    // Keep draining captured samples while playback suppression is active.
+                    // This prevents speaker audio queued during the 400 ms tail from leaking
+                    // into the first frame published after capture resumes.
+                    if !capture_gate.can_publish(Instant::now()) {
+                        clear_capture_buffers(&consumer, &mut audio_buffer);
+                    } else if stream_opt.is_some() {
                         // Read available samples from ring buffer
                         if let Ok(mut cons) = consumer.lock() {
                             while cons.occupied_len() > 0 && audio_buffer.len() < chunk_size {
@@ -212,6 +220,7 @@ fn main() -> Result<()> {
                                 );
                                 match audio_control.command {
                                     AudioAction::Start => {
+                                        capture_gate.set_user_enabled(true);
                                         if stream_opt.is_none() {
                                             tracing::info!("Starting audio stream");
                                             // Clear existing buffers and recreate stream
@@ -246,6 +255,7 @@ fn main() -> Result<()> {
                                         }
                                     }
                                     AudioAction::Stop => {
+                                        capture_gate.set_user_enabled(false);
                                         if let Some(_stream) = stream_opt.take() {
                                             preflight_probe
                                                 .log_if_pending("capture_preflight_partial");
@@ -263,6 +273,13 @@ fn main() -> Result<()> {
                         }
                     }
                 }
+                "playback_state" => match parse_playback_state(&*data) {
+                    Ok(state) => {
+                        capture_gate.observe_playback(&state, Instant::now());
+                        clear_capture_buffers(&consumer, &mut audio_buffer);
+                    }
+                    Err(error) => tracing::warn!(%error, "rejected playback suppression state"),
+                },
                 other => tracing::warn!("Ignoring unexpected input: {}", other),
             },
             Some(Event::Stop(_)) => {
@@ -309,6 +326,29 @@ fn main() -> Result<()> {
         "Audio capture stopped"
     );
     Ok(())
+}
+
+fn parse_playback_state(data: &dyn Array) -> Result<PlaybackState> {
+    let binary = data
+        .as_any()
+        .downcast_ref::<BinaryArray>()
+        .ok_or_else(|| eyre::eyre!("playback state must be BinaryArray"))?;
+    if binary.len() != 1 {
+        return Err(eyre::eyre!("playback state must contain one payload"));
+    }
+    let state = serde_json::from_slice::<PlaybackState>(binary.value(0))?;
+    state.validate().map_err(eyre::Report::msg)?;
+    Ok(state)
+}
+
+fn clear_capture_buffers(
+    consumer: &Arc<Mutex<ringbuf::HeapCons<f32>>>,
+    audio_buffer: &mut Vec<f32>,
+) {
+    audio_buffer.clear();
+    if let Ok(mut consumer) = consumer.lock() {
+        while consumer.try_pop().is_some() {}
+    }
 }
 
 /// Try to open a CPAL input stream. Returns Err if no microphone / ALSA device is available.
@@ -711,5 +751,20 @@ mod tests {
         probe.log_if_ready();
 
         assert!(probe.is_emitted());
+    }
+
+    #[test]
+    fn suppression_flushes_queued_and_partial_microphone_samples() {
+        let ring = HeapRb::<f32>::new(4);
+        let (mut producer, consumer) = ring.split();
+        producer.try_push(0.1).unwrap();
+        producer.try_push(0.2).unwrap();
+        let consumer = Arc::new(Mutex::new(consumer));
+        let mut partial = vec![0.3];
+
+        clear_capture_buffers(&consumer, &mut partial);
+
+        assert!(partial.is_empty());
+        assert_eq!(consumer.lock().unwrap().occupied_len(), 0);
     }
 }

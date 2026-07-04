@@ -9,3 +9,7 @@ eyre = { workspace = true }
 robo_rover_lib = { path = "../../robo_rover_lib" }
 tracing = { workspace = true }
 cpal = "0.15"
+crossbeam-queue = "0.3"
+rubato = { version = "=3.0.0", default-features = false }
+serde_json = { workspace = true }
+uuid = { workspace = true }

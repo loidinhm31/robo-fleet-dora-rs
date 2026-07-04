@@ -6,6 +6,7 @@ nodes:
     inputs:
       tick: dora/timer/millis/50  # 20 Hz
       audio_control: zenoh-bridge/audio_command
+      playback_state: audio-playback/playback_state
     outputs:
       - audio  # Float32 audio data
     env:
@@ -34,17 +35,18 @@ nodes:
       SAMPLE_RATE: "16000"
       CHANNELS: "1"
 
-  # Edge voice - rover-side Supertonic synthesis. Playback consumption is completed
-  # in Phase 04 when audio-playback accepts the tts_audio input.
+  # Edge voice - rover-side Supertonic synthesis.
   - id: edge-voice
     build: cargo build --release -p edge_voice
     path: ../target/release/edge_voice
     inputs:
       tts_command: zenoh-bridge/tts_command
       # tts_config_command: zenoh-bridge/tts_config_command
-      # playback_state: audio-playback/playback_state
+      playback_state: audio-playback/walkie_state
+      playback_result: audio-playback/playback_result
     outputs:
       - tts_audio
+      - tts_synthesis_state
       - voice_status
       - tts_command_result
       - metrics
@@ -60,16 +62,23 @@ nodes:
       TTS_DEFAULT_STEPS: "8"
       TTS_DEFAULT_VOLUME: "0.8"
 
-  # Audio playback - Speaker output (walkie-talkie)
+  # Audio playback - sole speaker owner for walkie and rover TTS.
   - id: audio-playback
     build: cargo build --release -p audio_playback
     path: ../target/release/audio_playback
     inputs:
-      audio: zenoh-bridge/audio_stream  # From Orchestra (Web UI mic)
+      tick: dora/timer/millis/20
+      walkie_audio: zenoh-bridge/audio_stream  # From Orchestra (Web UI mic)
+      tts_audio: edge-voice/tts_audio
+      tts_synthesis_state: edge-voice/tts_synthesis_state
+    outputs:
+      - playback_state  # Actual samples consumed; gates rover microphone publication
+      - walkie_state    # 250 ms walkie authority window; cancels/rejects edge TTS
+      - playback_result # Terminal only after final CPAL consumption or playback failure
     env:
       RUST_LOG: info
-      SAMPLE_RATE: "16000"
-      CHANNELS: "1"
+      ENTITY_ID: "rover-kiwi"
+      PLAYBACK_VOLUME: "1.0"
 
   # Performance monitor - Local system metrics
   - id: performance-monitor

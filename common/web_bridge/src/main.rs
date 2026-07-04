@@ -51,9 +51,12 @@ mod stt_socket_delivery;
 mod stt_stream_registry;
 mod stt_stream_state;
 mod stt_transcript_routing;
+#[path = "walkie-audio.rs"]
+mod walkie_audio;
 use stt_bridge::{SttBridge, SttBridgeConfig, TranscriptRoute};
 use stt_protocol::{send_dora_message, SttOutputIds, VoiceCommandAudioFrame, VoiceCommandControl};
 use stt_socket_delivery::{emit_authenticated, AUTHENTICATED_ROOM};
+use walkie_audio::WalkieMetadataSequence;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct JointPositions {
@@ -395,7 +398,7 @@ pub struct WebAudioStream {
     pub audio_data: Vec<f32>, // Float32 audio samples from Web UI microphone
 }
 
-const WALKIE_ACTIVITY_TTL: Duration = Duration::from_millis(750);
+const WALKIE_ACTIVITY_TTL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Default)]
 struct VoiceAdmissionState {
@@ -1756,6 +1759,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Process audio stream from Web UI microphone (walkie-talkie mode)
     let state_clone_audio_stream = shared_state.clone();
     let _audio_stream_processor = tokio::spawn(async move {
+        let mut metadata_sequence = WalkieMetadataSequence::new();
         loop {
             if let Ok(mut queue) = state_clone_audio_stream.audio_stream_queue.lock() {
                 if !queue.is_empty() {
@@ -1766,13 +1770,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
 
                     // Send audio data directly as Float32Array to audio_playback node
+                    let sample_count = web_audio.audio_data.len();
                     let arrow_data = Float32Array::from(web_audio.audio_data);
                     if let Ok(mut node_guard) = node_clone_audio_stream.lock() {
-                        let _ = node_guard.send_output(
-                            audio_stream_output.clone(),
-                            Default::default(),
-                            arrow_data,
-                        );
+                        match metadata_sequence.next(sample_count) {
+                            Ok(metadata) => {
+                                let _ = node_guard.send_output(
+                                    audio_stream_output.clone(),
+                                    metadata,
+                                    arrow_data,
+                                );
+                            }
+                            Err(error) => tracing::warn!(%error, "rejected walkie audio metadata"),
+                        }
                     }
                 }
             }

@@ -13,6 +13,10 @@ use robo_rover_lib::{
 use std::time::{Duration, Instant};
 use zenoh::Config;
 
+#[path = "walkie-audio.rs"]
+mod walkie_audio;
+use walkie_audio::WalkieDecoder;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let _guard = init_tracing();
@@ -233,6 +237,7 @@ async fn main() -> Result<()> {
     let mut audio_errors: u64 = 0;
     let mut audio_sequence_drops: u64 = 0;
     let mut audio_metrics = MetricWindow::new(Duration::from_secs(5));
+    let mut walkie_decoder = WalkieDecoder::new();
     let mut audio_age_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut audio_sequence = AudioFrameSequenceTracker::default();
 
@@ -500,11 +505,11 @@ async fn main() -> Result<()> {
 
             Ok(sample) = audio_stream_sub.recv_async() => {
                 let payload = sample.payload().to_bytes();
-                match decode_f32le(payload.as_ref()) {
-                    Ok(samples) => {
-                        let audio_array = Float32Array::from(samples);
+                match walkie_decoder.decode(payload.as_ref()) {
+                    Ok(frame) => {
+                        let audio_array = Float32Array::from(frame.samples);
                         if let Err(error) = node.send_output(
-                            audio_stream_output.clone(), Default::default(), audio_array)
+                            audio_stream_output.clone(), frame.parameters, audio_array)
                         {
                             tracing::error!(%error, "failed to forward speaker audio to Dora");
                         }
@@ -578,26 +583,4 @@ fn audio_frame_metadata(
             .map_err(|_| "sample_count exceeds u32")?,
         format: PcmSampleFormat::from_metadata_name(string("format")?)?,
     })
-}
-
-fn decode_f32le(payload: &[u8]) -> Result<Vec<f32>, String> {
-    const MAX_AUDIO_STREAM_BYTES: usize = 64 * 1024;
-    if payload.is_empty() || payload.len() > MAX_AUDIO_STREAM_BYTES || payload.len() % 4 != 0 {
-        return Err(format!("invalid f32le payload length: {}", payload.len()));
-    }
-    Ok(payload
-        .chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-        .collect())
-}
-
-#[cfg(test)]
-mod audio_tests {
-    use super::*;
-
-    #[test]
-    fn f32le_decoder_rejects_partial_samples() {
-        assert!(decode_f32le(&[0, 1, 2]).is_err());
-        assert_eq!(decode_f32le(&1.25f32.to_le_bytes()).unwrap(), vec![1.25]);
-    }
 }
