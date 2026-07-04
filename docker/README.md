@@ -14,13 +14,12 @@ make models
 
 This will download:
 - ✅ Sherpa Silero VAD + offline ASR bundles - for central workstation speech recognition
-- ✅ Sherpa-ONNX VITS TTS model (~21 MB) - for text-to-speech
+- ✅ Supertonic rover TTS bundle
+- ✅ YOLO ONNX export
+- ✅ OSNet ReID ONNX export
 
-You'll also need to manually export:
-- ⚠️ YOLO model (requires PyTorch)
-- ⚠️ OSNet ReID model (requires PyTorch)
-
-See the [Model Export](#model-export) section below.
+For native x86 runs outside Docker, `make models` also installs the pinned
+repo-local ONNX Runtime under `models/.runtime`.
 
 ### 2. Build Images
 
@@ -106,30 +105,16 @@ Both containers use **host networking mode** to enable Zenoh multicast peer disc
 
 Rover Sherpa TTS is still manual/operator-triggered; echo suppression for simultaneous mic + speaker use is not finished.
 
-## Model Export
+## Model Validation
 
-### YOLO Model
-
-The YOLO model requires PyTorch for export:
+Validate the pinned cache before building images:
 
 ```bash
-cd models/scripts
-python3 -m venv venv
-source venv/bin/activate
-pip install ultralytics
-python3 export_yolo_to_onnx.py
+make check-models
 ```
 
-This creates `models/.cache/yolo/yolo12n.onnx` (~6 MB).
-
-### OSNet ReID Model
-
-```bash
-cd models/scripts
-./download_osnet_model.sh
-```
-
-This downloads and exports `models/.cache/reid/osnet_x0_25.onnx` (~6 MB).
+Use `make models-reset` when you need a full repo-local cache replacement that
+preserves the old cache until the staging cache has passed validation.
 
 ## Environment Variables
 
@@ -177,7 +162,7 @@ docker/
 ├── .dockerignore                 # Exclude build artifacts
 ├── README.md                     # This file
 └── scripts/
-    ├── download-models.sh        # Download ML models
+    ├── download-models.sh        # Compatibility wrapper around models/scripts/setup-models.sh ensure
     ├── entrypoint-orchestra.sh   # Orchestra startup script
     └── entrypoint-rover.sh       # Rover startup script
 ```
@@ -187,7 +172,8 @@ docker/
 | Command | Description |
 |---------|-------------|
 | `make help` | Show all available commands |
-| `make models` | Download ML models |
+| `make models` | Ensure the pinned repo-local model and runtime cache |
+| `make models-reset` | Rebuild the repo-local model cache atomically |
 | `make build-orchestra` | Build orchestra image (x86_64) |
 | `make build-rover` | Build rover image (ARM64, native) |
 | `make build-rover-cross` | Build rover image (cross-compile) |
@@ -201,7 +187,7 @@ docker/
 | `make shell-rover` | Open bash in rover |
 | `make status` | Check Dora node status |
 | `make clean` | Remove containers and images |
-| `make check-models` | Verify models are downloaded |
+| `make check-models` | Validate pinned model/runtime artifacts and fail on missing, corrupt, or unverified assets |
 
 ## Troubleshooting
 
@@ -241,15 +227,8 @@ WARNING: /dev/video0 not found
 
 **Solution:**
 ```bash
-# Export YOLO model
-cd models/scripts
-python3 -m venv venv
-source venv/bin/activate
-pip install ultralytics
-python3 export_yolo_to_onnx.py
-
-# Export OSNet model
-./download_osnet_model.sh
+make models
+make check-models
 ```
 
 **Issue: Audio playback fails with ALSA `snd_pcm_open` error**

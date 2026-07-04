@@ -4,7 +4,7 @@
 # Easy-to-use commands for building and running the robo-fleet system
 # in Docker containers with two profiles: orchestra (workstation) and rover-kiwi
 
-.PHONY: help models build-orchestra build-rover build-all up-orchestra up-rover \
+.PHONY: help models models-reset check-models build-orchestra build-rover build-all up-orchestra up-rover \
         up-rover-direct down logs-orchestra logs-rover shell-orchestra shell-rover \
         status clean build-rover-cross format format-check format-file
 
@@ -24,8 +24,9 @@ help:
 	@echo "╚════════════════════════════════════════════════════════════════════════╝"
 	@echo ""
 	@echo "Setup:"
-	@echo "  make models          - Download required ML models"
-	@echo "  make check-models    - Report every required model file"
+	@echo "  make models          - Ensure the pinned repo-local model/runtime cache"
+	@echo "  make models-reset    - Rebuild the repo-local model cache atomically"
+	@echo "  make check-models    - Validate every required pinned model/runtime file"
 	@echo ""
 	@echo "Build Images:"
 	@echo "  make build-orchestra - Build orchestra image (x86_64)"
@@ -83,8 +84,12 @@ help:
 # Model Download
 # =============================================================================
 models:
-	@echo "Downloading ML models..."
-	@./docker/scripts/download-models.sh
+	@echo "Ensuring repo-local models and ONNX Runtime..."
+	@./models/scripts/setup-models.sh ensure
+
+models-reset:
+	@echo "Rebuilding repo-local model cache atomically..."
+	@./models/scripts/setup-models.sh reset
 
 # =============================================================================
 # Build Images
@@ -215,18 +220,5 @@ validate-compose:
 	@echo "✓ docker-compose.yml is valid"
 
 check-models:
-	@echo "Checking for required models..."
-	@ls -lh models/.cache/sherpa-onnx/asr/silero/silero_vad.onnx 2>/dev/null || echo "  ✗ Silero VAD model missing"
-	@ls -lh models/.cache/sherpa-onnx/asr/icefall-asr-multidataset-pruned_transducer_stateless7-2023-05-04/exp/encoder-epoch-30-avg-4.int8.onnx 2>/dev/null || echo "  ✗ English ASR encoder missing"
-	@ls -lh models/.cache/sherpa-onnx/asr/icefall-asr-multidataset-pruned_transducer_stateless7-2023-05-04/exp/decoder-epoch-30-avg-4.onnx 2>/dev/null || echo "  ✗ English ASR decoder missing"
-	@ls -lh models/.cache/sherpa-onnx/asr/icefall-asr-multidataset-pruned_transducer_stateless7-2023-05-04/exp/joiner-epoch-30-avg-4.int8.onnx 2>/dev/null || echo "  ✗ English ASR joiner missing"
-	@ls -lh models/.cache/sherpa-onnx/asr/icefall-asr-multidataset-pruned_transducer_stateless7-2023-05-04/data/lang_bpe_500/tokens.txt 2>/dev/null || echo "  ✗ English ASR tokens missing"
-	@ls -lh models/.cache/sherpa-onnx/asr/sherpa-onnx-zipformer-vi-30M-int8-2026-02-09/encoder.int8.onnx 2>/dev/null || echo "  ✗ Vietnamese ASR encoder missing"
-	@ls -lh models/.cache/sherpa-onnx/asr/sherpa-onnx-zipformer-vi-30M-int8-2026-02-09/decoder.onnx 2>/dev/null || echo "  ✗ Vietnamese ASR decoder missing"
-	@ls -lh models/.cache/sherpa-onnx/asr/sherpa-onnx-zipformer-vi-30M-int8-2026-02-09/joiner.int8.onnx 2>/dev/null || echo "  ✗ Vietnamese ASR joiner missing"
-	@ls -lh models/.cache/sherpa-onnx/asr/sherpa-onnx-zipformer-vi-30M-int8-2026-02-09/tokens.txt 2>/dev/null || echo "  ✗ Vietnamese ASR tokens missing"
-	@ls -lh models/.cache/yolo/yolo12n.onnx 2>/dev/null || echo "  ✗ YOLO model missing"
-	@ls -lh models/.cache/reid/osnet_x0_25.onnx 2>/dev/null || echo "  ✗ OSNet model missing"
-	@ls -lhd models/.cache/sherpa-onnx/vits-piper-en_US-lessac-medium 2>/dev/null || echo "  ✗ Sherpa-ONNX model missing"
-	@echo ""
-	@echo "Run 'make models' to download available models"
+	@echo "Validating repo-local model and runtime artifacts..."
+	@./models/scripts/setup-models.sh check

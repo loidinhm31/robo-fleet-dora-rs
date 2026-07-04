@@ -3,6 +3,9 @@ onnxruntime-linux-x64-*/
 onnxruntime-*.tgz
 /venv
 /models/.cache/*
+/models/.cache-reset-*
+/models/.cache-backup-*
+/models/.runtime/*
 /models/scripts/venv
 /memory
 

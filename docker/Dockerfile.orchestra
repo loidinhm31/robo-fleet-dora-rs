@@ -73,6 +73,7 @@ COPY --from=builder /usr/local/cargo/bin/dora ./bin/
 # Copy dataflow and config templates
 COPY orchestra/orchestra-dataflow.yml ./dataflow/orchestra-dataflow.yml
 COPY orchestra/zenoh_bridge/zenoh_config.json5 ./config/zenoh_config.json5
+COPY models/scripts/model-manifest.sh ./scripts/model-manifest.sh
 COPY docker/scripts/sherpa-stt-profile-files.sh ./scripts/sherpa-stt-profile-files.sh
 
 # Create directories for models and runtime data

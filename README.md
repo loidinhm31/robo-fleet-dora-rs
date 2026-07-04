@@ -79,74 +79,42 @@ sudo apt install cmake build-essential
 ### ONNX Runtime Setup
 
 The rover vision nodes currently use the Rust `ort` crate `1.16.3`, so use an
-ONNX Runtime `1.16.x` shared library. Download and extract:
+ONNX Runtime `1.16.x` shared library.
 
-**Automatic system-wide install** (recommended when you want the rover dataflow
-default `/usr/local/lib/libonnxruntime.so` to work without extra environment
-variables):
+Use the repo-local bootstrap:
 
 ```shell
-./models/scripts/download_onnxruntime.sh
+make models
+export ROVER_ORT_DYLIB_PATH="$PWD/models/.runtime/onnxruntime-linux-x64-1.16.3/lib/libonnxruntime.so"
 ```
 
-This installs `libonnxruntime.so*` into `/usr/local/lib/` and runs `ldconfig`.
-It requires `sudo`.
-
-```shell
-# Download ONNX Runtime (version 1.16.3)
-wget https://github.com/microsoft/onnxruntime/releases/download/v1.16.3/onnxruntime-linux-x64-1.16.3.tgz
-
-# Extract in the project root
-tar -xzf onnxruntime-linux-x64-1.16.3.tgz
-```
-
-**Manual local install** (use this when you do not want to write into
-`/usr/local/lib`):
-
-Set `ROVER_ORT_DYLIB_PATH` to the extracted shared library when running the rover
-dataflows:
-
-```shell
-export ROVER_ORT_DYLIB_PATH="$PWD/onnxruntime-linux-x64-1.16.3/lib/libonnxruntime.so"
-```
-
-**Manual system-wide install** (requires sudo):
-```shell
-sudo cp onnxruntime-linux-x64-1.16.3/lib/libonnxruntime.so* /usr/local/lib/
-sudo ldconfig
-# Then the rover dataflow default /usr/local/lib/libonnxruntime.so will work
-```
+`make models` validates the pinned runtime archive and installs it under
+`models/.runtime/onnxruntime-linux-x64-1.16.3`. The legacy
+`./models/scripts/download_onnxruntime.sh` command now forwards to the same
+repo-local workflow and prints the required `ROVER_ORT_DYLIB_PATH`.
 
 ### AI Models
 
-Download required models for object detection, speech recognition, and text-to-speech:
-
-**YOLO Model** (object detection):
-```shell
-cd models/scripts
-# Create virtual environment and download YOLOv12n
-python3 -m venv venv
-source venv/bin/activate
-pip install ultralytics
-python3 export_yolo_to_onnx.py
-```
-
-**OSNet Model** (ReID feature extraction):
-```shell
-cd models/scripts
-# Download OSNet x0.25 for re-identification
-./download_osnet_model.sh
-```
-
-**Sherpa STT Models** (speech recognition):
+Download the repo-local bootstrap assets for object detection, speech
+recognition, planned rover TTS provisioning, and native ONNX Runtime:
 ```shell
 make models
 make check-models
 ```
 
-This downloads Silero VAD plus the pinned English and Vietnamese offline
-Zipformer bundles under `models/.cache/sherpa-onnx/asr/`. Select one startup
-profile with `STT_PROFILE=en-vad-offline` or `STT_PROFILE=vi-vad-offline`.
+This ensures the pinned repo-local cache and runtime layout described in
+[models/README.md](models/README.md), including:
+- Sherpa ASR bundles under `models/.cache/sherpa-onnx/asr/`
+- YOLO and OSNet ONNX exports under `models/.cache/`
+- The Phase 02 Supertonic bundle under `models/.cache/sherpa-onnx/tts/`
+- ONNX Runtime under `models/.runtime/onnxruntime-linux-x64-1.16.3/`
+
+Phase 02 only provisions the Supertonic bundle locally. The runtime/dataflow
+examples later in this README still reflect the current wired TTS nodes and are
+updated by later phases.
+
+Select one startup profile with `STT_PROFILE=en-vad-offline` or
+`STT_PROFILE=vi-vad-offline`.
 
 For detailed model setup instructions, see [models/README.md](models/README.md).
 
@@ -350,7 +318,7 @@ command-parser:
   env:
     # No configuration needed - uses built-in pattern matching
 
-# Rover TTS (Lightweight, always active)
+# Legacy rover TTS example (current runtime wiring before later migration phases)
 sherpa-tts:
   env:
     TTS_MODEL_DIR: "/home/user/.cache/sherpa-onnx/vits-piper-en_US-lessac-medium"
@@ -367,7 +335,7 @@ kokoro-tts:
     TTS_VOLUME: "0.8"                            # Audio volume (0.0-2.0)
 ```
 
-**Sherpa-ONNX Voice** (rover):
+**Legacy Sherpa-ONNX Voice** (current rover runtime):
 - Single voice: `en_US-lessac-medium` (built into VITS-Piper model)
 - Optimized for edge devices with minimal resource usage
 - Apache 2.0 license
@@ -570,7 +538,7 @@ pnpm check-types
 - Check `STT_MODEL_ROOT` points at `models/.cache/sherpa-onnx/asr`
 - Check `SAMPLE_RATE` matches audio-capture (must be 16000)
 
-**TTS not working on rover**:
+**TTS not working on rover** (legacy current runtime path):
 - Verify Sherpa-ONNX model downloaded: `ls -lh ~/.cache/sherpa-onnx/vits-piper-en_US-lessac-medium/`
 - Check required files: `model.onnx`, `tokens.txt`, `espeak-ng-data/`
 - Verify library path: `ls -lh target/release/libsherpa-onnx-c-api.so`
