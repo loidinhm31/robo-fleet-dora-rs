@@ -110,7 +110,7 @@ EOF
 
 ## 5. Running inside Docker / Podman (Current Workstation Path)
 
-Phase 10 validated the local container workflow on Fedora x86_64 with Podman's
+Validated the local container workflow on Fedora x86_64 with Podman's
 Docker-compatible CLI, host Pulse socket mounting, and the workstation compose
 override.
 

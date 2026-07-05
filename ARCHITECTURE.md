@@ -11,7 +11,7 @@ Communication between machines uses **Zenoh** (pub/sub protocol) for efficient r
 
 Current acceptance evidence covers native x86 and the full amd64 Docker stack on
 the current workstation. Raspberry Pi and ARM deployment remain supported design
-targets, but they are not the verified target for phase 10.
+targets, but they are not the verified target.
 
 ## Architecture Diagram
 
@@ -105,7 +105,6 @@ The system uses **two separate zenoh_bridge implementations** for clean separati
 **Location**: `rover-kiwi/zenoh_bridge/`
 **Package**: `rover_zenoh_bridge`
 **Binary**: `target/release/rover_zenoh_bridge`
-**Runs on**: Rover target hardware; phase 10 also verified this bridge in amd64 workstation containers
 
 **Behavior**:
 - **Publishes TO Zenoh**: Encoded video, raw audio, telemetry, and processed detections
@@ -178,7 +177,7 @@ ZENOH_MODE=peer
 
 ### STT Runtime And Contract
 
-Phase 03 finalized the central Sherpa VAD/offline recognizer runtime. The web
+Finalized the central Sherpa VAD/offline recognizer runtime. The web
 bridge now implements the browser transport and source-aware transcript
 delivery:
 
@@ -253,7 +252,7 @@ cargo install dora-cli --locked
 **On Orchestra**:
 - Sherpa ASR bundles plus Silero VAD for the selected startup profile
 - The shared `models/.cache/sherpa-onnx` cache holds the central STT bundles and rover Supertonic TTS assets
-- The current production voice path uses rover `edge_voice`; orchestra Kokoro is not part of the verified phase 10 runtime
+- The current production voice path uses rover `edge_voice`
 
 **On Rover-Kiwi**:
 - GStreamer for camera
@@ -370,7 +369,7 @@ latency/CPU, bandwidth, frame-rate, error-rate, and servo-freshness gates.
 - Non-webcam sources use a monotonic token bucket to pace the published view stream.
 - Webcam sources use the source-frame ratio so the published cadence stays aligned with the camera.
 
-### Phase 3 Binary Browser Delivery
+### Binary Browser Delivery
 
 **Decision**: Web UI receives `video_frame` as metadata plus binary JPEG attachment, not JSON byte arrays.
 
@@ -418,9 +417,7 @@ flowchart LR
 - Browser metadata uses `protocol_version = 1`.
 - Frontend keeps legacy JSON fallback only during the rollback window.
 - The browser applies a four-frame ordered pre-decode cap and records the corresponding drop metric before decode.
-- Phase 3 retains the existing recursive playback scheduler; Phase 4 will replace it with bounded
-  scheduling on `AudioContext.currentTime`.
-- Phase 4 will make minimum, target, and maximum scheduled-ahead horizons explicit and bounded.
+-Make minimum, target, and maximum scheduled-ahead horizons explicit and bounded.
   Late frames, sequence gaps, duplicates, resets, and underruns are counted.
 - Socket.IO emit success is counted only after `emit` returns `Ok`; queue-full and disconnected errors
   remain visible.
@@ -431,7 +428,7 @@ flowchart LR
 - A second Socket.IO connection, AudioWorklet, codec migration, and WebRTC remain deferred until
   Approach A metrics show they are needed.
 
-### Phase 2 Benchmark
+### Benchmark
 
 - Native split validation ran for 600s.
 - Encoded frames: 8986.
@@ -462,13 +459,6 @@ flowchart LR
 - ReID features enable re-identification after occlusions
 - Two-stage matching reduces ID switches by ~50%
 - Track state management filters noisy detections
-
-## Target Edge Voice Architecture (Planned)
-
-> Status: target contract frozen in Phase 01 on 2026-07-04. The nodes and edges in
-> this section are not current-state claims until the final implementation phase
-> removes this notice. Orchestra and Rover remain separate Dora dataflows even
-> when both roles run on the same x86_64 workstation.
 
 ### Ownership and End-to-End Flow
 
@@ -593,7 +583,7 @@ Socket tts_command{text}
 ```
 
 `web_bridge` owns the immediate ack decision because it is the Socket.IO
-ingress and the selected-target authority. In Phase 01 it rejects only on
+ingress and the selected-target authority. First, it rejects only on
 facts already known locally at ingress: invalid command text, no active
 selected rover, or an active walkie stream window for the selected target.
 That preserves the natural downstream Dora node behavior while still blocking
