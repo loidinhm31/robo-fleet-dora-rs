@@ -2,6 +2,11 @@
 
 This directory contains Docker configuration files for running the Robo-Fleet distributed robotic system in containers.
 
+Phase 10 verified the full Orchestra + Rover stack on the current Fedora x86_64
+workstation using Podman's Docker-compatible CLI plus the workstation override
+compose file. ARM64 and Raspberry Pi deployment paths still exist, but they are
+not the validated acceptance target for this phase.
+
 ## Quick Start
 
 ### 1. Download Models
@@ -28,16 +33,29 @@ repo-local ONNX Runtime under `models/.runtime`.
 make build-orchestra
 ```
 
-**For Rover-Kiwi (Raspberry Pi 5):**
+**For Rover-Kiwi image builds:**
 ```bash
-# On Raspberry Pi (native build):
+# Native ARM64 build path:
 make build-rover
 
-# Or cross-compile from x86_64 workstation:
+# Cross-build from x86_64 workstation:
 make build-rover-cross
 ```
 
+Phase 10 runtime verification used the `linux/amd64` workstation override, not
+an ARM64 runtime.
+
 ### 3. Run Containers
+
+**Full amd64 workstation stack (phase 10 verified):**
+```bash
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+docker compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.workstation.yml \
+  --profile mongodb --profile orchestra --profile rover-kiwi \
+  up -d --build
+```
 
 **Orchestra:**
 ```bash
@@ -78,13 +96,15 @@ The Docker setup uses docker-compose profiles to support two deployment scenario
    - Nodes: web-bridge, central-speech-recognizer, command-parser, zenoh-bridge
 
 2. **Rover-Kiwi Profile** (`rover-kiwi`)
-   - Runs on Raspberry Pi 5 (ARM64)
+   - Runs on rover hardware in production; phase 10 validated it on workstation `linux/amd64`
    - Hardware I/O, ML inference, motor control
-   - Nodes: camera, object-detector, object-tracker, visual-servo-controller, audio I/O, arm/rover controllers
+   - Nodes: camera, edge_voice, object-detector, object-tracker, visual-servo-controller, audio I/O, arm/rover controllers
 
 ### Network Configuration
 
-Both containers use **host networking mode** to enable Zenoh multicast peer discovery (UDP multicast on 224.0.0.224:7446). This allows automatic discovery between orchestra and rovers without manual configuration.
+Both containers use **host networking mode**. The workstation override also
+forces loopback Zenoh endpoints so the local amd64 stack avoids collisions with
+native dataflows on the default Zenoh TCP port.
 
 **Exposed Ports:**
 - `3030` - Socket.IO web UI (orchestra)
@@ -103,7 +123,9 @@ Both containers use **host networking mode** to enable Zenoh multicast peer disc
 - `rover-kiwi/zenoh_bridge/zenoh_config.json5` → `/app/config/zenoh_config.json5`
 - `rover-kiwi/config` → `/app/config/rover` (arm config, simulation config)
 
-Rover Sherpa TTS is still manual/operator-triggered; echo suppression for simultaneous mic + speaker use is not finished.
+The verified workstation rover path uses `WORKSTATION_AUDIO_DEVICE` with
+`sysdefault:CARD=Camera` by default because that ALSA path was stable in the
+rootless container, while the Pulse plugin timed out on this host.
 
 ## Model Validation
 
@@ -133,6 +155,7 @@ preserves the old cache until the staging cache has passed validation.
 | `SOCKET_IO_PORT` | `3030` | Socket.IO server port |
 | `STT_PROFILE` | `en-vad-offline` | Startup-only central STT profile |
 | `STT_MODEL_ROOT` | `/models/sherpa-onnx/asr` | Sherpa ASR bundle root |
+| `ORCHESTRA_ZENOH_LISTEN_ENDPOINT` | `tcp/127.0.0.1:7448` in workstation override | Loopback endpoint used for local amd64 Docker verification |
 
 ### Rover-Kiwi
 
@@ -143,6 +166,8 @@ preserves the old cache until the staging cache has passed validation.
 | `SOURCE_URI` | `/dev/video0` | Camera device path |
 | `YOLO_CONFIDENCE` | `0.5` | YOLO detection threshold |
 | `ZENOH_MODE` | `peer` | Zenoh network mode |
+| `ROVER_ZENOH_CONNECT_ENDPOINT` | `tcp/127.0.0.1:7448` in workstation override | Loopback endpoint used for local amd64 Docker verification |
+| `AUDIO_DEVICE` | `sysdefault:CARD=Camera` in workstation override | Stable capture device override for the current workstation container path |
 
 Example:
 ```bash
@@ -185,9 +210,13 @@ docker/
 | `make logs-rover` | View rover logs |
 | `make shell-orchestra` | Open bash in orchestra |
 | `make shell-rover` | Open bash in rover |
-| `make status` | Check Dora node status |
+| `make status` | Check native Dora node status outside the phase 10 container flow |
 | `make clean` | Remove containers and images |
 | `make check-models` | Validate pinned model/runtime artifacts and fail on missing, corrupt, or unverified assets |
+
+For the current verified Docker workflow, prefer `docker ps`, container
+healthchecks, `docker top`, and service logs over `dora list` inside the
+containers.
 
 ## Troubleshooting
 
@@ -231,14 +260,21 @@ make models
 make check-models
 ```
 
-**Issue: Audio playback fails with ALSA `snd_pcm_open` error**
+**Current workstation note:** the phase 10 verified amd64 override does not use
+manual `AUDIO_GID` wiring. Prefer the workstation override plus
+`WORKSTATION_AUDIO_DEVICE=sysdefault:CARD=Camera` if rover audio frames stay at
+zero.
+
+**Issue: Audio playback fails with ALSA `snd_pcm_open` error on a non-workstation or custom container path**
 ```
 ALSA lib pcm_dmix.c:999:(snd_pcm_dmix_open) unable to open slave
 ```
 
-This means the container's process isn't in the host's `audio` group. The default `AUDIO_GID=29` (Debian standard) may not match your system.
+This usually means the container process is not mapped into the host audio
+group and you are not using the phase 10 workstation override path.
 
-**Solution:** Pass the correct audio GID when starting the rover:
+**Solution:** only for custom or legacy container launches, pass the correct
+audio GID when starting the rover:
 ```bash
 AUDIO_GID=$(getent group audio | cut -d: -f3) make up-rover
 ```

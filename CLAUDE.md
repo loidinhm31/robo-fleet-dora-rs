@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Robo-Fleet is a distributed robotic rover control system with autonomous object tracking and visual servoing. Computation splits between:
 - **Orchestra (Workstation)**: Web interface, fleet management, speech recognition, TTS
-- **Rover-Kiwi (Raspberry Pi 5)**: ML inference (YOLO, ReID, tracking), motor control, visual servoing
+- **Rover-Kiwi (rover target)**: ML inference (YOLO, ReID, tracking), motor control, visual servoing. Phase 10 Docker verification runs this target on the current x86_64 workstation via `linux/amd64`; it is not ARM acceptance.
 
 Communication: **Zenoh** (pub/sub) for cross-machine data, **Dora** framework for local node orchestration.
 
@@ -28,7 +28,7 @@ cargo test -p <package>            # Specific package tests
 # Orchestra (Workstation)
 dora up && dora start orchestra/orchestra-dataflow.yml --name orchestra --attach
 
-# Rover (Raspberry Pi)
+# Rover
 dora up && dora start rover-kiwi/rover-kiwi-dataflow.yml --name rover-kiwi --attach
 ```
 
@@ -42,7 +42,18 @@ make build-rover-cross   # Build ARM64 from x86_64
 make up-orchestra        # Start orchestra container
 make up-rover            # Start rover container
 make down                # Stop all
-make status              # Check Dora node status
+make status              # Check native Dora node status outside the phase 10 container flow
+```
+
+For the current workstation amd64 verification workflow, use:
+
+```bash
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+docker compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.workstation.yml \
+  --profile mongodb --profile orchestra --profile rover-kiwi \
+  up -d --build
 ```
 
 ### Web UI
@@ -82,11 +93,15 @@ Physics simulation at 240 Hz with mecanum wheel kinematics and 6-DOF arm. Env va
 ## Monitoring & Debugging
 
 ```bash
-dora list                                          # Running dataflows
+dora list                                          # Running native/local dataflows
 dora logs <dataflow-name>                          # Dataflow logs
 dora logs <dataflow-name> <node-name>              # Specific node logs
 dora graph rover-kiwi/rover-kiwi-dataflow.yml --open  # Visualize graph
 ```
+
+For the current Docker verification flow, prefer `docker ps`, container
+healthchecks, `docker top`, and `docker logs`. `dora list` is not a reliable
+in-container status probe for these images.
 
 ## Architecture
 
@@ -149,16 +164,12 @@ Note: `object_detector`, `reid_extractor`, `object_tracker` are now library crat
 
 ### AI Models
 
-Models are cached in `models/.cache/{ggml,yolo,reid,sherpa-onnx}/`. Use `make models` or download manually:
+Models are cached in `models/.cache/{yolo,reid,sherpa-onnx}/`, and native x86
+ONNX Runtime is managed under `models/.runtime/`. Use `make models`:
 
 ```bash
-# YOLO (object detection)
-cd models/scripts && python3 export_yolo_to_onnx.py  # -> models/.cache/yolo/yolo12n.onnx
-
-# OSNet (ReID)
-cd models/scripts && ./download_osnet_model.sh        # -> models/.cache/reid/osnet_x0_25.onnx
-
-# Whisper (speech recognition) -> models/.cache/ggml/ggml-base.bin
+make models
+make check-models
 ```
 
 **ONNX Runtime**: Current rover vision crates are pinned to Rust `ort` `1.16.3`,

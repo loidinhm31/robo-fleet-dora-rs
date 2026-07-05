@@ -33,12 +33,10 @@ A hybrid robotic rover control system with autonomous object tracking and visual
 - **Dynamic Audio Control** (start/stop without dataflow restart)
 - **Speech Recognition** using central Sherpa VAD/offline STT for voice commands
 - **Natural Language Understanding** with Aho-Corasick pattern matching
-- **Text-to-Speech** with dual implementation:
-  - **Rover**: `edge_voice` with Sherpa-ONNX Supertonic 3 INT8 (edge-resident synthesis)
-  - **Orchestra**: Kokoro-82M support is documented here; whether `kokoro-tts` is active depends on the current Phase 05 transport setup
+- **Text-to-Speech** with rover-resident `edge_voice` using Sherpa-ONNX Supertonic 3 INT8
 - **Audio Playback** for walkie-talkie/intercom functionality
 - **Multi-modal Voice Communication** (command, feedback, and direct streaming)
-- **Rover TTS Caveat**: `edge_voice` emits PCM chunks/status/results; playback consumption and mic suppression are completed in follow-up phases.
+- **Docker-verified workstation path** for amd64 Orchestra + Rover containers on the current host
 
 ## Prerequisites
 
@@ -96,7 +94,7 @@ repo-local workflow and prints the required `ROVER_ORT_DYLIB_PATH`.
 ### AI Models
 
 Download the repo-local bootstrap assets for object detection, speech
-recognition, planned rover TTS provisioning, and native ONNX Runtime:
+recognition, active rover Supertonic TTS, and native ONNX Runtime:
 ```shell
 make models
 make check-models
@@ -106,12 +104,8 @@ This ensures the pinned repo-local cache and runtime layout described in
 [models/README.md](models/README.md), including:
 - Sherpa ASR bundles under `models/.cache/sherpa-onnx/asr/`
 - YOLO and OSNet ONNX exports under `models/.cache/`
-- The Phase 02 Supertonic bundle under `models/.cache/sherpa-onnx/tts/`
+- The active Supertonic bundle under `models/.cache/sherpa-onnx/tts/`
 - ONNX Runtime under `models/.runtime/onnxruntime-linux-x64-1.16.3/`
-
-Phase 02 only provisions the Supertonic bundle locally. The runtime/dataflow
-examples later in this README still reflect the current wired TTS nodes and are
-updated by later phases.
 
 Select one startup profile with `STT_PROFILE=en-vad-offline` or
 `STT_PROFILE=vi-vad-offline`.
@@ -214,7 +208,7 @@ Check - [ARCHITECTURE](ARCHITECTURE.md)
 - **central-speech-recognizer**: Sherpa VAD/offline speech-to-text with browser-private and rover source-aware routing
 - **command-parser**: NLU for voice command intent extraction
 - **edge-voice** (rover): Supertonic 3 INT8 TTS service for edge synthesis
-- **kokoro-tts** (orchestra): High-quality Kokoro-82M TTS (currently wired into the orchestra dataflow)
+- **kokoro-tts** (orchestra): Legacy package retained in-tree, not part of the current production voice path
 - **audio-playback**: Real-time audio playback for walkie-talkie mode
 
 **Control & Communication:**
@@ -330,11 +324,6 @@ edge-voice:
     TTS_DEFAULT_STEPS: "8"                       # Supertonic diffusion steps
     TTS_DEFAULT_VOLUME: "0.8"                    # PCM gain before playback
 
-# Orchestra TTS (high-quality Kokoro path; enable only if the current transport setup includes it)
-kokoro-tts:
-  env:
-    TTS_VOICE: "bf_emma"                         # Voice style
-    TTS_VOLUME: "0.8"                            # Audio volume (0.0-2.0)
 ```
 
 **Supertonic Rover Voice**:
@@ -342,12 +331,9 @@ kokoro-tts:
 - Ten voice SIDs are available; default M1 is SID 5
 - Supertonic OpenRAIL-M notice is tracked in `models/SUPERTONIC-OPENRAIL-M-NOTICE.txt`
 
-**Kokoro Voice Styles** (orchestra):
-- `af` / `af_sky` - American Female
-- `af_sarah` - American Female (Sarah)
-- `bf_emma` - British Female (Emma)
-- `am` - American Male
-- `bm` - British Male
+The legacy orchestra Kokoro package remains in the repository for historical
+reference, but it is not part of the current production or phase 10 verified
+voice path.
 
 ### Web Bridge Authentication
 
@@ -547,9 +533,9 @@ pnpm check-types
 - Confirm `EDGE_VOICE_MODEL_DIR` points at the Supertonic directory
 - Playback output is owned by `audio-playback`; Phase 04 wires `tts_audio` consumption and suppression
 
-**TTS not working on orchestra** (if enabled):
+**Legacy orchestra Kokoro path not working**:
 - Verify Kokoro models downloaded: `ls -lh models/.cache/kokoros/kokoro-v1.0.onnx`
-- Confirm whether the current `orchestra-dataflow.yml` includes `kokoro-tts` before relying on orchestra-side TTS
+- Confirm whether your local `orchestra-dataflow.yml` explicitly re-enables `kokoro-tts` before relying on orchestra-side TTS
 - Check audio output device: `pactl list sinks`
 - Increase `TTS_VOLUME` in kokoro-tts config
 
@@ -578,8 +564,8 @@ pnpm check-types
 **Audio & Voice:**
 - **Audio Capture**: 16 kHz, Mono, 20 Hz chunks (50ms); F32 locally, S16LE after rover conversion
 - **Speech Recognition**: Workstation central recognizer with Sherpa VAD/offline decode; browser transcripts stay private, rover transcripts stay fleet-visible
-- **TTS Synthesis** (rover): 2-3s initialization, real-time synthesis (Sherpa-ONNX VITS)
-- **TTS Synthesis** (orchestra): 0.5-2s time-to-first-audio (Kokoro-82M)
+- **TTS Synthesis** (rover): Sherpa-ONNX Supertonic 3 INT8 via `edge_voice`
+- **TTS Synthesis** (orchestra): legacy-only if you explicitly re-enable the Kokoro path
 - **Walkie-talkie Latency**: <100ms on local network
 
 **Network:**

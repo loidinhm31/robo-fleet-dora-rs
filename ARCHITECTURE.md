@@ -5,9 +5,13 @@
 The robo-rover system uses a **distributed architecture** with two deployment targets:
 
 - **Orchestra (Workstation)**: Heavy AI/ML processing, web interface, fleet control
-- **Rover-Kiwi (Raspberry Pi 5)**: Hardware I/O, motor control, low-latency control loops
+- **Rover-Kiwi (rover target)**: Hardware I/O, motor control, low-latency control loops
 
 Communication between machines uses **Zenoh** (pub/sub protocol) for efficient real-time data exchange. A **direct mode** (`ROVER_MODE=direct`) exists for local/dev runs with `web_bridge` on the rover itself; it bypasses Zenoh and the orchestra bridge path.
+
+Current acceptance evidence covers native x86 and the full amd64 Docker stack on
+the current workstation. Raspberry Pi and ARM deployment remain supported design
+targets, but they are not the verified target for phase 10.
 
 ## Architecture Diagram
 
@@ -63,11 +67,11 @@ robo-rover-dora/
 ├── orchestra/                      # Workstation-only nodes (heavy compute)
 │   ├── central_speech_recognizer/  # Central Sherpa VAD/offline STT runtime
 │   ├── command_parser/             # NLU pattern matching
-│   ├── kokoro_tts/                 # High-quality TTS (Kokoro-82M, workstation audio, optional)
+│   ├── kokoro_tts/                 # Legacy orchestra TTS package retained in-tree
 │   ├── zenoh_bridge/               # Orchestra Zenoh bridge (orchestra-only)
 │   └── orchestra-dataflow.yml      # Orchestra Dora dataflow
 │
-├── rover-kiwi/                     # Raspberry Pi nodes (hardware I/O + ML)
+├── rover-kiwi/                     # Rover-target nodes (hardware I/O + ML)
 │   ├── audio_capture/              # Microphone (cpal)
 │   ├── audio_converter/            # Float32 -> Int16LE before transport
 │   ├── audio_playback/             # Speaker output
@@ -101,7 +105,7 @@ The system uses **two separate zenoh_bridge implementations** for clean separati
 **Location**: `rover-kiwi/zenoh_bridge/`
 **Package**: `rover_zenoh_bridge`
 **Binary**: `target/release/rover_zenoh_bridge`
-**Runs on**: Raspberry Pi
+**Runs on**: Rover target hardware; phase 10 also verified this bridge in amd64 workstation containers
 
 **Behavior**:
 - **Publishes TO Zenoh**: Encoded video, raw audio, telemetry, and processed detections
@@ -248,8 +252,8 @@ cargo install dora-cli --locked
 
 **On Orchestra**:
 - Sherpa ASR bundles plus Silero VAD for the selected startup profile
-- Kokoro TTS models (optional, for workstation audio)
-- The shared `models/.cache/sherpa-onnx` cache holds the central STT bundles and rover Supertonic TTS assets.
+- The shared `models/.cache/sherpa-onnx` cache holds the central STT bundles and rover Supertonic TTS assets
+- The current production voice path uses rover `edge_voice`; orchestra Kokoro is not part of the verified phase 10 runtime
 
 **On Rover-Kiwi**:
 - GStreamer for camera

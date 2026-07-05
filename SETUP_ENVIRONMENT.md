@@ -108,20 +108,26 @@ EOF
 
 ---
 
-## 5. Running inside Docker / Podman (Container GID Match)
+## 5. Running inside Docker / Podman (Current Workstation Path)
 
-Device access permissions inside the container are verified using the host's group IDs (GIDs). 
-* Debian/Ubuntu standard audio GID is `29`.
-* Fedora standard audio GID is `63`.
+Phase 10 validated the local container workflow on Fedora x86_64 with Podman's
+Docker-compatible CLI, host Pulse socket mounting, and the workstation compose
+override.
 
-To start the container with your host's exact audio group ID:
+Use the verified startup path:
 ```shell
-# Native make command:
-AUDIO_GID=$(getent group audio | cut -d: -f3) make up-rover
-
-# Or manually:
-AUDIO_GID=$(getent group audio | cut -d: -f3) docker compose -f docker/docker-compose.yml up -d
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+docker compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.workstation.yml \
+  --profile mongodb --profile orchestra --profile rover-kiwi \
+  up -d --build
 ```
+
+Notes:
+- The workstation override uses `group_add: keep-groups`, so a manual `AUDIO_GID` export is not part of the verified path.
+- The current host required `WORKSTATION_AUDIO_DEVICE=sysdefault:CARD=Camera` for stable rover capture in the container.
+- If you launch containers outside the provided entrypoints, keep `XDG_RUNTIME_DIR` aligned with `/run/user/<uid>` so Pulse/ALSA discovery can find the mounted runtime socket.
 
 ---
 
@@ -132,5 +138,5 @@ AUDIO_GID=$(getent group audio | cut -d: -f3) docker compose -f docker/docker-co
 * Keep `SOURCE_FPS` aligned with the camera and set `VIEW_STREAM_FPS` for the desired viewer rate.
 * Central STT uses startup-only `STT_PROFILE` (`en-vad-offline` or `vi-vad-offline`) plus
   `STT_MODEL_ROOT` pointing at the Sherpa ASR bundle root.
-* Rover `sherpa_tts` remains manual/operator-triggered. Playback suppression/AEC for rover
-  speaker + microphone overlap is still follow-up work.
+* Rover voice output is the `edge_voice` Supertonic path. Playback routing and
+  source-aware mic suppression are active in the current dataflows.

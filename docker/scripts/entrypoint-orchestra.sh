@@ -10,8 +10,9 @@ echo "==================================================================="
 STT_PROFILE="${STT_PROFILE:-en-vad-offline}"
 STT_MODEL_ROOT="${STT_MODEL_ROOT:-/models/sherpa-onnx/asr}"
 export ORCHESTRA_ZENOH_CONFIG="${ORCHESTRA_ZENOH_CONFIG:-/app/config/zenoh_config.json5}"
+ORCHESTRA_ZENOH_LISTEN_ENDPOINT="${ORCHESTRA_ZENOH_LISTEN_ENDPOINT:-}"
 required_files="$(mktemp /tmp/orchestra-stt-required-files.XXXXXX)"
-trap 'rm -f "$required_files"' EXIT
+trap 'rm -f "$required_files" /tmp/orchestra-zenoh_config.json5' EXIT
 
 echo "Checking required Sherpa STT models..."
 if ! required_stt_files "$STT_PROFILE" >"$required_files"; then
@@ -34,6 +35,15 @@ while IFS= read -r relative_path; do
 done < "$required_files"
 
 echo "✓ Sherpa STT profile '$STT_PROFILE' is available"
+
+if [ -n "$ORCHESTRA_ZENOH_LISTEN_ENDPOINT" ]; then
+    tmp_zenoh_config="/tmp/orchestra-zenoh_config.json5"
+    cp "$ORCHESTRA_ZENOH_CONFIG" "$tmp_zenoh_config"
+    escaped_orchestra_zenoh_listen_endpoint="$(printf '%s\n' "$ORCHESTRA_ZENOH_LISTEN_ENDPOINT" | sed 's/[&\\]/\\&/g')"
+    sed -i -E "s|\"tcp/[^\"]+\"|\"$escaped_orchestra_zenoh_listen_endpoint\"|" "$tmp_zenoh_config"
+    export ORCHESTRA_ZENOH_CONFIG="$tmp_zenoh_config"
+    echo "✓ Orchestra Zenoh listen endpoint override: $ORCHESTRA_ZENOH_LISTEN_ENDPOINT"
+fi
 
 # Create a modified dataflow YAML with updated paths
 echo "Updating dataflow YAML paths for container environment..."

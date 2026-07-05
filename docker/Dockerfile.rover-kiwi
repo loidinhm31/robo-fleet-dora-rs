@@ -14,8 +14,8 @@ RUN apt-get update && apt-get install -y \
     libgstreamer-plugins-base1.0-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Dora CLI
-RUN cargo install dora-cli --version 0.3.13 --locked
+# Install the Dora CLI version that matches the workspace node API.
+RUN cargo install dora-cli --version 0.5.0 --locked
 
 WORKDIR /build
 

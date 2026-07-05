@@ -85,7 +85,16 @@ make build-rover
 
 The Docker images mount `models/.cache/*` as read-only model inputs. The
 repo-local ONNX Runtime is for native x86 runs; container runtime validation is
-handled by the image entrypoints and later Docker phases.
+handled by the image entrypoints. The current validated workstation Docker flow
+uses:
+
+```bash
+docker compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.workstation.yml \
+  --profile mongodb --profile orchestra --profile rover-kiwi \
+  up -d --build
+```
 
 ## STT Profiles
 

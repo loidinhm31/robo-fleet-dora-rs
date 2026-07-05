@@ -13,7 +13,7 @@ nodes:
       SAMPLE_RATE: "16000"
       CHANNELS: "1"  # preserve downstream mono contract; multichannel mics are downmixed in audio_capture
       CHUNK_SIZE: "800"
-      # AUDIO_DEVICE: "USB Audio"  # optional manual override; uncomment to force deterministic device selection by substring
+      AUDIO_DEVICE: "${AUDIO_DEVICE:-}"  # optional manual override; e.g. "pulse" or a device-name substring
   # Audio playback - sole speaker owner for walkie and rover TTS.
   - id: audio-playback
     build: cargo build --release -p audio_playback
