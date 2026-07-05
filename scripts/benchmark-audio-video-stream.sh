@@ -1,152 +1,143 @@
 #!/usr/bin/env bash
-set -uo pipefail
-
+# Benchmark helper tests.
+set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-PLAN_DIR="$ROOT/plans/260628-1619-audio-video-stream-performance-approach-a"
-SCENARIO=""
-BROWSER_LOG=""
-ROVER_LOG=""
-ORCHESTRA_LOG=""
-OUTPUT=""
-NETWORK_PATH=""
-BROWSER_HOST=""
-ROVER_HOST=""
-ORCHESTRA_HOST=""
-DEVTOOLS_STATE=""
-CLOCK_OFFSET_MS=""
-EXPECTED_DURATION_SECONDS=600
-EXPECTED_FPS=20
-FPS_TOLERANCE=1
-FAILURES=0
+HELPER="$ROOT/scripts/benchmark-audio-video-stream.sh"
+TEMP_DIR=$(mktemp -d)
+trap 'rm -rf "$TEMP_DIR"' EXIT
+ROVER_LOG="$TEMP_DIR/rover.log"
+ORCHESTRA_LOG="$TEMP_DIR/orchestra.log"
+BROWSER_LOG="$TEMP_DIR/browser.log"
+SUMMARY="$TEMP_DIR/summary.md"
 
-usage() {
-  cat <<'USAGE'
-usage: benchmark-audio-video-stream.sh analyze [options]
-
-Required:
-  --scenario audio-only|audio-video
-  --browser-log FILE --rover-log FILE --orchestra-log FILE
-  --network-path TEXT
-  --browser-host TEXT --rover-host TEXT --orchestra-host TEXT
-  --devtools closed|open --clock-offset-ms NUMBER
-
-Optional:
-  --output FILE                    Default: phase report directory
-  --duration-seconds NUMBER        Default: 600
-  --expected-fps NUMBER            Default: 20
-  --fps-tolerance NUMBER           Default: 1
-
-Browser logs must contain lines emitted with ?audioDebug=1:
-  audio_stream_metrics {JSON snapshot}
-USAGE
-}
-
-result() {
-  local status=$1 name=$2 detail=$3
-  printf '%s\t%s\t%s\n' "$status" "$name" "$detail"
-  if [[ $status == FAIL ]]; then FAILURES=$((FAILURES + 1)); fi
-}
-
-require_value() {
-  [[ -n ${2:-} ]] || { printf 'missing value for %s\n' "$1" >&2; exit 2; }
-}
-
-parse_args() {
-  while (($#)); do
-    case $1 in
-      --scenario) require_value "$1" "${2:-}"; SCENARIO=$2; shift 2 ;;
-      --browser-log) require_value "$1" "${2:-}"; BROWSER_LOG=$2; shift 2 ;;
-      --rover-log) require_value "$1" "${2:-}"; ROVER_LOG=$2; shift 2 ;;
-      --orchestra-log) require_value "$1" "${2:-}"; ORCHESTRA_LOG=$2; shift 2 ;;
-      --network-path) require_value "$1" "${2:-}"; NETWORK_PATH=$2; shift 2 ;;
-      --browser-host) require_value "$1" "${2:-}"; BROWSER_HOST=$2; shift 2 ;;
-      --rover-host) require_value "$1" "${2:-}"; ROVER_HOST=$2; shift 2 ;;
-      --orchestra-host) require_value "$1" "${2:-}"; ORCHESTRA_HOST=$2; shift 2 ;;
-      --devtools) require_value "$1" "${2:-}"; DEVTOOLS_STATE=$2; shift 2 ;;
-      --clock-offset-ms) require_value "$1" "${2:-}"; CLOCK_OFFSET_MS=$2; shift 2 ;;
-      --output) require_value "$1" "${2:-}"; OUTPUT=$2; shift 2 ;;
-      --duration-seconds) require_value "$1" "${2:-}"; EXPECTED_DURATION_SECONDS=$2; shift 2 ;;
-      --expected-fps) require_value "$1" "${2:-}"; EXPECTED_FPS=$2; shift 2 ;;
-      --fps-tolerance) require_value "$1" "${2:-}"; FPS_TOLERANCE=$2; shift 2 ;;
-      *) printf 'unknown argument: %s\n' "$1" >&2; usage; exit 2 ;;
-    esac
-  done
-}
-
-validate_inputs() {
-  [[ $SCENARIO == audio-only || $SCENARIO == audio-video ]] || result FAIL scenario "$SCENARIO"
-  [[ $DEVTOOLS_STATE == closed || $DEVTOOLS_STATE == open ]] || result FAIL devtools "$DEVTOOLS_STATE"
-  for value in NETWORK_PATH BROWSER_HOST ROVER_HOST ORCHESTRA_HOST CLOCK_OFFSET_MS; do
-    [[ -n ${!value} ]] || result FAIL "${value,,}" "missing"
-  done
-  for item in "$BROWSER_LOG" "$ROVER_LOG" "$ORCHESTRA_LOG"; do
-    [[ -r $item ]] || result FAIL input_log "$item is not readable"
-  done
-  command -v jq >/dev/null || result FAIL jq "jq is required"
-  ((FAILURES == 0))
+write_rover_logs() {
+  cat > "$ROVER_LOG" <<'EOF'
+metric="audio_pipeline" stage="rover_convert" errors=0
+metric="audio_pipeline" stage="orchestra_zenoh_receive" errors=0
+metric="audio_pipeline" stage="rover_publish" format="s16le" errors=0
+EOF
+  cat > "$ORCHESTRA_LOG" <<'EOF'
+metric="audio_pipeline" stage="orchestra_zenoh_receive" errors=0
+EOF
 }
 
 analyze() {
-  validate_inputs || return 1
-  local snapshots summary elapsed frames fps min_fps max_fps transport
-  snapshots=$(mktemp)
-  trap "rm -f '$snapshots'" EXIT
-  sed -n 's/^.*audio_stream_metrics[[:space:]]\+//p' "$BROWSER_LOG" > "$snapshots"
-  if ! jq -e -s 'length >= 2' "$snapshots" >/dev/null 2>&1; then
-    result FAIL browser_metrics "fewer than two valid snapshots"
-    return 1
-  fi
-
-  summary=$(jq -s '{
-    first: .[0], last: .[-1], transports: ([.[].transport] | unique),
-    maxInterArrivalMs: ([.[].interArrivalMs.max // 0] | max),
-    maxHorizonMs: ([.[].scheduledHorizonMs.max // 0] | max)
-  }' "$snapshots")
-  elapsed=$(jq -r '(.last.capturedAtMs - .first.capturedAtMs) / 1000' <<<"$summary")
-  frames=$(jq -r '.last.framesReceived - .first.framesReceived' <<<"$summary")
-  fps=$(awk -v frames="$frames" -v elapsed="$elapsed" 'BEGIN { if (elapsed > 0) printf "%.3f", frames / elapsed; else print 0 }')
-  min_fps=$(awk -v fps="$EXPECTED_FPS" -v tolerance="$FPS_TOLERANCE" 'BEGIN { print fps - tolerance }')
-  max_fps=$(awk -v fps="$EXPECTED_FPS" -v tolerance="$FPS_TOLERANCE" 'BEGIN { print fps + tolerance }')
-  transport=$(jq -r '.transports | join(",")' <<<"$summary")
-
-  awk -v actual="$elapsed" -v expected="$EXPECTED_DURATION_SECONDS" 'BEGIN { exit !(actual >= expected - 10) }' &&
-    result PASS duration "${elapsed}s" || result FAIL duration "${elapsed}s; expected at least $((EXPECTED_DURATION_SECONDS - 10))s"
-  awk -v actual="$fps" -v low="$min_fps" -v high="$max_fps" 'BEGIN { exit !(actual >= low && actual <= high) }' &&
-    result PASS cadence "${fps} fps" || result FAIL cadence "${fps} fps outside ${min_fps}-${max_fps}"
-  [[ -n $transport && $transport != unknown ]] && result PASS transport "$transport" || result FAIL transport "$transport"
-  awk -v offset="$CLOCK_OFFSET_MS" 'BEGIN { if (offset < 0) offset = -offset; exit !(offset <= 5) }' &&
-    result PASS clock_offset "${CLOCK_OFFSET_MS} ms; age metric valid" ||
-    result WARN clock_offset "${CLOCK_OFFSET_MS} ms; capture-age acceptance invalid"
-
-  local counter value
-  for counter in invalidFrames sequenceGaps duplicates regressions; do
-    value=$(jq -r ".last.$counter" <<<"$summary")
-    [[ $value == 0 ]] && result PASS "$counter" "$value" || result FAIL "$counter" "$value"
-  done
-
-  grep -Eq 'metric[ ="]+audio_pipeline.*errors=[1-9][0-9]*' "$ROVER_LOG" "$ORCHESTRA_LOG" &&
-    result FAIL backend_errors "non-zero audio pipeline errors" || result PASS backend_errors "none"
-  grep -Eq 'stage[ ="]+rover_convert' "$ROVER_LOG" &&
-    result PASS rover_converter "conversion metrics present" || result FAIL rover_converter "conversion metrics absent"
-  grep -Eqi 'audio[ _]control received:[[:space:]]*(start|stop)|start(ing)? audio stream|stop(ping)? audio stream' "$ROVER_LOG" "$ORCHESTRA_LOG" &&
-    result FAIL control_events "audio stop/start command found" || result PASS control_events "none"
-
-  OUTPUT=${OUTPUT:-"$PLAN_DIR/reports/phase-02-${SCENARIO}-summary.md"}
-  mkdir -p "$(dirname "$OUTPUT")"
-  {
-    printf '# Phase 02 %s Summary\n\n' "$SCENARIO"
-    printf -- '- Network path: %s\n- Browser host: %s\n- Orchestra host: %s\n- Rover host: %s\n' \
-      "$NETWORK_PATH" "$BROWSER_HOST" "$ORCHESTRA_HOST" "$ROVER_HOST"
-    printf -- '- DevTools: %s\n- Clock offset: %s ms\n- Duration: %s seconds\n- Cadence: %s fps\n- Engine.IO transport: %s\n' \
-      "$DEVTOOLS_STATE" "$CLOCK_OFFSET_MS" "$elapsed" "$fps" "$transport"
-    printf '\n## Browser snapshot summary\n\n```json\n%s\n```\n' "$summary"
-    printf '\n## Gate\n\n- Failures: %s\n' "$FAILURES"
-  } > "$OUTPUT"
-  result PASS summary "$OUTPUT"
-  ((FAILURES == 0))
+  "$HELPER" analyze \
+    --scenario "$1" \
+    --browser-log "$BROWSER_LOG" \
+    --rover-log "$ROVER_LOG" \
+    --orchestra-log "$ORCHESTRA_LOG" \
+    --network-path LAN \
+    --browser-host browser-a \
+    --rover-host rover-a \
+    --orchestra-host orchestra-a \
+    --devtools closed \
+    --clock-offset-ms 2 \
+    --output "$SUMMARY" \
+    --json-baseline-bytes 5911 \
+    --binary-payload-bytes 1857
 }
 
-[[ ${1:-} == analyze ]] || { usage; exit 2; }
-shift
-parse_args "$@"
-analyze
+TAB=$'\t'
+PASS_HORIZON="^PASS${TAB}scheduled_horizon${TAB}140 ms <= 150 ms$"
+PASS_UNDERRUNS="^PASS${TAB}underruns${TAB}0$"
+PASS_DROPS="^PASS${TAB}drops${TAB}0$"
+PASS_REDUCTION="^PASS${TAB}binary_reduction${TAB}68\\.58%"
+PASS_FORMAT="^PASS${TAB}rover_audio_format${TAB}s16le$"
+PASS_WARMUP="^PASS${TAB}warmup_gating${TAB}warmup complete at 1500 ms$"
+PASS_CADENCE="^PASS${TAB}cadence${TAB}20\\.000 fps$"
+PASS_CLOCK="^PASS${TAB}clock_offset${TAB}2 ms; age metric valid$"
+FAIL_HORIZON="^FAIL${TAB}scheduled_horizon${TAB}180 ms > 150 ms$"
+FAIL_UNDERRUNS="^FAIL${TAB}underruns${TAB}3$"
+FAIL_DROPS="^FAIL${TAB}drops${TAB}7$"
+FAIL_REDUCTION="^FAIL${TAB}binary_reduction${TAB}32\\.33%"
+FAIL_CONTROL="^FAIL${TAB}control_events${TAB}audio stop/start command found$"
+WARN_FORMAT="^WARN${TAB}rover_audio_format${TAB}no rover_publish format marker found$"
+
+assert_grep() {
+  local file=$1 pattern=$2 label=$3
+  if ! grep -Eq "$pattern" "$file"; then
+    printf 'expected %s to contain: %s\n' "$label" "$pattern" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
+# --- 1. audio-only happy path -------------------------------------------------
+write_rover_logs
+cat > "$BROWSER_LOG" <<'EOF'
+audio_stream_metrics {"capturedAtMs":1000,"framesReceived":0,"invalidFrames":0,"sequenceGaps":0,"duplicates":0,"regressions":0,"interArrivalMs":{"max":50},"scheduledHorizonMs":{"max":100},"transport":"websocket","underruns":0,"drops":0,"frameAgeMs":{"p95":80},"warmupCompleteMs":1500,"binaryReductionPercent":68.5}
+audio_stream_metrics {"capturedAtMs":592000,"framesReceived":11820,"invalidFrames":0,"sequenceGaps":0,"duplicates":0,"regressions":0,"interArrivalMs":{"max":55},"scheduledHorizonMs":{"max":140},"transport":"websocket","underruns":0,"drops":0,"frameAgeMs":{"p95":110},"warmupCompleteMs":1500,"binaryReductionPercent":68.5}
+EOF
+analyze audio-only >"$TEMP_DIR/audio-only.out" 2>&1
+assert_grep "$TEMP_DIR/audio-only.out" "$PASS_HORIZON" 'audio-only scheduled_horizon'
+assert_grep "$TEMP_DIR/audio-only.out" "$PASS_UNDERRUNS" 'audio-only underruns'
+assert_grep "$TEMP_DIR/audio-only.out" "$PASS_DROPS" 'audio-only drops'
+assert_grep "$TEMP_DIR/audio-only.out" "$PASS_REDUCTION" 'audio-only binary_reduction'
+assert_grep "$TEMP_DIR/audio-only.out" "$PASS_FORMAT" 'audio-only rover_audio_format'
+assert_grep "$TEMP_DIR/audio-only.out" "$PASS_WARMUP" 'audio-only warmup_gating'
+assert_grep "$SUMMARY" '# audio-only Summary' 'audio-only summary heading'
+
+# --- 2. audio-video happy path ------------------------------------------------
+analyze audio-video >"$TEMP_DIR/audio-video.out" 2>&1
+assert_grep "$TEMP_DIR/audio-video.out" "$PASS_HORIZON" 'audio-video scheduled_horizon'
+assert_grep "$TEMP_DIR/audio-video.out" "$PASS_CADENCE" 'audio-video cadence'
+assert_grep "$TEMP_DIR/audio-video.out" "$PASS_CLOCK" 'audio-video clock_offset'
+assert_grep "$SUMMARY" '# audio-video Summary' 'audio-video summary heading'
+
+# --- 3. scheduled horizon > 150 ms should fail --------------------------------
+cat > "$BROWSER_LOG" <<'EOF'
+audio_stream_metrics {"capturedAtMs":1000,"framesReceived":0,"invalidFrames":0,"sequenceGaps":0,"duplicates":0,"regressions":0,"interArrivalMs":{"max":50},"scheduledHorizonMs":{"max":100},"transport":"websocket","underruns":0,"drops":0}
+audio_stream_metrics {"capturedAtMs":592000,"framesReceived":11820,"invalidFrames":0,"sequenceGaps":0,"duplicates":0,"regressions":0,"interArrivalMs":{"max":55},"scheduledHorizonMs":{"max":180},"transport":"websocket","underruns":0,"drops":0}
+EOF
+analyze audio-only >"$TEMP_DIR/bad-horizon.out" 2>&1 || true
+assert_grep "$TEMP_DIR/bad-horizon.out" "$FAIL_HORIZON" 'bad-horizon scheduled_horizon'
+
+# --- 4. underrun > 0 should fail ----------------------------------------------
+cat > "$BROWSER_LOG" <<'EOF'
+audio_stream_metrics {"capturedAtMs":1000,"framesReceived":0,"invalidFrames":0,"sequenceGaps":0,"duplicates":0,"regressions":0,"interArrivalMs":{"max":50},"scheduledHorizonMs":{"max":100},"transport":"websocket","underruns":0,"drops":0}
+audio_stream_metrics {"capturedAtMs":592000,"framesReceived":11820,"invalidFrames":0,"sequenceGaps":0,"duplicates":0,"regressions":0,"interArrivalMs":{"max":55},"scheduledHorizonMs":{"max":120},"transport":"websocket","underruns":3,"drops":0}
+EOF
+analyze audio-only >"$TEMP_DIR/bad-underrun.out" 2>&1 || true
+assert_grep "$TEMP_DIR/bad-underrun.out" "$FAIL_UNDERRUNS" 'bad-underrun underruns'
+
+# --- 5. drop > 0 should fail --------------------------------------------------
+cat > "$BROWSER_LOG" <<'EOF'
+audio_stream_metrics {"capturedAtMs":1000,"framesReceived":0,"invalidFrames":0,"sequenceGaps":0,"duplicates":0,"regressions":0,"interArrivalMs":{"max":50},"scheduledHorizonMs":{"max":100},"transport":"websocket","underruns":0,"drops":0}
+audio_stream_metrics {"capturedAtMs":592000,"framesReceived":11820,"invalidFrames":0,"sequenceGaps":0,"duplicates":0,"regressions":0,"interArrivalMs":{"max":55},"scheduledHorizonMs":{"max":120},"transport":"websocket","underruns":0,"drops":7}
+EOF
+analyze audio-only >"$TEMP_DIR/bad-drop.out" 2>&1 || true
+assert_grep "$TEMP_DIR/bad-drop.out" "$FAIL_DROPS" 'bad-drop drops'
+
+# --- 6. binary reduction < 65 % should fail -----------------------------------
+cat > "$BROWSER_LOG" <<'EOF'
+audio_stream_metrics {"capturedAtMs":1000,"framesReceived":0,"invalidFrames":0,"sequenceGaps":0,"duplicates":0,"regressions":0,"interArrivalMs":{"max":50},"scheduledHorizonMs":{"max":100},"transport":"websocket","underruns":0,"drops":0}
+audio_stream_metrics {"capturedAtMs":592000,"framesReceived":11820,"invalidFrames":0,"sequenceGaps":0,"duplicates":0,"regressions":0,"interArrivalMs":{"max":55},"scheduledHorizonMs":{"max":140},"transport":"websocket","underruns":0,"drops":0}
+EOF
+"$HELPER" analyze \
+  --scenario audio-only \
+  --browser-log "$BROWSER_LOG" \
+  --rover-log "$ROVER_LOG" \
+  --orchestra-log "$ORCHESTRA_LOG" \
+  --network-path LAN --browser-host b --rover-host r --orchestra-host o \
+  --devtools closed --clock-offset-ms 2 \
+  --output "$SUMMARY" \
+  --json-baseline-bytes 5911 --binary-payload-bytes 4000 \
+  >"$TEMP_DIR/bad-reduction.out" 2>&1 || true
+assert_grep "$TEMP_DIR/bad-reduction.out" "$FAIL_REDUCTION" 'bad-reduction binary_reduction'
+
+# --- 7. missing rover_publish s16le marker should WARN, not FAIL --------------
+cat > "$ROVER_LOG" <<'EOF'
+metric="audio_pipeline" stage="rover_convert" errors=0
+metric="audio_pipeline" stage="orchestra_zenoh_receive" errors=0
+EOF
+analyze audio-only >"$TEMP_DIR/no-s16le.out" 2>&1 || true
+assert_grep "$TEMP_DIR/no-s16le.out" "$WARN_FORMAT" 'missing s16le marker warns'
+
+# --- 8. audio stop/start control event still fails ---------------------------
+write_rover_logs
+printf '\n%s\n' 'Audio control received: Stop' 'Stopping audio stream' >> "$ROVER_LOG"
+analyze audio-only >"$TEMP_DIR/control-event.out" 2>&1 || true
+assert_grep "$TEMP_DIR/control-event.out" "$FAIL_CONTROL" 'control_events'
+
+printf 'benchmark helper tests passed\n'
