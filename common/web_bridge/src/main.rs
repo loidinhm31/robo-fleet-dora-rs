@@ -931,10 +931,7 @@ fn setup_socketio(
                     Ok(update) => update,
                     Err(error) => {
                         log_validation_error(&socket_id_clone, &format!("TTS config: {error}"));
-                        emit_tts_config_state(
-                            &socket,
-                            &current_tts_config_state(&shared_state_clone),
-                        );
+                        emit_tts_config_state(&socket, &current_tts_config_state(&shared_state_clone));
                         return;
                     }
                 };
@@ -1021,68 +1018,88 @@ fn setup_socketio(
                 }
                 touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
 
-                if let Ok(web_cmd) = serde_json::from_value::<WebTtsCommand>(data) {
-                    let selected_target = selected_target_entity(&shared_state_clone);
-                    let tts_command = convert_web_command_to_tts_command(&web_cmd);
-                    // Validate TTS text
-                    if let Err(e) = security::validation::validate_tts_text(&web_cmd.text) {
-                        log_validation_error(&socket_id_clone, &format!("TTS text: {}", e));
-                        tracing::warn!("TTS command validation failed: {}", e);
-                        emit_tts_ack(
-                            &socket,
-                            &build_tts_ack(
-                                &tts_command.command_id,
-                                &selected_target,
-                                TtsAckState::Rejected,
-                                Some(VoiceReasonCode::InvalidCommand),
-                                Some("invalid tts text".to_string()),
-                            ),
-                        );
-                        return;
-                    }
-                    if !is_target_active(&shared_state_clone, &selected_target) {
-                        emit_tts_ack(
-                            &socket,
-                            &build_tts_ack(
-                                &tts_command.command_id,
-                                &selected_target,
-                                TtsAckState::Rejected,
-                                Some(VoiceReasonCode::VoiceNotReady),
-                                Some("selected rover is not active".to_string()),
-                            ),
-                        );
-                        return;
-                    }
-                    if is_walkie_active(&shared_state_clone, &selected_target) {
-                        emit_tts_ack(
-                            &socket,
-                            &build_tts_ack(
-                                &tts_command.command_id,
-                                &selected_target,
-                                TtsAckState::Rejected,
-                                Some(VoiceReasonCode::WalkieActive),
-                                Some("walkie stream is active".to_string()),
-                            ),
-                        );
-                        return;
-                    }
+                match serde_json::from_value::<WebTtsCommand>(data) {
+                    Ok(web_cmd) => {
+                        let selected_target = selected_target_entity(&shared_state_clone);
+                        let tts_command = convert_web_command_to_tts_command(&web_cmd);
+                        // Validate TTS text
+                        if let Err(e) = security::validation::validate_tts_text(&web_cmd.text) {
+                            log_validation_error(&socket_id_clone, &format!("TTS text: {}", e));
+                            tracing::warn!("TTS command validation failed: {}", e);
+                            emit_tts_ack(
+                                &socket,
+                                &build_tts_ack(
+                                    &tts_command.command_id,
+                                    &selected_target,
+                                    TtsAckState::Rejected,
+                                    Some(VoiceReasonCode::InvalidCommand),
+                                    Some("invalid tts text".to_string()),
+                                ),
+                            );
+                            return;
+                        }
+                        if !is_target_active(&shared_state_clone, &selected_target) {
+                            tracing::warn!(
+                                target_entity = %selected_target,
+                                command_id = %tts_command.command_id,
+                                "Rejected TTS command because selected rover is inactive"
+                            );
+                            emit_tts_ack(
+                                &socket,
+                                &build_tts_ack(
+                                    &tts_command.command_id,
+                                    &selected_target,
+                                    TtsAckState::Rejected,
+                                    Some(VoiceReasonCode::VoiceNotReady),
+                                    Some("selected rover is not active".to_string()),
+                                ),
+                            );
+                            return;
+                        }
+                        if is_walkie_active(&shared_state_clone, &selected_target) {
+                            tracing::warn!(
+                                target_entity = %selected_target,
+                                command_id = %tts_command.command_id,
+                                "Rejected TTS command because walkie is active"
+                            );
+                            emit_tts_ack(
+                                &socket,
+                                &build_tts_ack(
+                                    &tts_command.command_id,
+                                    &selected_target,
+                                    TtsAckState::Rejected,
+                                    Some(VoiceReasonCode::WalkieActive),
+                                    Some("walkie stream is active".to_string()),
+                                ),
+                            );
+                            return;
+                        }
 
-                    tracing::debug!("Received TTS command: {}", web_cmd.text);
-                    emit_tts_ack(
-                        &socket,
-                        &build_tts_ack(
-                            &tts_command.command_id,
-                            &selected_target,
-                            TtsAckState::Accepted,
-                            None,
-                            None,
-                        ),
-                    );
-                    shared_state_clone
-                        .tts_command_queue
-                        .lock()
-                        .unwrap()
-                        .push(tts_command);
+                        tracing::info!(
+                            target_entity = %selected_target,
+                            command_id = %tts_command.command_id,
+                            text_len = web_cmd.text.len(),
+                            "Accepted TTS command from authenticated socket"
+                        );
+                        emit_tts_ack(
+                            &socket,
+                            &build_tts_ack(
+                                &tts_command.command_id,
+                                &selected_target,
+                                TtsAckState::Accepted,
+                                None,
+                                None,
+                            ),
+                        );
+                        shared_state_clone
+                            .tts_command_queue
+                            .lock()
+                            .unwrap()
+                            .push(tts_command);
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "Rejected malformed tts_command payload");
+                    }
                 }
             },
         );
@@ -3301,7 +3318,16 @@ fn emit_tts_config_state(socket: &SocketRef, state: &TtsConfigState) {
         tracing::warn!(%error, "refusing to emit invalid tts_config_state");
         return;
     }
-    socket.emit("tts_config_state", state).ok();
+    match serde_json::to_value(state) {
+        Ok(payload) => {
+            if let Err(error) = socket.emit("tts_config_state", payload) {
+                tracing::warn!(%error, "failed to emit tts_config_state");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "failed to serialize tts_config_state");
+        }
+    }
 }
 
 fn emit_voice_status(socket: &SocketRef, status: &VoiceStatus) {
@@ -3309,7 +3335,16 @@ fn emit_voice_status(socket: &SocketRef, status: &VoiceStatus) {
         tracing::warn!(%error, "refusing to emit invalid voice_status");
         return;
     }
-    socket.emit("voice_status", status).ok();
+    match serde_json::to_value(status) {
+        Ok(payload) => {
+            if let Err(error) = socket.emit("voice_status", payload) {
+                tracing::warn!(%error, "failed to emit voice_status");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "failed to serialize voice_status");
+        }
+    }
 }
 
 fn broadcast_tts_config_state(
@@ -3377,7 +3412,16 @@ fn emit_tts_ack(socket: &SocketRef, ack: &TtsCommandAck) {
         tracing::warn!(%error, "refusing to emit invalid tts_command_ack");
         return;
     }
-    socket.emit("tts_command_ack", ack).ok();
+    match serde_json::to_value(ack) {
+        Ok(payload) => {
+            if let Err(error) = socket.emit("tts_command_ack", payload) {
+                tracing::warn!(%error, "failed to emit tts_command_ack");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "failed to serialize tts_command_ack");
+        }
+    }
 }
 
 fn convert_web_command_to_tts_command(web_cmd: &WebTtsCommand) -> robo_rover_lib::TtsCommand {

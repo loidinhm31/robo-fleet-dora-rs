@@ -1,0 +1,123 @@
+{
+  "default_config": {
+    "language": "en",
+    "speaker_id": 5,
+    "speed": 1.0,
+    "num_steps": 8,
+    "volume": 0.8
+  },
+  "balanced_cases": [
+    {
+      "id": "sid-0-en",
+      "language": "en",
+      "speaker_id": 0,
+      "speed": 1.0,
+      "num_steps": 8,
+      "volume": 0.8,
+      "text": "Edge voice zero, status green and steady."
+    },
+    {
+      "id": "sid-1-vi",
+      "language": "vi",
+      "speaker_id": 1,
+      "speed": 1.0,
+      "num_steps": 8,
+      "volume": 0.8,
+      "text": "Giọng số một, trạng thái xanh và ổn định."
+    },
+    {
+      "id": "sid-2-en",
+      "language": "en",
+      "speaker_id": 2,
+      "speed": 1.0,
+      "num_steps": 8,
+      "volume": 0.8,
+      "text": "Edge voice two, route the rover forward."
+    },
+    {
+      "id": "sid-3-vi",
+      "language": "vi",
+      "speaker_id": 3,
+      "speed": 1.0,
+      "num_steps": 8,
+      "volume": 0.8,
+      "text": "Giọng số ba, cho rover tiến về phía trước."
+    },
+    {
+      "id": "sid-4-en",
+      "language": "en",
+      "speaker_id": 4,
+      "speed": 1.0,
+      "num_steps": 8,
+      "volume": 0.8,
+      "text": "Edge voice four, hold position and report back."
+    },
+    {
+      "id": "sid-5-vi",
+      "language": "vi",
+      "speaker_id": 5,
+      "speed": 1.0,
+      "num_steps": 8,
+      "volume": 0.8,
+      "text": "Giọng số năm, giữ vị trí và báo cáo lại."
+    },
+    {
+      "id": "sid-6-en",
+      "language": "en",
+      "speaker_id": 6,
+      "speed": 1.0,
+      "num_steps": 8,
+      "volume": 0.8,
+      "text": "Edge voice six, confirm the audio path latency."
+    },
+    {
+      "id": "sid-7-vi",
+      "language": "vi",
+      "speaker_id": 7,
+      "speed": 1.0,
+      "num_steps": 8,
+      "volume": 0.8,
+      "text": "Giọng số bảy, xác nhận độ trễ của đường âm thanh."
+    },
+    {
+      "id": "sid-8-en",
+      "language": "en",
+      "speaker_id": 8,
+      "speed": 1.0,
+      "num_steps": 8,
+      "volume": 0.8,
+      "text": "Edge voice eight, cycle the speaker test once."
+    },
+    {
+      "id": "sid-9-vi",
+      "language": "vi",
+      "speaker_id": 9,
+      "speed": 1.0,
+      "num_steps": 8,
+      "volume": 0.8,
+      "text": "Giọng số chín, chạy lại bài kiểm tra loa một lần."
+    }
+  ],
+  "walkie": {
+    "language": "en",
+    "speaker_id": 5,
+    "speed": 0.9,
+    "num_steps": 10,
+    "volume": 0.8,
+    "text": "Walkie preemption check. Keep talking over the rover while the long edge voice synthesis is active. This utterance is intentionally longer so the worker stays busy long enough to collide with live microphone frames and prove that walkie audio interrupts the current command cleanly.",
+    "preemption_delay_ms": 150,
+    "frame_count": 10,
+    "frame_size": 512,
+    "frame_spacing_ms": 20,
+    "amplitude": 0.22
+  },
+  "soak": {
+    "language": "en",
+    "speaker_id": 5,
+    "speed": 1.0,
+    "num_steps": 8,
+    "volume": 0.8,
+    "prefix": "Short soak synthesis check",
+    "count": 100
+  }
+}

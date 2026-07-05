@@ -226,6 +226,17 @@ fn main() -> Result<()> {
                         .map(|m| m.avg_processing_time_ms)
                         .sum();
 
+                    let edge_voice_metrics = system_metrics.node_metrics.get("edge-voice");
+                    let edge_voice_cpu_percent = edge_voice_metrics
+                        .map(|metrics| metrics.cpu_usage_percent)
+                        .unwrap_or(0.0);
+                    let edge_voice_memory_mb = edge_voice_metrics
+                        .map(|metrics| metrics.memory_usage_mb)
+                        .unwrap_or(0.0);
+                    let edge_voice_fps =
+                        edge_voice_metrics.map(|metrics| metrics.fps).unwrap_or(0.0);
+                    let edge_voice_found = edge_voice_metrics.is_some();
+
                     // Send metrics
                     let metrics_json = serde_json::to_vec(&system_metrics)?;
                     let arrow_data = BinaryArray::from_vec(vec![metrics_json.as_slice()]);
@@ -235,7 +246,7 @@ fn main() -> Result<()> {
                         arrow_data,
                     )?;
 
-                    // Log metrics with battery info if available
+                    // Log metrics at info level so the benchmark can see edge_voice RSS/CPU.
                     let battery_info =
                         match (system_metrics.battery_level, system_metrics.battery_voltage) {
                             (Some(level), Some(voltage)) => {
@@ -246,13 +257,17 @@ fn main() -> Result<()> {
                             (None, None) => String::new(),
                         };
 
-                    tracing::debug!(
-                        "System metrics - CPU: {:.1}%, Memory: {:.0}MB/{:.0}MB, Dataflow FPS: {:.1}, Latency: {:.1}ms{}",
-                        system_metrics.total_cpu_percent,
-                        system_metrics.total_memory_mb,
-                        system_metrics.available_memory_mb,
-                        system_metrics.dataflow_fps,
-                        system_metrics.end_to_end_latency_ms,
+                    tracing::info!(
+                        total_cpu_percent = system_metrics.total_cpu_percent,
+                        total_memory_mb = system_metrics.total_memory_mb,
+                        available_memory_mb = system_metrics.available_memory_mb,
+                        dataflow_fps = system_metrics.dataflow_fps,
+                        end_to_end_latency_ms = system_metrics.end_to_end_latency_ms,
+                        edge_voice_found,
+                        edge_voice_cpu_percent,
+                        edge_voice_memory_mb,
+                        edge_voice_fps,
+                        "System metrics{}",
                         battery_info
                     );
                 }

@@ -1,4 +1,7 @@
-use std::{env, path::PathBuf};
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 
 use eyre::{eyre, Result};
 use robo_rover_lib::TtsRuntimeConfig;
@@ -45,8 +48,10 @@ impl DeploymentConfig {
 
         Ok(Self {
             entity_id: env::var("ENTITY_ID").unwrap_or_else(|_| "rover-kiwi".to_string()),
-            model_dir: PathBuf::from(
-                env::var("EDGE_VOICE_MODEL_DIR").unwrap_or_else(|_| DEFAULT_MODEL_DIR.to_string()),
+            model_dir: resolve_runtime_path(
+                "EDGE_VOICE_MODEL_DIR",
+                &env::var("EDGE_VOICE_MODEL_DIR")
+                    .unwrap_or_else(|_| DEFAULT_MODEL_DIR.to_string()),
             ),
             num_threads,
             queue_capacity,
@@ -54,6 +59,43 @@ impl DeploymentConfig {
             default_runtime,
         })
     }
+}
+
+fn resolve_runtime_path(label: &str, raw_path: &str) -> PathBuf {
+    let raw = Path::new(raw_path);
+    if raw.is_absolute() || raw.exists() {
+        return raw.to_path_buf();
+    }
+
+    let mut candidate_bases = Vec::new();
+    if let Ok(cwd) = env::current_dir() {
+        candidate_bases.push(cwd);
+    }
+    if let Ok(exe_path) = env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            candidate_bases.extend(exe_dir.ancestors().map(Path::to_path_buf));
+        }
+    }
+
+    for base in candidate_bases {
+        let candidate = base.join(raw);
+        if candidate.exists() {
+            tracing::info!(
+                path_label = label,
+                configured_path = raw_path,
+                resolved_path = %candidate.display(),
+                "Resolved edge voice runtime asset path"
+            );
+            return candidate;
+        }
+    }
+
+    tracing::warn!(
+        path_label = label,
+        configured_path = raw_path,
+        "Edge voice runtime asset path could not be resolved; using configured value"
+    );
+    raw.to_path_buf()
 }
 
 fn env_parse<T>(name: &str, default: T) -> Result<T>

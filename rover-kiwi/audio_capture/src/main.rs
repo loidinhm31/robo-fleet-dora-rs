@@ -120,7 +120,12 @@ fn main() -> Result<()> {
                     // This prevents speaker audio queued during the 400 ms tail from leaking
                     // into the first frame published after capture resumes.
                     if !capture_gate.can_publish(Instant::now()) {
-                        clear_capture_buffers(&consumer, &mut audio_buffer);
+                        let flushed = clear_capture_buffers(&consumer, &mut audio_buffer);
+                        if flushed > 0 {
+                            let flushed = flushed as u64;
+                            samples_rejected = samples_rejected.saturating_add(flushed);
+                            capture_metrics.record_drops(flushed);
+                        }
                     } else if stream_opt.is_some() {
                         // Read available samples from ring buffer
                         if let Ok(mut cons) = consumer.lock() {
@@ -276,7 +281,12 @@ fn main() -> Result<()> {
                 "playback_state" => match parse_playback_state(&*data) {
                     Ok(state) => {
                         capture_gate.observe_playback(&state, Instant::now());
-                        clear_capture_buffers(&consumer, &mut audio_buffer);
+                        let flushed = clear_capture_buffers(&consumer, &mut audio_buffer);
+                        if flushed > 0 {
+                            let flushed = flushed as u64;
+                            samples_rejected = samples_rejected.saturating_add(flushed);
+                            capture_metrics.record_drops(flushed);
+                        }
                     }
                     Err(error) => tracing::warn!(%error, "rejected playback suppression state"),
                 },
@@ -344,11 +354,15 @@ fn parse_playback_state(data: &dyn Array) -> Result<PlaybackState> {
 fn clear_capture_buffers(
     consumer: &Arc<Mutex<ringbuf::HeapCons<f32>>>,
     audio_buffer: &mut Vec<f32>,
-) {
+) -> usize {
+    let mut cleared = audio_buffer.len();
     audio_buffer.clear();
     if let Ok(mut consumer) = consumer.lock() {
-        while consumer.try_pop().is_some() {}
+        while consumer.try_pop().is_some() {
+            cleared += 1;
+        }
     }
+    cleared
 }
 
 /// Try to open a CPAL input stream. Returns Err if no microphone / ALSA device is available.
@@ -762,9 +776,10 @@ mod tests {
         let consumer = Arc::new(Mutex::new(consumer));
         let mut partial = vec![0.3];
 
-        clear_capture_buffers(&consumer, &mut partial);
+        let cleared = clear_capture_buffers(&consumer, &mut partial);
 
         assert!(partial.is_empty());
         assert_eq!(consumer.lock().unwrap().occupied_len(), 0);
+        assert_eq!(cleared, 3);
     }
 }

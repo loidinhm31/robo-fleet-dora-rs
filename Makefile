@@ -7,7 +7,7 @@
 .PHONY: help models models-reset check-models build-orchestra build-rover build-all up-orchestra up-rover \
         up-rover-direct up-mongodb down-mongodb logs-mongodb up-workstation down logs-orchestra \
         logs-rover shell-orchestra shell-rover status clean build-rover-cross format format-check \
-        format-file validate-compose validate-workstation-compose
+        format-file validate-compose validate-workstation-compose validate-edge-voice-x86
 
 # Default target
 .DEFAULT_GOAL := help
@@ -50,6 +50,7 @@ help:
 	@echo "  make logs-orchestra  - View orchestra logs (follow mode)"
 	@echo "  make logs-rover      - View rover logs (follow mode)"
 	@echo "  make status          - Check Dora node status in containers"
+	@echo "  make validate-edge-voice-x86 - Run the native x86 edge-voice benchmark"
 	@echo ""
 	@echo "Shell Access:"
 	@echo "  make shell-orchestra - Open bash shell in orchestra container"
@@ -252,6 +253,10 @@ validate-workstation-compose:
 	@echo "Validating docker-compose.yml + docker-compose.workstation.yml..."
 	$(WORKSTATION_COMPOSE) --profile mongodb --profile orchestra --profile rover-kiwi config > /dev/null
 	@echo "✓ workstation compose is valid"
+
+validate-edge-voice-x86:
+	@echo "Running native x86 edge-voice benchmark..."
+	@./scripts/benchmark-edge-voice-x86.sh
 
 check-models:
 	@echo "Validating repo-local model and runtime artifacts..."

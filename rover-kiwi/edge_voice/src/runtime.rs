@@ -186,10 +186,25 @@ fn handle_input(
     match id {
         "tts_command" | "tts_command_web" => {
             let command = parse_tts_command(binary_payload(data)?)?;
+            tracing::info!(
+                command_id = %command.command_id,
+                text_len = command.text.len(),
+                priority = ?command.priority,
+                "edge_voice received TTS command"
+            );
             handle_tts_command(command, node, outputs, runtime)?;
         }
         "tts_config_command" | "tts_config" => {
             let command = parse_config_command(binary_payload(data)?)?;
+            tracing::info!(
+                revision = command.revision,
+                language = ?command.config.language,
+                speaker_id = command.config.speaker_id,
+                speed = command.config.speed,
+                num_steps = command.config.num_steps,
+                volume = command.config.volume,
+                "edge_voice received TTS config command"
+            );
             let stale_revision = command.revision;
             if !runtime.apply_config(command) {
                 tracing::warn!(
@@ -436,6 +451,7 @@ fn handle_worker_event(
             sample_rate,
             speakers,
         } => {
+            tracing::info!(sample_rate, speakers, "edge_voice worker loaded Supertonic model");
             runtime.ready = true;
             emit_status(node, outputs, runtime.status(VoiceState::Ready, None, None))?;
             emit_metric(
@@ -446,6 +462,7 @@ fn handle_worker_event(
             dispatch_if_idle(runtime, worker, node, outputs)?;
         }
         WorkerEvent::LoadFailed { detail } => {
+            tracing::error!(%detail, "edge_voice worker failed to load Supertonic model");
             runtime.load_failed = true;
             for command_id in runtime.queue.clear_ids() {
                 emit_result(
@@ -475,6 +492,13 @@ fn handle_worker_event(
             revision,
             config,
         } => {
+            tracing::info!(
+                %command_id,
+                revision,
+                language = ?config.language,
+                speaker_id = config.speaker_id,
+                "edge_voice started synthesis"
+            );
             runtime.active_command_id = Some(command_id);
             runtime.active_revision = Some(revision);
             runtime.active_config = Some(config);
@@ -506,6 +530,7 @@ fn handle_worker_event(
             elapsed_ms,
             samples,
         } => {
+            tracing::info!(%command_id, elapsed_ms, samples, "edge_voice synthesis completed");
             if runtime.active_command_id.as_deref() != Some(&command_id) {
                 return Ok(());
             }
@@ -541,6 +566,7 @@ fn handle_worker_event(
             }
         }
         WorkerEvent::Interrupted { command_id, reason } => {
+            tracing::warn!(%command_id, ?reason, "edge_voice synthesis interrupted");
             if runtime.active_command_id.as_deref() == Some(&command_id) {
                 let playback_failed =
                     runtime.playback_failure_pending || reason == VoiceReasonCode::PlaybackFailed;
@@ -582,6 +608,7 @@ fn handle_worker_event(
             reason,
             detail,
         } => {
+            tracing::error!(%command_id, ?reason, %detail, "edge_voice synthesis failed");
             if runtime.active_command_id.as_deref() == Some(&command_id) {
                 emit_synthesis_state(
                     node,
