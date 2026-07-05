@@ -1,6 +1,25 @@
 version: '3.8'
 
 services:
+  mongodb:
+    profiles: ["mongodb"]
+    image: mongo:8.0
+    container_name: robo-mongodb
+    hostname: mongodb
+    environment:
+      GLIBC_TUNABLES: glibc.pthread.rseq=1
+    ports:
+      - "127.0.0.1:${MONGODB_PORT:-27017}:27017"
+    volumes:
+      - mongodb-dev-data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet mongodb://127.0.0.1:27017/admin --eval 'db.adminCommand({ ping: 1 }).ok' | grep -q '^1$'"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
   # ===========================================================================
   # ORCHESTRA PROFILE - Runs on Workstation (x86_64)
   # ===========================================================================
@@ -11,52 +30,29 @@ services:
       dockerfile: docker/Dockerfile.orchestra
     container_name: robo-orchestra
     hostname: orchestra
-
-    # Network: Use host mode for Zenoh multicast discovery
     network_mode: host
-
     volumes:
-      # Model files (Sherpa ASR bundles for central speech recognition)
       - ${HOST_WORKSPACE:-..}/models/.cache/sherpa-onnx:/models/sherpa-onnx:ro
-
-      # Zenoh configuration (optional override)
       - ${HOST_WORKSPACE:-..}/orchestra/zenoh_bridge/zenoh_config.json5:/app/config/zenoh_config.json5:ro
-
-      # Dataflow override (optional - for development)
       # - ${HOST_WORKSPACE:-..}/orchestra/orchestra-dataflow.yml:/app/dataflow/orchestra-dataflow.yml:ro
-
     environment:
-      # Rust logging
       RUST_LOG: info
-
-      # Zenoh configuration
       ZENOH_MODE: peer
       ZENOH_CONFIG: /app/config/zenoh_config.json5
       ENTITY_ID: orchestra
       ACTIVE_ROVERS: rover-kiwi
-
-      # Video/Audio settings
       VIDEO_WIDTH: "640"
       VIDEO_HEIGHT: "480"
       AUDIO_SAMPLE_RATE: "16000"
       AUDIO_CHANNELS: "1"
-
-      # Central Sherpa VAD/offline STT.
-      # The orchestra entrypoint validates the selected profile and required
-      # model files before `dora run` starts.
       STT_PROFILE: ${STT_PROFILE:-en-vad-offline}
       STT_MODEL_ROOT: /models/sherpa-onnx/asr
       STT_NUM_THREADS: ${STT_NUM_THREADS:-2}
-
-      # Command parser
-      # deterministic only; no model/runtime env required here
-
-      # Web bridge
       MODE: orchestra
       ZENOH_ENABLED: "false"
       BIND_ADDRESS: "0.0.0.0"
       SOCKET_IO_PORT: "3030"
-      MONGODB_URI: ${MONGODB_URI:-mongodb://localhost:27017}
+      MONGODB_URI: ${MONGODB_URI:-mongodb://127.0.0.1:27017}
       MONGODB_DATABASE: ${MONGODB_DATABASE:-gleanOak}
       JWT_SECRET: ${JWT_SECRET:-}
       SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-3600}
@@ -71,9 +67,7 @@ services:
       LOG_AUTH_ATTEMPTS: "true"
       SELECTED_ENTITY_ID: ${SELECTED_ENTITY_ID:-rover-kiwi}
       FLEET_ROSTER: ${FLEET_ROSTER:-rover-kiwi}
-
     restart: unless-stopped
-
     healthcheck:
       test: ["CMD", "dora", "list"]
       interval: 30s
@@ -89,106 +83,57 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.rover-kiwi
-      platforms:
-        - linux/arm64
     container_name: robo-rover-kiwi
     hostname: rover-kiwi
-
-    # Network: Host mode for Zenoh multicast
+    platform: ${ROVER_PLATFORM:-linux/arm64}
     network_mode: host
-
-    # Hardware access requires privileged mode
     privileged: true
-
-    # Share IPC namespace with host — required for ALSA dmix/dsnoop plugins.
-    # These plugins use SysV shared memory semaphores that are isolated per IPC namespace.
-    # Without this, snd_pcm_dmix_open / snd_pcm_dsnoop_open fail with 'No such file or directory'.
     ipc: host
-
-    # Audio group — must match host's audio GID so ALSA can open /dev/snd/* devices.
-    # Override with: AUDIO_GID=$(getent group audio | cut -d: -f3) make up-rover
-    # Default 29 = Debian/Ubuntu standard; Raspberry Pi OS may use a different GID.
     group_add:
       - "${AUDIO_GID:-29}"
-
-    # Explicit audio device mapping (ensures /dev/snd/* is accessible even with privileged)
     devices:
       - /dev/snd:/dev/snd
-
     volumes:
-      # AI Models (download separately using make models or docker/scripts/download-models.sh)
       - ${HOST_WORKSPACE:-..}/models/.cache/yolo:/models/yolo:ro
       - ${HOST_WORKSPACE:-..}/models/.cache/reid:/models/reid:ro
       - ${HOST_WORKSPACE:-..}/models/.cache/sherpa-onnx:/models/sherpa-onnx:ro
-
-      # Zenoh configuration
       - ${HOST_WORKSPACE:-..}/rover-kiwi/zenoh_bridge/zenoh_config.json5:/app/config/zenoh_config.json5:ro
-
-      # Rover configuration (arm controller, simulation, etc.)
       - ${HOST_WORKSPACE:-..}/rover-kiwi/config:/app/config/rover:ro
-
-      # Dataflow override (optional - for development)
       - ${HOST_WORKSPACE:-..}/rover-kiwi/rover-kiwi-dataflow.yml:/app/dataflow/rover-kiwi-dataflow.yml:ro
       - ${HOST_WORKSPACE:-..}/rover-kiwi/rover-kiwi-direct-dataflow.yml:/app/dataflow/rover-kiwi-direct-dataflow.yml:ro
-
-      # Host PulseAudio socket — gives the container the same audio path as a direct
-      # dora start on the host. PULSE_UID defaults to 1000 (Raspberry Pi default user).
-      # Override: PULSE_UID=$(id -u) make up-rover
       - /run/user/${PULSE_UID:-1000}/pulse:/run/user/${PULSE_UID:-1000}/pulse
-
     environment:
-      # Rust logging
       RUST_LOG: info
-
-      # Rover operation mode:
-      #   zenoh  (default): connect to orchestra via Zenoh bridge
-      #   direct          : run web_bridge locally, no Zenoh required
       ROVER_MODE: ${ROVER_MODE:-zenoh}
-
-      # Entity identity
       ENTITY_ID: ${ENTITY_ID:-rover-kiwi}
-
-      # Zenoh configuration (used when ROVER_MODE=zenoh)
       ZENOH_MODE: peer
       ZENOH_CONFIG: /app/config/zenoh_config.json5
-
-      # Web bridge settings (used when ROVER_MODE=direct)
       BIND_ADDRESS: "0.0.0.0"
       SOCKET_IO_PORT: "3030"
-      MONGODB_URI: ${MONGODB_URI:-mongodb://localhost:27017}
+      MONGODB_URI: ${MONGODB_URI:-mongodb://127.0.0.1:27017}
       MONGODB_DATABASE: ${MONGODB_DATABASE:-gleanOak}
       JWT_SECRET: ${JWT_SECRET:-}
       SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-3600}
       ALLOW_DEFAULT_CREDENTIALS: ${ALLOW_DEFAULT_CREDENTIALS:-false}
-
-      # Camera (GStreamer)
       SOURCE_TYPE: ${SOURCE_TYPE:-webcam}
       SOURCE_URI: ${SOURCE_URI:-/dev/video0}
       IMAGE_COLS: "640"
       IMAGE_ROWS: "480"
       SOURCE_FPS: "30"
       VIEW_STREAM_FPS: "15"
-
-      # Object detection (YOLO)
       MODEL_PATH: /models/yolo/yolo12n.onnx
       CONFIDENCE_THRESHOLD: ${YOLO_CONFIDENCE:-0.5}
       NMS_THRESHOLD: "0.4"
       TARGET_CLASSES: ""
       ORT_DYLIB_PATH: ${ROVER_ORT_DYLIB_PATH:-/usr/local/lib/libonnxruntime.so}
-
-      # ReID feature extraction (OSNet)
       REID_MODEL_PATH: /models/reid/osnet_x0_25.onnx
       MIN_BBOX_SIZE: "32"
-
-      # Object tracking (BoTSORT)
       MAX_TRACKING_AGE: "50"
       MIN_HITS: "3"
       IOU_THRESHOLD: "0.3"
       REID_WEIGHT: "0.8"
       REID_THRESHOLD: "0.5"
       ENABLE_CMC: "true"
-
-      # Visual servoing (PID control)
       LATERAL_PID_KP: "1.5"
       LATERAL_PID_KI: "0.0"
       LATERAL_PID_KD: "0.2"
@@ -200,32 +145,24 @@ services:
       MAX_ANGULAR_VELOCITY: "1.0"
       TARGET_BBOX_HEIGHT: "0.3"
       DEAD_ZONE: "0.05"
-
-      # Audio capture
       SAMPLE_RATE: "16000"
       CHANNELS: "1"
       CHUNK_SIZE: "800"
-      # Route audio through host PulseAudio — same path as direct `dora start` on the host.
-      # The entrypoint detects the pulse socket and writes asound.conf accordingly.
-      # Override: PULSE_UID=$(id -u) make up-rover  (default 1000 = Pi default user)
       PULSE_SERVER: "unix:/run/user/${PULSE_UID:-1000}/pulse/native"
-
-      # TTS (Supertonic through edge_voice)
       EDGE_VOICE_MODEL_DIR: /models/sherpa-onnx/tts/sherpa-onnx-supertonic-3-tts-int8-2026-05-11
       EDGE_VOICE_NUM_THREADS: "2"
       EDGE_VOICE_QUEUE_CAPACITY: "8"
       TTS_DEFAULT_VOLUME: "0.8"
       TTS_DEFAULT_SPEED: "1.0"
       LD_LIBRARY_PATH: "/usr/local/lib:/app/bin"
-
-      # Arm controller
       ARM_CONFIG: /app/config/rover/arm_6dof.toml
-
     restart: unless-stopped
-
     healthcheck:
       test: ["CMD", "dora", "list"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 60s
+
+volumes:
+  mongodb-dev-data:

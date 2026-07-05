@@ -9,8 +9,6 @@ RUN apt-get update && apt-get install -y \
     nasm \
     pkg-config \
     libssl-dev \
-    libclang-dev \
-    clang \
     libasound2-dev \
     libgstreamer1.0-dev \
     libgstreamer-plugins-base1.0-dev \
@@ -58,11 +56,11 @@ RUN mkdir -p rover-kiwi/kornia_capture/src && \
     mkdir -p rover-kiwi/video_encoder/src && \
     echo "fn main() {}" > rover-kiwi/video_encoder/src/main.rs && \
     mkdir -p rover-kiwi/object_detector/src && \
-    echo "fn main() {}" > rover-kiwi/object_detector/src/main.rs && \
+    echo "pub fn dummy() {}" > rover-kiwi/object_detector/src/lib.rs && \
     mkdir -p rover-kiwi/reid_extractor/src && \
-    echo "fn main() {}" > rover-kiwi/reid_extractor/src/main.rs && \
+    echo "pub fn dummy() {}" > rover-kiwi/reid_extractor/src/lib.rs && \
     mkdir -p rover-kiwi/object_tracker/src && \
-    echo "fn main() {}" > rover-kiwi/object_tracker/src/main.rs && \
+    echo "pub fn dummy() {}" > rover-kiwi/object_tracker/src/lib.rs && \
     mkdir -p rover-kiwi/visual_servo_controller/src && \
     echo "fn main() {}" > rover-kiwi/visual_servo_controller/src/main.rs && \
     mkdir -p rover-kiwi/audio_capture/src && \
@@ -120,21 +118,6 @@ RUN cargo build --release \
     -p web_bridge \
     -p video_encoder
 
-# Collect sherpa-onnx shared library if it was built as a dynamic library.
-# edge_voice uses static Sherpa by default; this diagnostic remains harmless.
-# We search broadly and collect what exists; runtime will work either way.
-RUN apt-get update && apt-get install -y binutils && rm -rf /var/lib/apt/lists/* && \
-    echo "=== edge_voice dynamic dependencies ===" && \
-    readelf -d /build/target/release/edge_voice | grep -E 'NEEDED|RPATH|RUNPATH' || true && \
-    echo "=== sherpa files found in build ===" && \
-    find /build/target /root /tmp -name "*sherpa*" -type f 2>/dev/null | head -20 && \
-    echo "=== Attempting copy ===" && \
-    find /build/target /root /tmp -name "libsherpa-onnx-c-api.so" -type f 2>/dev/null \
-        | head -1 | xargs -I{} cp -L {} /usr/local/lib/ && \
-    (ls /usr/local/lib/libsherpa-onnx-c-api.so && echo "Dynamic lib copied.") \
-        || echo "No dynamic sherpa-onnx lib found — binary may be statically linked (OK)." && \
-    touch /usr/local/lib/libsherpa-onnx-placeholder
-
 # =============================================================================
 # Stage 2: ONNX Runtime Downloader
 # =============================================================================
@@ -191,9 +174,6 @@ WORKDIR /app
 
 # Copy binaries from builder
 COPY --from=builder /build/target/release/kornia_capture ./bin/
-COPY --from=builder /build/target/release/object_detector ./bin/
-COPY --from=builder /build/target/release/reid_extractor ./bin/
-COPY --from=builder /build/target/release/object_tracker ./bin/
 COPY --from=builder /build/target/release/visual_servo_controller ./bin/
 COPY --from=builder /build/target/release/audio_capture ./bin/
 COPY --from=builder /build/target/release/audio_converter ./bin/
@@ -211,9 +191,7 @@ COPY --from=builder /usr/local/cargo/bin/dora ./bin/
 # Copy ONNX Runtime libraries
 COPY --from=onnxruntime-downloader /onnxruntime/lib/libonnxruntime.so* /usr/local/lib/
 
-# Copy sherpa-onnx C API library if dynamically linked (placeholder ensures COPY doesn't fail)
-COPY --from=builder /usr/local/lib/libsherpa-onnx* /usr/local/lib/
-RUN rm -f /usr/local/lib/libsherpa-onnx-placeholder && ldconfig
+RUN ldconfig
 
 # Copy dataflow and config templates
 COPY rover-kiwi/rover-kiwi-dataflow.yml ./dataflow/rover-kiwi-dataflow.yml

@@ -1,42 +1,32 @@
 services:
-  rover-kiwi:
-    image: localhost/docker_rover-kiwi:latest
-    container_name: robo-rover-kiwi
-    hostname: rover-kiwi
+  orchestra:
+    image: localhost/robo-orchestra:latest
     platform: linux/amd64
+    depends_on:
+      mongodb:
+        condition: service_healthy
     build:
-      context: ..
-      dockerfile: docker/Dockerfile.rover-kiwi
       platforms:
         - linux/amd64
-    network_mode: host
-    privileged: true
+    cpus: 2.0
+    mem_limit: 3g
+    environment:
+      MONGODB_URI: "${WORKSTATION_MONGODB_URI:-mongodb://127.0.0.1:27017}"
+      MONGODB_DATABASE: "${WORKSTATION_MONGODB_DATABASE:-robo_fleet_edge_voice_e2e}"
+      ALLOW_DEFAULT_CREDENTIALS: "${WORKSTATION_ALLOW_DEFAULT_CREDENTIALS:-false}"
+
+  rover-kiwi:
+    image: localhost/robo-rover-kiwi:latest
+    platform: linux/amd64
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    build:
+      platforms:
+        - linux/amd64
     cpus: 3.0
     mem_limit: 4g
-    # Map any host camera path, including /dev/v4l/by-id/... stable symlinks, to
-    # the container's /dev/video0 because the dataflow runs inside the container.
-    devices:
-      - "${ROVER_CAMERA_URI:-/dev/video0}:/dev/video0"
-    volumes:
-      - "${HOST_WORKSPACE:-..}/models/.cache/yolo:/models/yolo:ro"
-      - "${HOST_WORKSPACE:-..}/models/.cache/reid:/models/reid:ro"
-      - "${HOST_WORKSPACE:-..}/models/.cache/sherpa-onnx:/models/sherpa-onnx:ro"
-      - "${HOST_WORKSPACE:-..}/rover-kiwi/rover-kiwi-dataflow.yml:/app/dataflow/rover-kiwi-dataflow.yml:ro"
-      - "${HOST_WORKSPACE:-..}/rover-kiwi/rover-kiwi-direct-dataflow.yml:/app/dataflow/rover-kiwi-direct-dataflow.yml:ro"
     environment:
-      ROVER_MODE: "${ROVER_MODE:-zenoh}"
-      RUST_LOG: info
-      ENTITY_ID: rover-kiwi
-      ROVER_ZENOH_CONFIG: /app/config/zenoh_config.json5
-      ROVER_CAMERA_URI: /dev/video0
-      ROVER_YOLO_MODEL_PATH: /models/yolo/yolo12n.onnx
-      ROVER_REID_MODEL_PATH: /models/reid/osnet_x0_25.onnx
-      ROVER_ORT_DYLIB_PATH: "${ROVER_ORT_DYLIB_PATH:-/usr/local/lib/libonnxruntime.so}"
-      SOURCE_URI: /dev/video0
-      VIEW_STREAM_FPS: "15"
-      MODEL_PATH: /models/yolo/yolo12n.onnx
-      REID_MODEL_PATH: /models/reid/osnet_x0_25.onnx
-      ORT_DYLIB_PATH: "${ROVER_ORT_DYLIB_PATH:-/usr/local/lib/libonnxruntime.so}"
-      MONGODB_URI: "${WORKSTATION_MONGODB_URI:-mongodb://localhost:27017}"
-      MONGODB_DATABASE: "${WORKSTATION_MONGODB_DATABASE:-gleanOak}"
+      MONGODB_URI: "${WORKSTATION_MONGODB_URI:-mongodb://127.0.0.1:27017}"
+      MONGODB_DATABASE: "${WORKSTATION_MONGODB_DATABASE:-robo_fleet_edge_voice_e2e}"
       ALLOW_DEFAULT_CREDENTIALS: "${WORKSTATION_ALLOW_DEFAULT_CREDENTIALS:-false}"

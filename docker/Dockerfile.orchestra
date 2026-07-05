@@ -7,12 +7,9 @@ FROM rust:1.88-bookworm AS builder
 # `web_bridge` depends on `robo_rover_lib`, which enables Linux `cpal` device
 # helpers; that transitive build graph requires ALSA headers in the builder.
 RUN apt-get update && apt-get install -y \
-    cmake \
     pkg-config \
     libssl-dev \
     libasound2-dev \
-    libclang-dev \
-    clang \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Dora CLI
@@ -32,7 +29,6 @@ COPY common/web_bridge/Cargo.toml common/web_bridge/
 COPY orchestra/central_speech_recognizer/Cargo.toml orchestra/central_speech_recognizer/
 COPY orchestra/command_parser/Cargo.toml orchestra/command_parser/
 COPY orchestra/zenoh_bridge/Cargo.toml orchestra/zenoh_bridge/
-COPY orchestra/kokoro_tts/Cargo.toml orchestra/kokoro_tts/
 
 # Copy actual source code
 COPY robo_rover_lib robo_rover_lib/
