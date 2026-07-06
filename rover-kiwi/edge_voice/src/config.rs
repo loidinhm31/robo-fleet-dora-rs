@@ -50,8 +50,7 @@ impl DeploymentConfig {
             entity_id: env::var("ENTITY_ID").unwrap_or_else(|_| "rover-kiwi".to_string()),
             model_dir: resolve_runtime_path(
                 "EDGE_VOICE_MODEL_DIR",
-                &env::var("EDGE_VOICE_MODEL_DIR")
-                    .unwrap_or_else(|_| DEFAULT_MODEL_DIR.to_string()),
+                &env::var("EDGE_VOICE_MODEL_DIR").unwrap_or_else(|_| DEFAULT_MODEL_DIR.to_string()),
             ),
             num_threads,
             queue_capacity,

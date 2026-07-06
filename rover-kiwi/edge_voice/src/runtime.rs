@@ -451,7 +451,11 @@ fn handle_worker_event(
             sample_rate,
             speakers,
         } => {
-            tracing::info!(sample_rate, speakers, "edge_voice worker loaded Supertonic model");
+            tracing::info!(
+                sample_rate,
+                speakers,
+                "edge_voice worker loaded Supertonic model"
+            );
             runtime.ready = true;
             emit_status(node, outputs, runtime.status(VoiceState::Ready, None, None))?;
             emit_metric(
