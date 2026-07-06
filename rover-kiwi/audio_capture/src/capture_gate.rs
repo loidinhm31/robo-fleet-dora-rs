@@ -10,6 +10,11 @@ pub struct CaptureGate {
     tail_until: Option<Instant>,
     last_producer_instance_id: Option<String>,
     last_sequence_id: Option<u64>,
+    accepted_states: u64,
+    stale_states: u64,
+    suppression_entries: u64,
+    tail_entries: u64,
+    unavailable_while_active: u64,
 }
 
 impl CaptureGate {
@@ -20,6 +25,11 @@ impl CaptureGate {
             tail_until: None,
             last_producer_instance_id: None,
             last_sequence_id: None,
+            accepted_states: 0,
+            stale_states: 0,
+            suppression_entries: 0,
+            tail_entries: 0,
+            unavailable_while_active: 0,
         }
     }
 
@@ -36,18 +46,32 @@ impl CaptureGate {
             .last_sequence_id
             .is_some_and(|last_sequence_id| state.sequence_id <= last_sequence_id)
         {
+            self.stale_states = self.stale_states.saturating_add(1);
             return;
         }
         self.last_sequence_id = Some(state.sequence_id);
+        self.accepted_states = self.accepted_states.saturating_add(1);
         match state.state {
             PlaybackStateKind::Active => {
+                if !self.playback_suppressed {
+                    self.suppression_entries = self.suppression_entries.saturating_add(1);
+                }
                 self.playback_suppressed = true;
                 self.tail_until = None;
             }
-            PlaybackStateKind::Idle | PlaybackStateKind::Unavailable => {
+            PlaybackStateKind::Idle => {
                 if self.playback_suppressed {
                     self.playback_suppressed = false;
                     self.tail_until = Some(now + SUPPRESSION_TAIL);
+                    self.tail_entries = self.tail_entries.saturating_add(1);
+                }
+            }
+            PlaybackStateKind::Unavailable => {
+                if self.playback_suppressed {
+                    self.unavailable_while_active = self.unavailable_while_active.saturating_add(1);
+                    self.playback_suppressed = false;
+                    self.tail_until = Some(now + SUPPRESSION_TAIL);
+                    self.tail_entries = self.tail_entries.saturating_add(1);
                 }
             }
         }
@@ -59,6 +83,29 @@ impl CaptureGate {
         }
         self.capture_enabled_by_user && !self.playback_suppressed && self.tail_until.is_none()
     }
+
+    pub fn metrics(&self) -> CaptureGateMetrics {
+        CaptureGateMetrics {
+            accepted_states: self.accepted_states,
+            stale_states: self.stale_states,
+            suppression_entries: self.suppression_entries,
+            tail_entries: self.tail_entries,
+            unavailable_while_active: self.unavailable_while_active,
+            playback_suppressed: self.playback_suppressed,
+            tail_active: self.tail_until.is_some(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CaptureGateMetrics {
+    pub accepted_states: u64,
+    pub stale_states: u64,
+    pub suppression_entries: u64,
+    pub tail_entries: u64,
+    pub unavailable_while_active: u64,
+    pub playback_suppressed: bool,
+    pub tail_active: bool,
 }
 
 #[cfg(test)]
@@ -113,6 +160,20 @@ mod tests {
         gate.observe_playback(&state(PlaybackStateKind::Unavailable, 3), now);
 
         assert!(!gate.can_publish(now));
+        assert_eq!(gate.metrics().stale_states, 2);
+    }
+
+    #[test]
+    fn unavailable_while_active_uses_bounded_tail() {
+        let now = Instant::now();
+        let mut gate = CaptureGate::new(true);
+
+        gate.observe_playback(&state(PlaybackStateKind::Active, 1), now);
+        gate.observe_playback(&state(PlaybackStateKind::Unavailable, 2), now);
+
+        assert!(!gate.can_publish(now + Duration::from_millis(399)));
+        assert!(gate.can_publish(now + Duration::from_millis(400)));
+        assert_eq!(gate.metrics().unavailable_while_active, 1);
     }
 
     #[test]

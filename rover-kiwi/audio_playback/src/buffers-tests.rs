@@ -14,7 +14,7 @@ fn walkie_drops_oldest_to_preserve_live_audio() {
 #[test]
 fn walkie_preemption_clears_queued_tts() {
     let buffers = PlaybackBuffers::new(4, 4);
-    assert_eq!(buffers.enqueue_tts(&[0.1, 0.2], 7), 2);
+    assert!(buffers.try_enqueue_tts_frame(&[0.1, 0.2], 7));
 
     buffers.preempt_tts();
 
@@ -23,8 +23,11 @@ fn walkie_preemption_clears_queued_tts() {
 }
 
 #[test]
-fn tts_buffer_rejects_newest_samples_when_full() {
+fn tts_buffer_admits_complete_frames_only() {
     let buffers = PlaybackBuffers::new(2, 2);
-    assert_eq!(buffers.enqueue_tts(&[1.0, 2.0, 3.0], 1), 2);
-    assert_eq!(buffers.dropped_counts(), (1, 0));
+    assert!(!buffers.try_enqueue_tts_frame(&[1.0, 2.0, 3.0], 1));
+    assert!(buffers.tts_is_empty());
+    assert_eq!(buffers.dropped_counts(), (0, 0));
+    assert!(buffers.try_enqueue_tts_frame(&[1.0, 2.0], 1));
+    assert!(!buffers.try_enqueue_tts_frame(&[3.0], 1));
 }

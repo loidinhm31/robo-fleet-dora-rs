@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use dora_node_api::{DoraNode, Event};
 use eyre::Result;
@@ -14,8 +14,14 @@ use crate::state::{PlaybackOutputs, StateReporter};
 use crate::tts_result::parse_tts_result;
 use robo_rover_lib::TtsResultState;
 
-const TTS_BUFFER_SECONDS: usize = 5;
-const WALKIE_BUFFER_MILLIS: usize = 250;
+const DEFAULT_TTS_BUFFER_MILLIS: usize = 1_000;
+const DEFAULT_WALKIE_BUFFER_MILLIS: usize = 80;
+const DEFAULT_TTS_STALL_MILLIS: u64 = 60;
+const MIN_BUFFER_MILLIS: usize = 20;
+const MAX_TTS_BUFFER_MILLIS: usize = 5_000;
+const MAX_WALKIE_BUFFER_MILLIS: usize = 250;
+const MAX_TTS_STALL_MILLIS: u64 = 250;
+const METRIC_INTERVAL: Duration = Duration::from_secs(5);
 
 pub fn run() -> Result<()> {
     tracing::info!("starting source-aware audio playback node");
@@ -30,11 +36,13 @@ pub fn run() -> Result<()> {
         .as_ref()
         .map(|plan| plan.sample_rate())
         .unwrap_or(48_000);
+    let config = PlaybackRuntimeConfig::from_env(output_rate);
     let buffers = Arc::new(PlaybackBuffers::new(
-        output_rate as usize * TTS_BUFFER_SECONDS,
-        output_rate as usize * WALKIE_BUFFER_MILLIS / 1_000,
+        config.tts_capacity_samples,
+        config.walkie_capacity_samples,
     ));
-    let mut arbiter = SourceArbiter::new(output_rate, buffers.clone());
+    let mut arbiter = SourceArbiter::new(output_rate, buffers.clone(), config.tts_stall_timeout);
+    let mut last_metric = Instant::now();
     let opened_device = plan.and_then(|plan| plan.open(buffers.clone(), volume));
     let mut device = None;
     match opened_device {
@@ -68,15 +76,14 @@ pub fn run() -> Result<()> {
             Event::Input { id, data, metadata } => match id.as_str() {
                 "tick" => {
                     if available {
-                        while let Some(event) = buffers.pop_consumption_event() {
-                            reporter.report_consumption(
-                                &mut node,
-                                &outputs,
-                                event.source,
-                                event.token,
-                                arbiter.command_ids(),
-                            )?;
-                        }
+                        let event = buffers.take_interval_consumption();
+                        reporter.report_consumption(
+                            &mut node,
+                            &outputs,
+                            event.source,
+                            event.token,
+                            arbiter.command_ids(),
+                        )?;
                         if let Some(event) = arbiter.tick(Instant::now()) {
                             handle_arbiter_event(event, &mut reporter, &mut node, &outputs)?;
                         }
@@ -92,6 +99,10 @@ pub fn run() -> Result<()> {
                             available = false;
                             reporter.report_unavailable(&mut node, &outputs)?;
                         }
+                    }
+                    if last_metric.elapsed() >= METRIC_INTERVAL {
+                        log_playback_metrics("audio_pipeline", &buffers, &arbiter, output_rate);
+                        last_metric = Instant::now();
                     }
                 }
                 "tts_audio" | "walkie_audio" => {
@@ -147,7 +158,9 @@ pub fn run() -> Result<()> {
                     }
                     Ok(result) if result.state == TtsResultState::Completed => {
                         let known_command = arbiter.owns_tts(&result.command_id);
-                        if let Some(event) = arbiter.finish_tts(&result.command_id)? {
+                        if let Some(event) =
+                            arbiter.finish_tts(&result.command_id, Instant::now())?
+                        {
                             handle_arbiter_event(event, &mut reporter, &mut node, &outputs)?;
                         } else if !known_command {
                             report_tts_result(
@@ -170,15 +183,122 @@ pub fn run() -> Result<()> {
     }
 
     let (dropped_tts, dropped_walkie) = buffers.dropped_counts();
+    log_playback_metrics("audio_pipeline_total", &buffers, &arbiter, output_rate);
     tracing::info!(
         dropped_tts,
         dropped_walkie,
         stream_errors = buffers.stream_errors(),
-        consumption_event_overflows = buffers.consumption_event_overflows(),
         "audio playback stopped"
     );
     drop(device);
     Ok(())
+}
+
+struct PlaybackRuntimeConfig {
+    tts_capacity_samples: usize,
+    walkie_capacity_samples: usize,
+    tts_stall_timeout: Duration,
+}
+
+impl PlaybackRuntimeConfig {
+    fn from_env(output_rate: u32) -> Self {
+        let tts_buffer_ms = env_millis(
+            "PLAYBACK_TTS_BUFFER_MS",
+            DEFAULT_TTS_BUFFER_MILLIS,
+            MIN_BUFFER_MILLIS,
+            MAX_TTS_BUFFER_MILLIS,
+        );
+        let walkie_buffer_ms = env_millis(
+            "PLAYBACK_WALKIE_BUFFER_MS",
+            DEFAULT_WALKIE_BUFFER_MILLIS,
+            MIN_BUFFER_MILLIS,
+            MAX_WALKIE_BUFFER_MILLIS,
+        );
+        let stall_ms = env_millis_u64(
+            "PLAYBACK_TTS_STALL_MS",
+            DEFAULT_TTS_STALL_MILLIS,
+            MIN_BUFFER_MILLIS as u64,
+            MAX_TTS_STALL_MILLIS,
+        );
+        let tts_capacity_samples = millis_to_samples(output_rate, tts_buffer_ms).max(1);
+        let walkie_capacity_samples = millis_to_samples(output_rate, walkie_buffer_ms).max(1);
+        tracing::info!(
+            output_rate,
+            tts_buffer_ms,
+            walkie_buffer_ms,
+            stall_ms,
+            tts_capacity_samples,
+            walkie_capacity_samples,
+            "audio playback buffer configuration"
+        );
+        Self {
+            tts_capacity_samples,
+            walkie_capacity_samples,
+            tts_stall_timeout: Duration::from_millis(stall_ms),
+        }
+    }
+}
+
+fn env_millis(name: &str, default: usize, min: usize, max: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .map(|value| value.clamp(min, max))
+        .unwrap_or(default)
+}
+
+fn env_millis_u64(name: &str, default: u64, min: u64, max: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|value| value.clamp(min, max))
+        .unwrap_or(default)
+}
+
+fn millis_to_samples(output_rate: u32, millis: usize) -> usize {
+    (output_rate as usize)
+        .saturating_mul(millis)
+        .saturating_add(999)
+        / 1_000
+}
+
+fn log_playback_metrics(
+    metric: &'static str,
+    buffers: &PlaybackBuffers,
+    arbiter: &SourceArbiter,
+    output_rate: u32,
+) {
+    let counts = buffers.playback_counts();
+    let tts = arbiter.tts_stats();
+    let dropped_walkie_duration_ms =
+        samples_to_millis(counts.dropped_walkie, output_rate).unwrap_or(u64::MAX);
+    tracing::info!(
+        metric,
+        stage = "playback",
+        tts_enqueued = counts.tts_enqueued,
+        tts_retired = counts.tts_retired,
+        tts_cleared = counts.tts_cleared,
+        walkie_enqueued = counts.walkie_enqueued,
+        dropped_tts = counts.dropped_tts,
+        dropped_walkie = counts.dropped_walkie,
+        stream_errors = counts.stream_errors,
+        tts_depth = counts.tts_depth,
+        walkie_depth = counts.walkie_depth,
+        pending_tts_frames = tts.pending_frames,
+        pending_tts_samples = tts.pending_samples,
+        pending_overflows = tts.pending_overflows,
+        pending_tts_frames_cleared = tts.pending_frames_cleared,
+        pending_tts_samples_cleared = tts.pending_samples_cleared,
+        stall_failures = tts.stall_failures,
+        sequence_failures = tts.sequence_failures,
+        dropped_walkie_duration_ms
+    );
+}
+
+fn samples_to_millis(samples: u64, sample_rate: u32) -> Option<u64> {
+    samples
+        .checked_mul(1_000)?
+        .checked_div(u64::from(sample_rate))
 }
 
 fn handle_arbiter_event(

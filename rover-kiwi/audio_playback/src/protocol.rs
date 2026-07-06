@@ -29,6 +29,7 @@ impl AudioSource {
 pub struct SourceFrame {
     pub source: AudioSource,
     pub command_id: Option<String>,
+    pub frame_id: u64,
     pub sample_rate: u32,
     pub samples: Vec<f32>,
     pub normalized_samples: usize,
@@ -73,6 +74,7 @@ pub fn parse_source_frame(
     Ok(SourceFrame {
         source,
         command_id,
+        frame_id: metadata.frame_id,
         sample_rate: metadata.sample_rate,
         samples,
         normalized_samples,

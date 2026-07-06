@@ -99,6 +99,8 @@ fn main() -> Result<()> {
     let mut frames_sent = 0u64;
     let mut send_errors = 0u64;
     let mut samples_rejected = 0u64;
+    let mut suppression_flushes = 0u64;
+    let mut suppression_samples = 0u64;
     let mut capture_metrics = MetricWindow::new(SIGNAL_METRIC_WINDOW);
     let mut signal_metrics = SignalMetricWindow::new(SIGNAL_METRIC_WINDOW);
     let mut preflight_probe =
@@ -124,6 +126,8 @@ fn main() -> Result<()> {
                         if flushed > 0 {
                             let flushed = flushed as u64;
                             samples_rejected = samples_rejected.saturating_add(flushed);
+                            suppression_flushes = suppression_flushes.saturating_add(1);
+                            suppression_samples = suppression_samples.saturating_add(flushed);
                             capture_metrics.record_drops(flushed);
                         }
                     } else if stream_opt.is_some() {
@@ -285,6 +289,8 @@ fn main() -> Result<()> {
                         if flushed > 0 {
                             let flushed = flushed as u64;
                             samples_rejected = samples_rejected.saturating_add(flushed);
+                            suppression_flushes = suppression_flushes.saturating_add(1);
+                            suppression_samples = suppression_samples.saturating_add(flushed);
                             capture_metrics.record_drops(flushed);
                         }
                     }
@@ -304,6 +310,7 @@ fn main() -> Result<()> {
 
         if let Some(snapshot) = capture_metrics.snapshot_if_due() {
             let signal_snapshot = signal_metrics.snapshot();
+            let gate_metrics = capture_gate.metrics();
             tracing::info!(
                 metric = "audio_pipeline",
                 stage = "capture",
@@ -318,7 +325,16 @@ fn main() -> Result<()> {
                 max_us = snapshot.max_us,
                 rms_dbfs = signal_snapshot.rms_dbfs,
                 peak_dbfs = signal_snapshot.peak_dbfs,
-                silence_pct = signal_snapshot.silence_pct
+                silence_pct = signal_snapshot.silence_pct,
+                suppression_flushes,
+                suppression_samples,
+                playback_states_accepted = gate_metrics.accepted_states,
+                playback_states_stale = gate_metrics.stale_states,
+                suppression_entries = gate_metrics.suppression_entries,
+                suppression_tail_entries = gate_metrics.tail_entries,
+                unavailable_while_active = gate_metrics.unavailable_while_active,
+                playback_suppressed = gate_metrics.playback_suppressed,
+                suppression_tail_active = gate_metrics.tail_active
             );
         }
     }
@@ -326,6 +342,7 @@ fn main() -> Result<()> {
     preflight_probe.log_if_pending("capture_preflight_partial");
     drop(stream_opt);
     audio_dumper.close();
+    let gate_metrics = capture_gate.metrics();
     tracing::info!(
         metric = "audio_pipeline_total",
         stage = "capture",
@@ -333,6 +350,15 @@ fn main() -> Result<()> {
         frames_sent,
         send_errors,
         samples_rejected,
+        suppression_flushes,
+        suppression_samples,
+        playback_states_accepted = gate_metrics.accepted_states,
+        playback_states_stale = gate_metrics.stale_states,
+        suppression_entries = gate_metrics.suppression_entries,
+        suppression_tail_entries = gate_metrics.tail_entries,
+        unavailable_while_active = gate_metrics.unavailable_while_active,
+        playback_suppressed = gate_metrics.playback_suppressed,
+        suppression_tail_active = gate_metrics.tail_active,
         "Audio capture stopped"
     );
     Ok(())

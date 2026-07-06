@@ -8,7 +8,7 @@ use crate::buffers::PlaybackBuffers;
 use crate::playback_event::ArbiterEvent;
 use crate::protocol::{AudioSource, SourceFrame};
 use crate::resampler::SourceResampler;
-use crate::tts_arbiter::TtsArbiter;
+use crate::tts_arbiter::{TtsArbiter, TtsArbiterStats};
 
 const WALKIE_HOLD: Duration = Duration::from_millis(250);
 
@@ -21,11 +21,15 @@ pub struct SourceArbiter {
 }
 
 impl SourceArbiter {
-    pub fn new(output_rate: u32, buffers: Arc<PlaybackBuffers>) -> Self {
+    pub fn new(
+        output_rate: u32,
+        buffers: Arc<PlaybackBuffers>,
+        tts_stall_timeout: Duration,
+    ) -> Self {
         Self {
             output_rate,
             buffers: buffers.clone(),
-            tts: TtsArbiter::new(output_rate, buffers),
+            tts: TtsArbiter::new(output_rate, buffers, tts_stall_timeout),
             walkie_resampler: None,
             walkie_deadline: None,
         }
@@ -33,7 +37,7 @@ impl SourceArbiter {
 
     pub fn accept(&mut self, frame: SourceFrame, now: Instant) -> Result<Option<ArbiterEvent>> {
         match frame.source {
-            AudioSource::Tts => self.tts.accept(frame),
+            AudioSource::Tts => self.tts.accept(frame, now),
             AudioSource::Walkie => self.accept_walkie(frame, now),
         }
     }
@@ -47,11 +51,11 @@ impl SourceArbiter {
             self.walkie_deadline = None;
             return Some(ArbiterEvent::WalkieEnded);
         }
-        self.tts.poll_completed()
+        self.tts.tick(now)
     }
 
-    pub fn finish_tts(&mut self, command_id: &str) -> Result<Option<ArbiterEvent>> {
-        self.tts.finish(command_id)
+    pub fn finish_tts(&mut self, command_id: &str, now: Instant) -> Result<Option<ArbiterEvent>> {
+        self.tts.finish(command_id, now)
     }
 
     pub fn abort_tts(&mut self, command_id: &str) {
@@ -79,6 +83,10 @@ impl SourceArbiter {
 
     pub fn command_ids(&self) -> &BTreeMap<u64, String> {
         self.tts.command_ids()
+    }
+
+    pub fn tts_stats(&self) -> TtsArbiterStats {
+        self.tts.stats()
     }
 
     fn accept_walkie(&mut self, frame: SourceFrame, now: Instant) -> Result<Option<ArbiterEvent>> {

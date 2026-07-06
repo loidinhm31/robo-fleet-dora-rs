@@ -120,7 +120,7 @@ mod tests {
     #[test]
     fn callback_duplicates_mono_and_reports_actual_consumption() {
         let buffers = PlaybackBuffers::new(8, 8);
-        buffers.enqueue_tts(&[0.25, -0.5], 9);
+        assert!(buffers.try_enqueue_tts_frame(&[0.25, -0.5], 9));
         let mut output = [0.0_f32; 4];
 
         write_output(&mut output, 2, 1.0, &buffers);
@@ -132,7 +132,7 @@ mod tests {
     #[test]
     fn callback_never_mixes_tts_while_walkie_is_active() {
         let buffers = PlaybackBuffers::new(8, 8);
-        buffers.enqueue_tts(&[0.25], 1);
+        assert!(buffers.try_enqueue_tts_frame(&[0.25], 1));
         buffers.enqueue_walkie(&[0.75]);
         buffers.preempt_tts();
         let mut output = [0.0_f32; 1];
@@ -144,27 +144,27 @@ mod tests {
     }
 
     #[test]
-    fn active_then_idle_transitions_survive_delayed_runtime_poll() {
+    fn interval_activity_defers_idle_until_later_idle_callback() {
         let buffers = PlaybackBuffers::new(8, 8);
-        buffers.enqueue_tts(&[0.25], 9);
+        assert!(buffers.try_enqueue_tts_frame(&[0.25], 9));
         let mut output = [0.0_f32; 1];
         write_output(&mut output, 1, 1.0, &buffers);
         write_output(&mut output, 1, 1.0, &buffers);
 
         assert_eq!(
-            buffers.pop_consumption_event(),
-            Some(crate::buffers::ConsumptionEvent {
+            buffers.take_interval_consumption(),
+            crate::buffers::ConsumptionEvent {
                 source: SOURCE_TTS,
                 token: 9
-            })
+            }
         );
+        write_output(&mut output, 1, 1.0, &buffers);
         assert_eq!(
-            buffers.pop_consumption_event(),
-            Some(crate::buffers::ConsumptionEvent {
+            buffers.take_interval_consumption(),
+            crate::buffers::ConsumptionEvent {
                 source: SOURCE_IDLE,
                 token: 0
-            })
+            }
         );
-        assert_eq!(buffers.consumption_event_overflows(), 0);
     }
 }
