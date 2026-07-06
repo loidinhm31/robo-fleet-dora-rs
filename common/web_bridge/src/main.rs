@@ -28,7 +28,7 @@ use log::info;
 use mongodb::Collection;
 use serde_json::Value;
 use socketioxide::{
-    extract::{Data, SocketRef, TryData},
+    extract::{Bin, Data, SocketRef, TryData},
     SocketIo,
 };
 use std::env;
@@ -59,7 +59,7 @@ use stt_bridge::{SttBridge, SttBridgeConfig, TranscriptRoute};
 use stt_protocol::{send_dora_message, SttOutputIds, VoiceCommandAudioFrame, VoiceCommandControl};
 use stt_socket_delivery::{emit_authenticated, AUTHENTICATED_ROOM};
 use voice_runtime::{ConfigUpdateOutcome, VoiceRuntimeState};
-use walkie_audio::WalkieMetadataSequence;
+use walkie_audio::{WalkieAudioFrameMetadata, WalkieIngress};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct JointPositions {
@@ -396,11 +396,6 @@ pub struct WebTtsCommand {
     pub text: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct WebAudioStream {
-    pub audio_data: Vec<f32>, // Float32 audio samples from Web UI microphone
-}
-
 const WALKIE_ACTIVITY_TTL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Default)]
@@ -441,7 +436,7 @@ struct SharedState {
     pub stream_command_queue: Arc<Mutex<Vec<StreamControl>>>,
     pub tracking_command_queue: Arc<Mutex<Vec<WebTrackingCommand>>>,
     pub tts_command_queue: Arc<Mutex<Vec<TtsCommand>>>,
-    pub audio_stream_queue: Arc<Mutex<Vec<WebAudioStream>>>,
+    pub walkie_ingress: Arc<Mutex<WalkieIngress>>,
     pub stt_bridge: Arc<SttBridge>,
     pub fleet_subscription_command_queue: Arc<Mutex<Vec<WebFleetSubscriptionCommand>>>,
     pub fleet_select_command_queue: Arc<Mutex<Vec<FleetSelectCommand>>>,
@@ -502,7 +497,7 @@ impl SharedState {
             stream_command_queue: Arc::new(Mutex::new(Vec::new())),
             tracking_command_queue: Arc::new(Mutex::new(Vec::new())),
             tts_command_queue: Arc::new(Mutex::new(Vec::new())),
-            audio_stream_queue: Arc::new(Mutex::new(Vec::new())),
+            walkie_ingress: Arc::new(Mutex::new(WalkieIngress::default())),
             stt_bridge: Arc::new(SttBridge::new(stt_bridge_config())),
             fleet_subscription_command_queue: Arc::new(Mutex::new(Vec::new())),
             fleet_select_command_queue: Arc::new(Mutex::new(Vec::new())),
@@ -1108,7 +1103,9 @@ fn setup_socketio(
         let socket_id_clone = socket_id.clone();
         socket.on(
             "audio_stream",
-            move |socket: SocketRef, Data::<Value>(data)| {
+            move |socket: SocketRef,
+                  TryData::<WalkieAudioFrameMetadata>(metadata),
+                  Bin(attachments)| {
                 if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
                     socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
                     socket.disconnect().ok();
@@ -1119,27 +1116,39 @@ fn setup_socketio(
                     return;
                 }
                 touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
-
-                if let Ok(web_audio) = serde_json::from_value::<WebAudioStream>(data) {
-                    // Validate audio data
-                    if let Err(e) = security::validation::validate_audio_data(&web_audio.audio_data) {
-                        log_validation_error(&socket_id_clone, &format!("Audio stream: {}", e));
-                        tracing::warn!("Audio stream validation failed: {}", e);
+                let metadata = match metadata {
+                    Ok(metadata) => metadata,
+                    Err(error) => {
+                        if let Ok(mut ingress) = shared_state_clone.walkie_ingress.lock() {
+                            ingress.record_malformed_metadata();
+                        }
+                        log_validation_error(
+                            &socket_id_clone,
+                            &format!("Walkie metadata: {error}"),
+                        );
                         return;
                     }
-
-                    tracing::debug!("Received audio stream: {} samples", web_audio.audio_data.len());
-                    let selected_target = selected_target_entity(&shared_state_clone);
-                    if is_target_active(&shared_state_clone, &selected_target) {
-                        if let Ok(mut admission) = shared_state_clone.voice_admission.lock() {
-                            admission.note_walkie_frame(&selected_target, Instant::now());
-                        }
+                };
+                let now = Instant::now();
+                let admitted = shared_state_clone
+                    .walkie_ingress
+                    .lock()
+                    .map_err(|_| "walkie ingress lock poisoned".to_string())
+                    .and_then(|mut ingress| {
+                        ingress.admit(&socket_id_clone, metadata, attachments, now)
+                    });
+                if let Err(error) = admitted {
+                    log_validation_error(
+                        &socket_id_clone,
+                        &format!("Walkie frame: {error}"),
+                    );
+                    return;
+                }
+                let selected_target = selected_target_entity(&shared_state_clone);
+                if is_target_active(&shared_state_clone, &selected_target) {
+                    if let Ok(mut admission) = shared_state_clone.voice_admission.lock() {
+                        admission.note_walkie_frame(&selected_target, now);
                     }
-                    shared_state_clone
-                        .audio_stream_queue
-                        .lock()
-                        .unwrap()
-                        .push(web_audio);
                 }
             },
         );
@@ -1438,6 +1447,9 @@ fn setup_socketio(
                 );
             }
             shared_state_clone.session_registry.remove(&socket_id);
+            if let Ok(mut ingress) = shared_state_clone.walkie_ingress.lock() {
+                ingress.remove_socket(&socket_id);
+            }
             // Process-level cumulative: this client's per-client counters
             // are dropped by `remove_client_and_stream_transition`, but
             // the cumulative counters in `SharedState` retain all of the
@@ -1946,35 +1958,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Process audio stream from Web UI microphone (walkie-talkie mode)
     let state_clone_audio_stream = shared_state.clone();
-    let _audio_stream_processor = tokio::spawn(async move {
-        let mut metadata_sequence = WalkieMetadataSequence::new();
+    let audio_stream_processor = tokio::spawn(async move {
+        let mut metrics_interval = tokio::time::interval(Duration::from_secs(5));
+        metrics_interval.tick().await;
         loop {
-            if let Ok(mut queue) = state_clone_audio_stream.audio_stream_queue.lock() {
-                if !queue.is_empty() {
-                    let web_audio = queue.remove(0);
-                    tracing::debug!(
-                        "Processing audio stream: {} samples",
-                        web_audio.audio_data.len()
-                    );
-
-                    // Send audio data directly as Float32Array to audio_playback node
-                    let sample_count = web_audio.audio_data.len();
-                    let arrow_data = Float32Array::from(web_audio.audio_data);
-                    if let Ok(mut node_guard) = node_clone_audio_stream.lock() {
-                        match metadata_sequence.next(sample_count) {
-                            Ok(metadata) => {
-                                let _ = node_guard.send_output(
+            tokio::select! {
+                _ = metrics_interval.tick() => {
+                    if let Ok(mut ingress) = state_clone_audio_stream.walkie_ingress.lock() {
+                        ingress.expire_streams(Instant::now());
+                        ingress.log_metrics("periodic");
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                    let frame = state_clone_audio_stream
+                        .walkie_ingress
+                        .lock()
+                        .ok()
+                        .and_then(|mut ingress| ingress.pop_front());
+                    if let Some(frame) = frame {
+                        let metadata = frame.parameters();
+                        let arrow_data = Float32Array::from(frame.samples);
+                        let sent = node_clone_audio_stream
+                            .lock()
+                            .map_err(|_| "Dora node lock poisoned".to_string())
+                            .and_then(|mut node| {
+                                node.send_output(
                                     audio_stream_output.clone(),
                                     metadata,
                                     arrow_data,
-                                );
+                                )
+                                .map_err(|error| error.to_string())
+                            });
+                        if let Ok(mut ingress) = state_clone_audio_stream.walkie_ingress.lock() {
+                            match sent {
+                                Ok(()) => ingress.record_forwarded(),
+                                Err(error) => {
+                                    ingress.record_send_failure();
+                                    tracing::warn!(%error, "Failed to forward walkie frame to Dora");
+                                }
                             }
-                            Err(error) => tracing::warn!(%error, "rejected walkie audio metadata"),
                         }
                     }
                 }
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     });
 
@@ -2910,6 +2936,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 },
                 Event::Stop(_) => {
+                    if let Ok(ingress) = state_for_video.walkie_ingress.lock() {
+                        ingress.log_metrics("shutdown");
+                    }
                     let stt_metrics = state_for_video.stt_bridge.metrics();
                     tracing::info!(
                         metric = "browser_stt_transport_total",
@@ -2985,6 +3014,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     arm_command_processor.abort();
     rover_command_processor.abort();
     camera_command_processor.abort();
+    audio_stream_processor.abort();
     tracing::info!("Web Bridge shutdown complete");
 
     Ok(())

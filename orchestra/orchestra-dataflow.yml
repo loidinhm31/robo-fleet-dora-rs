@@ -49,15 +49,23 @@ nodes:
       rover_command_parser: command-parser/rover_command
       camera_control_parser: command-parser/camera_control
       # Web/manual commands (routed to currently selected rover)
-      tts_command_web: web-bridge/tts_command
-      tts_config_command: web-bridge/tts_config_command
+      tts_command_web:
+        source: web-bridge/tts_command
+        queue_size: 8
+      tts_config_command:
+        source: web-bridge/tts_config_command
+        queue_size: 8
       rover_command_web: web-bridge/rover_command
       arm_command_web: web-bridge/arm_command
       tracking_command_web: web-bridge/tracking_command
       camera_command_web: web-bridge/camera_command
-      audio_command_web: web-bridge/audio_command
+      audio_command_web:
+        source: web-bridge/audio_command
+        queue_size: 8
       stream_command_web: web-bridge/stream_command
-      audio_stream_web: web-bridge/audio_stream
+      audio_stream_web:
+        source: web-bridge/audio_stream
+        queue_size: 4
       fleet_subscription_command: web-bridge/fleet_subscription_command
       fleet_select_command: web-bridge/fleet_select_command
     outputs:
@@ -89,11 +97,19 @@ nodes:
     build: cargo build --release -p central_speech_recognizer
     path: ../target/release/central_speech_recognizer
     inputs:
-      audio_rover: orchestra-bridge/audio_frame  # S16LE rover microphone audio
+      audio_rover:
+        source: orchestra-bridge/audio_frame  # S16LE rover microphone audio
+        queue_size: 4
       # Web bridge assigns target identity and validates browser stream ownership.
-      audio_browser: web-bridge/voice_command_audio
-      browser_control: web-bridge/voice_command_control
-      stt_status_request: web-bridge/stt_status_request
+      audio_browser:
+        source: web-bridge/voice_command_audio
+        queue_size: 4
+      browser_control:
+        source: web-bridge/voice_command_control
+        queue_size: 8
+      stt_status_request:
+        source: web-bridge/stt_status_request
+        queue_size: 8
     outputs:
       - transcription  # SpeechTranscription
       - stt_status     # SttStatus loading/ready/error lifecycle
@@ -132,7 +148,9 @@ nodes:
     inputs:
       # Media streams (encoded data for web clients)
       video_frame: orchestra-bridge/video_frame    # JPEG from rover-side encoder
-      audio_frame: orchestra-bridge/audio_frame    # Int16LE PCM from rover
+      audio_frame:
+        source: orchestra-bridge/audio_frame    # Int16LE PCM from rover
+        queue_size: 4
 
       # ========================================================================
       # Telemetry from LOCAL SIMULATION (for testing without real hardware)
@@ -152,10 +170,18 @@ nodes:
       detections: orchestra-bridge/detections
       tracked_detections: orchestra-bridge/tracked_detections
       tracking_telemetry: orchestra-bridge/tracking_telemetry
-      voice_status: orchestra-bridge/voice_status
-      tts_command_result: orchestra-bridge/tts_command_result
-      transcription: central-speech-recognizer/transcription
-      stt_status: central-speech-recognizer/stt_status
+      voice_status:
+        source: orchestra-bridge/voice_status
+        queue_size: 8
+      tts_command_result:
+        source: orchestra-bridge/tts_command_result
+        queue_size: 8
+      transcription:
+        source: central-speech-recognizer/transcription
+        queue_size: 8
+      stt_status:
+        source: central-speech-recognizer/stt_status
+        queue_size: 8
       command_feedback: command-parser/feedback
     outputs:
       # Commands to selected rover (via orchestra-bridge)

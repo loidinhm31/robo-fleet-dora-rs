@@ -13,6 +13,9 @@ pub fn encode_walkie_packet(
     if samples.len().saturating_mul(std::mem::size_of::<f32>()) > MAX_WALKIE_BYTES {
         return Err("walkie frame exceeds transport limit".into());
     }
+    if samples.iter().any(|sample| !sample.is_finite()) {
+        return Err("walkie frame contains a non-finite sample".into());
+    }
     if string(parameters, "source_kind")? != "walkie" || string(parameters, "priority")? != "high" {
         return Err("invalid walkie source or priority".into());
     }

@@ -4,9 +4,15 @@ nodes:
     build: cargo build --release -p audio_capture
     path: ../target/release/audio_capture
     inputs:
-      tick: dora/timer/millis/50  # 20 Hz
-      audio_control: web-bridge/audio_command
-      playback_state: audio-playback/playback_state
+      tick:
+        source: dora/timer/millis/50  # 20 Hz
+        queue_size: 1
+      audio_control:
+        source: web-bridge/audio_command
+        queue_size: 8
+      playback_state:
+        source: audio-playback/playback_state
+        queue_size: 8
     outputs:
       - audio  # Float32 audio data
     env:
@@ -19,10 +25,18 @@ nodes:
     build: cargo build --release -p audio_playback
     path: ../target/release/audio_playback
     inputs:
-      tick: dora/timer/millis/20
-      walkie_audio: web-bridge/audio_stream
-      tts_audio: edge-voice/tts_audio
-      tts_synthesis_state: edge-voice/tts_synthesis_state
+      tick:
+        source: dora/timer/millis/20
+        queue_size: 1
+      walkie_audio:
+        source: web-bridge/audio_stream
+        queue_size: 4
+      tts_audio:
+        source: edge-voice/tts_audio
+        queue_size: 4
+      tts_synthesis_state:
+        source: edge-voice/tts_synthesis_state
+        queue_size: 8
     outputs:
       - playback_state
       - walkie_state
@@ -37,10 +51,18 @@ nodes:
     build: cargo build --release -p edge_voice
     path: ../target/release/edge_voice
     inputs:
-      tts_command: web-bridge/tts_command
-      tts_config_command: web-bridge/tts_config_command
-      playback_state: audio-playback/walkie_state
-      playback_result: audio-playback/playback_result
+      tts_command:
+        source: web-bridge/tts_command
+        queue_size: 8
+      tts_config_command:
+        source: web-bridge/tts_config_command
+        queue_size: 8
+      playback_state:
+        source: audio-playback/walkie_state
+        queue_size: 8
+      playback_result:
+        source: audio-playback/playback_result
+        queue_size: 8
     outputs:
       - tts_audio
       - tts_synthesis_state
@@ -174,7 +196,9 @@ nodes:
     build: cargo build --release -p audio_converter
     path: ../target/release/audio_converter
     inputs:
-      audio_input: audio-capture/audio
+      audio_input:
+        source: audio-capture/audio
+        queue_size: 4
     outputs:
       - audio_output
     env:
@@ -188,14 +212,20 @@ nodes:
     path: ../target/release/web_bridge
     inputs:
       video_frame: video-encoder/encoded_frame
-      audio_frame: audio-converter/audio_output
+      audio_frame:
+        source: audio-converter/audio_output
+        queue_size: 4
       servo_telemetry: visual-servo-controller/servo_telemetry
       detections: gst-camera/detections
       tracked_detections: gst-camera/tracked_detections
       tracking_telemetry: gst-camera/tracking_telemetry
       performance_metrics: performance-monitor/metrics
-      voice_status: edge-voice/voice_status
-      tts_command_result: edge-voice/tts_command_result
+      voice_status:
+        source: edge-voice/voice_status
+        queue_size: 8
+      tts_command_result:
+        source: edge-voice/tts_command_result
+        queue_size: 8
     outputs:
       - rover_command
       - arm_command

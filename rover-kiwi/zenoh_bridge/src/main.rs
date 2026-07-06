@@ -260,6 +260,14 @@ async fn main() -> Result<()> {
     let mut audio_sequence_drops: u64 = 0;
     let mut audio_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut walkie_decoder = WalkieDecoder::new();
+    let mut walkie_metrics_interval = tokio::time::interval(Duration::from_secs(5));
+    walkie_metrics_interval.tick().await;
+    let mut walkie_received: u64 = 0;
+    let mut walkie_invalid: u64 = 0;
+    let mut walkie_missing_frames: u64 = 0;
+    let mut walkie_missing_samples: u64 = 0;
+    let mut walkie_forwarded: u64 = 0;
+    let mut walkie_forward_failures: u64 = 0;
     let mut audio_age_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut audio_sequence = AudioFrameSequenceTracker::default();
 
@@ -466,6 +474,12 @@ async fn main() -> Result<()> {
                         tracing::info!(metric="audio_pipeline_total", stage="rover_zenoh_publish",
                             frames_published=audio_count, sequence_drops=audio_sequence_drops,
                             errors=audio_errors);
+                        tracing::info!(metric="walkie_transport_total", stage="rover_zenoh_shutdown",
+                            received_frames=walkie_received, invalid_frames=walkie_invalid,
+                            missing_frames=walkie_missing_frames,
+                            missing_samples=walkie_missing_samples,
+                            forwarded_frames=walkie_forwarded,
+                            forward_failures=walkie_forward_failures);
                         tracing::info!("Stats: video={}, audio={}, telemetry={}, commands={}", video_count, audio_count, telemetry_count, cmd_count);
                         break;
                     }
@@ -554,15 +568,35 @@ async fn main() -> Result<()> {
                 let payload = sample.payload().to_bytes();
                 match walkie_decoder.decode(payload.as_ref()) {
                     Ok(frame) => {
+                        walkie_received = walkie_received.saturating_add(1);
+                        walkie_missing_frames = walkie_missing_frames
+                            .saturating_add(frame.missing_frames);
+                        walkie_missing_samples = walkie_missing_samples
+                            .saturating_add(frame.missing_samples);
                         let audio_array = Float32Array::from(frame.samples);
                         if let Err(error) = node.send_output(
                             audio_stream_output.clone(), frame.parameters, audio_array)
                         {
+                            walkie_forward_failures = walkie_forward_failures.saturating_add(1);
                             tracing::error!(%error, "failed to forward speaker audio to Dora");
+                        } else {
+                            walkie_forwarded = walkie_forwarded.saturating_add(1);
                         }
                     }
-                    Err(error) => tracing::warn!(%error, "rejected invalid speaker audio payload"),
+                    Err(error) => {
+                        walkie_invalid = walkie_invalid.saturating_add(1);
+                        tracing::warn!(%error, "rejected invalid speaker audio payload");
+                    }
                 }
+            }
+
+            _ = walkie_metrics_interval.tick() => {
+                tracing::info!(metric="walkie_transport_total", stage="rover_zenoh_receive",
+                    received_frames=walkie_received, invalid_frames=walkie_invalid,
+                    missing_frames=walkie_missing_frames,
+                    missing_samples=walkie_missing_samples,
+                    forwarded_frames=walkie_forwarded,
+                    forward_failures=walkie_forward_failures);
             }
         }
     }

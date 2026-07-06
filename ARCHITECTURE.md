@@ -501,7 +501,7 @@ Ownership invariants:
 
 ### Walkie Contract and Queue Budgets
 
-Frozen target contract after coordinated cutover: walkie uses a versioned
+Current walkie transport uses a versioned
 Socket.IO binary event and paced 20 ms mono frames. The client emits metadata
 first and exactly one binary `Float32Array` or `ArrayBuffer` attachment:
 
@@ -523,10 +523,8 @@ audio_stream(
 
 Contract invariants:
 
-- Current runtime path remains legacy JSON walkie frames until the backend
-  cutover lands. The binary shape below is the frozen target contract.
 - Browser walkie capture owns 20 ms pacing at the actual
-  `AudioContext.sampleRate` after cutover.
+  `AudioContext.sampleRate`.
 - `audio_stream` is metadata plus exactly one binary attachment; it is never a
   binary-only event.
 - Legacy JSON `{ audio_data }` payloads are rejected after the coordinated UI
@@ -559,7 +557,7 @@ Socket.IO client-to-server events:
 |---|---|
 | `tts_command` | Backward-compatible `{ text }`; server assigns command ID, timestamp, and priority |
 | `tts_config_update` | `{ base_revision, config }` compare-and-set request |
-| `audio_stream` | Frozen target: `WalkieAudioFrameMetadata` plus exactly one F32LE binary attachment |
+| `audio_stream` | `WalkieAudioFrameMetadata` plus exactly one F32LE binary attachment |
 
 Socket.IO server-to-client events:
 
