@@ -23,7 +23,7 @@ use crate::{
 
 const CHUNK_SAMPLES_20_MS: usize = 882;
 const WORKER_COMMAND_CAPACITY: usize = 2;
-const WORKER_EVENT_CAPACITY: usize = 256;
+pub const WORKER_EVENT_CAPACITY: usize = 256;
 
 #[derive(Debug)]
 pub enum WorkerCommand {

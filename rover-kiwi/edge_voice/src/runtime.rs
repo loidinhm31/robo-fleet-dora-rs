@@ -23,8 +23,13 @@ use crate::{
         voice_status, walkie_is_active,
     },
     queue::{EnqueueStatus, VoiceQueue},
+    tts_pacer::{InstantClock, PacingSnapshot, TtsAudioChunk, TtsPacer},
     worker::{self, WorkerEvent, WorkerHandle},
 };
+
+const INPUT_POLL_CEILING: Duration = Duration::from_millis(20);
+const METRICS_INTERVAL: Duration = Duration::from_secs(5);
+const MAX_WORKER_EVENTS_PER_TICK: usize = worker::WORKER_EVENT_CAPACITY + 1;
 
 pub fn run() -> Result<()> {
     let _guard = init_tracing();
@@ -43,9 +48,11 @@ pub fn run() -> Result<()> {
     tracing::info!("edge_voice node initialized; model loading on worker");
 
     loop {
+        emit_due_paced_chunk(&mut node, &outputs, &mut runtime, &worker)?;
         drain_worker_events(&mut node, &outputs, &mut runtime, &worker, &worker_rx)?;
+        emit_periodic_metrics(&mut node, &outputs, &mut runtime)?;
 
-        match events.recv_timeout(Duration::from_millis(20)) {
+        match events.recv_timeout(runtime.input_timeout()) {
             Some(Event::Input { id, data, .. }) => {
                 if let Err(error) = handle_input(
                     id.as_str(),
@@ -76,7 +83,9 @@ pub fn run() -> Result<()> {
         }
     }
 
+    emit_due_paced_chunk(&mut node, &outputs, &mut runtime, &worker)?;
     drain_worker_events(&mut node, &outputs, &mut runtime, &worker, &worker_rx)?;
+    emit_pacing_metrics(&mut node, &outputs, &runtime, "shutdown")?;
     tracing::info!("edge_voice node stopped");
     Ok(())
 }
@@ -103,6 +112,20 @@ impl Default for Outputs {
 }
 
 #[derive(Debug)]
+struct PendingCompletion {
+    command_id: String,
+    elapsed_ms: u64,
+    samples: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct RuntimeCounters {
+    worker_backpressure_count: u64,
+    cancellation_count: u64,
+    terminal_reason: Option<String>,
+}
+
+#[derive(Debug)]
 struct RuntimeState {
     entity_id: String,
     queue: VoiceQueue,
@@ -117,6 +140,11 @@ struct RuntimeState {
     active_revision: Option<u64>,
     synthesis_finished: bool,
     playback_failure_pending: bool,
+    pacer: Option<TtsPacer<InstantClock>>,
+    pending_completion: Option<PendingCompletion>,
+    last_metrics_emit: Instant,
+    last_metrics_snapshot: Option<PacingSnapshot>,
+    counters: RuntimeCounters,
 }
 
 impl RuntimeState {
@@ -135,6 +163,11 @@ impl RuntimeState {
             active_revision: None,
             synthesis_finished: false,
             playback_failure_pending: false,
+            pacer: None,
+            pending_completion: None,
+            last_metrics_emit: Instant::now(),
+            last_metrics_snapshot: None,
+            counters: RuntimeCounters::default(),
         }
     }
 
@@ -172,6 +205,27 @@ impl RuntimeState {
         self.current_revision = command.revision;
         self.current_config = command.config;
         true
+    }
+
+    fn input_timeout(&self) -> Duration {
+        self.pacer
+            .as_ref()
+            .map(|pacer| pacer.timeout_until_due(INPUT_POLL_CEILING))
+            .unwrap_or(INPUT_POLL_CEILING)
+    }
+
+    fn clear_pacing_for_active_command(&mut self) {
+        if let Some(pacer) = self.pacer.as_mut() {
+            pacer.clear_pending();
+        }
+        if let Some(pacer) = self.pacer.take() {
+            self.last_metrics_snapshot = Some(pacer.snapshot());
+        }
+        self.pending_completion = None;
+    }
+
+    fn record_terminal(&mut self, state: TtsResultState, reason: Option<VoiceReasonCode>) {
+        self.counters.terminal_reason = Some(terminal_reason_label(state, reason));
     }
 }
 
@@ -223,8 +277,35 @@ fn handle_input(
             let state = parse_playback_state(binary_payload(data)?)?;
             if walkie_is_active(&state) {
                 runtime.walkie_active = true;
-                if runtime.synthesis_finished {
-                    if let Some(command_id) = runtime.active_command_id.clone() {
+                if let Some(command_id) = runtime.active_command_id.clone() {
+                    if runtime.synthesis_finished {
+                        finish_active_command(
+                            node,
+                            outputs,
+                            runtime,
+                            &command_id,
+                            TtsResultState::Interrupted,
+                            Some(VoiceReasonCode::InterruptedByWalkie),
+                            None,
+                        )?;
+                    } else {
+                        request_worker_cancel(
+                            runtime,
+                            worker,
+                            VoiceReasonCode::InterruptedByWalkie,
+                        );
+                        runtime.clear_pacing_for_active_command();
+                        emit_synthesis_state(
+                            node,
+                            outputs,
+                            command_result(
+                                &runtime.entity_id,
+                                &command_id,
+                                TtsResultState::Interrupted,
+                                Some(VoiceReasonCode::InterruptedByWalkie),
+                                None,
+                            ),
+                        )?;
                         finish_active_command(
                             node,
                             outputs,
@@ -235,8 +316,6 @@ fn handle_input(
                             None,
                         )?;
                     }
-                } else {
-                    worker.cancel(VoiceReasonCode::InterruptedByWalkie);
                 }
                 for command_id in runtime.queue.clear_ids() {
                     emit_result(
@@ -288,7 +367,8 @@ fn handle_input(
                         )?;
                     } else {
                         runtime.playback_failure_pending = true;
-                        worker.cancel(VoiceReasonCode::PlaybackFailed);
+                        runtime.clear_pacing_for_active_command();
+                        request_worker_cancel(runtime, worker, VoiceReasonCode::PlaybackFailed);
                     }
                 }
                 _ => return Err(eyre!("invalid playback result state or ordering")),
@@ -409,7 +489,33 @@ fn drain_worker_events(
     worker: &WorkerHandle,
     worker_rx: &Receiver<WorkerEvent>,
 ) -> Result<()> {
-    while let Ok(event) = worker_rx.try_recv() {
+    if runtime
+        .pacer
+        .as_ref()
+        .map(|pacer| pacer.is_full())
+        .unwrap_or(false)
+    {
+        runtime.counters.worker_backpressure_count =
+            runtime.counters.worker_backpressure_count.saturating_add(1);
+        return Ok(());
+    }
+    for _ in 0..MAX_WORKER_EVENTS_PER_TICK {
+        if runtime
+            .pacer
+            .as_ref()
+            .map(|pacer| pacer.is_full())
+            .unwrap_or(false)
+        {
+            runtime.counters.worker_backpressure_count =
+                runtime.counters.worker_backpressure_count.saturating_add(1);
+            break;
+        }
+        let Ok(event) = worker_rx.try_recv() else {
+            break;
+        };
+        if discard_stale_worker_audio(runtime, &event) {
+            continue;
+        }
         handle_worker_event(node, outputs, runtime, worker, event)?;
     }
     Ok(())
@@ -425,10 +531,27 @@ fn drain_worker_events_until(
 ) -> Result<()> {
     let deadline = Instant::now() + timeout;
     loop {
-        match worker_rx.recv_timeout(Duration::from_millis(20)) {
+        emit_due_paced_chunk(node, outputs, runtime, worker)?;
+        if runtime
+            .pacer
+            .as_ref()
+            .map(|pacer| pacer.is_full())
+            .unwrap_or(false)
+        {
+            runtime.counters.worker_backpressure_count =
+                runtime.counters.worker_backpressure_count.saturating_add(1);
+            std::thread::sleep(runtime.input_timeout());
+            if Instant::now() >= deadline {
+                return Ok(());
+            }
+            continue;
+        }
+        match worker_rx.recv_timeout(runtime.input_timeout()) {
             Ok(event) => {
                 let stopped = matches!(event, WorkerEvent::Stopped);
-                handle_worker_event(node, outputs, runtime, worker, event)?;
+                if !discard_stale_worker_audio(runtime, &event) {
+                    handle_worker_event(node, outputs, runtime, worker, event)?;
+                }
                 if stopped {
                     return Ok(());
                 }
@@ -503,11 +626,7 @@ fn handle_worker_event(
                 speaker_id = config.speaker_id,
                 "edge_voice started synthesis"
             );
-            runtime.active_command_id = Some(command_id);
-            runtime.active_revision = Some(revision);
-            runtime.active_config = Some(config);
-            runtime.synthesis_finished = false;
-            runtime.playback_failure_pending = false;
+            start_active_command(runtime, command_id.clone(), revision, config);
             emit_status(
                 node,
                 outputs,
@@ -521,13 +640,32 @@ fn handle_worker_event(
             timestamp_ms,
             samples,
         } => {
-            let metadata =
-                audio_metadata(&command_id, frame_id, timestamp_ms, samples.len(), priority)?;
-            node.send_output(
-                outputs.tts_audio.clone(),
-                metadata,
-                Float32Array::from(samples),
-            )?;
+            if runtime.active_command_id.as_deref() != Some(&command_id) {
+                tracing::debug!(%command_id, frame_id, "ignored stale TTS chunk");
+                return Ok(());
+            }
+            let Some(pacer) = runtime.pacer.as_mut() else {
+                tracing::debug!(%command_id, frame_id, "ignored TTS chunk without active pacer");
+                return Ok(());
+            };
+            if let Err(error) = pacer.accept(TtsAudioChunk {
+                command_id: command_id.clone(),
+                priority,
+                frame_id,
+                timestamp_ms,
+                samples,
+            }) {
+                request_worker_cancel(runtime, worker, VoiceReasonCode::SynthesisFailed);
+                fail_active_command(
+                    node,
+                    outputs,
+                    runtime,
+                    &command_id,
+                    VoiceReasonCode::SynthesisFailed,
+                    Some(sanitized_error(error)),
+                )?;
+                dispatch_if_idle(runtime, worker, node, outputs)?;
+            }
         }
         WorkerEvent::Completed {
             command_id,
@@ -541,7 +679,7 @@ fn handle_worker_event(
             emit_metric(
                 node,
                 outputs,
-                json!({"event":"synthesis_completed","command_id":command_id,"elapsed_ms":elapsed_ms,"samples":samples}),
+                json!({"event":"synthesis_completed","command_id":command_id.clone(),"elapsed_ms":elapsed_ms,"samples":samples}),
             )?;
             if runtime.playback_failure_pending {
                 finish_active_command(
@@ -555,23 +693,18 @@ fn handle_worker_event(
                 )?;
                 dispatch_if_idle(runtime, worker, node, outputs)?;
             } else {
-                runtime.synthesis_finished = true;
-                emit_synthesis_state(
-                    node,
-                    outputs,
-                    command_result(
-                        &runtime.entity_id,
-                        &command_id,
-                        TtsResultState::Completed,
-                        None,
-                        None,
-                    ),
-                )?;
+                runtime.pending_completion = Some(PendingCompletion {
+                    command_id,
+                    elapsed_ms,
+                    samples,
+                });
+                complete_synthesis_if_pacer_empty(node, outputs, runtime)?;
             }
         }
         WorkerEvent::Interrupted { command_id, reason } => {
             tracing::warn!(%command_id, ?reason, "edge_voice synthesis interrupted");
             if runtime.active_command_id.as_deref() == Some(&command_id) {
+                runtime.clear_pacing_for_active_command();
                 let playback_failed =
                     runtime.playback_failure_pending || reason == VoiceReasonCode::PlaybackFailed;
                 let state = if playback_failed {
@@ -614,6 +747,7 @@ fn handle_worker_event(
         } => {
             tracing::error!(%command_id, ?reason, %detail, "edge_voice synthesis failed");
             if runtime.active_command_id.as_deref() == Some(&command_id) {
+                runtime.clear_pacing_for_active_command();
                 emit_synthesis_state(
                     node,
                     outputs,
@@ -640,6 +774,228 @@ fn handle_worker_event(
         WorkerEvent::Stopped => {}
     }
     Ok(())
+}
+
+fn start_active_command(
+    runtime: &mut RuntimeState,
+    command_id: String,
+    revision: u64,
+    config: TtsRuntimeConfig,
+) {
+    runtime.active_command_id = Some(command_id.clone());
+    runtime.active_revision = Some(revision);
+    runtime.active_config = Some(config);
+    runtime.synthesis_finished = false;
+    runtime.playback_failure_pending = false;
+    runtime.pacer = Some(TtsPacer::new(command_id, InstantClock::default()));
+    runtime.pending_completion = None;
+    runtime.last_metrics_snapshot = None;
+    runtime.counters = RuntimeCounters::default();
+}
+
+fn discard_stale_worker_audio(runtime: &RuntimeState, event: &WorkerEvent) -> bool {
+    if let WorkerEvent::AudioChunk {
+        command_id,
+        frame_id,
+        ..
+    } = event
+    {
+        if runtime.active_command_id.as_deref() != Some(command_id) {
+            tracing::debug!(%command_id, frame_id, "discarded stale TTS chunk before pacing");
+            return true;
+        }
+    }
+    false
+}
+
+fn emit_due_paced_chunk(
+    node: &mut DoraNode,
+    outputs: &Outputs,
+    runtime: &mut RuntimeState,
+    worker: &WorkerHandle,
+) -> Result<()> {
+    let due = runtime.pacer.as_mut().and_then(TtsPacer::pop_due);
+    let Some(due) = due else {
+        return Ok(());
+    };
+
+    let command_id = due.chunk.command_id.clone();
+    let metadata = audio_metadata(
+        &due.chunk.command_id,
+        due.chunk.frame_id,
+        due.chunk.timestamp_ms,
+        due.chunk.samples.len(),
+        due.chunk.priority,
+    )?;
+    if let Err(error) = node.send_output(
+        outputs.tts_audio.clone(),
+        metadata,
+        Float32Array::from(due.chunk.samples),
+    ) {
+        request_worker_cancel(runtime, worker, VoiceReasonCode::SynthesisFailed);
+        fail_active_command(
+            node,
+            outputs,
+            runtime,
+            &command_id,
+            VoiceReasonCode::SynthesisFailed,
+            Some(sanitized_error(error)),
+        )?;
+        dispatch_if_idle(runtime, worker, node, outputs)?;
+        return Ok(());
+    }
+
+    if let Some(pacer) = runtime.pacer.as_ref() {
+        runtime.last_metrics_snapshot = Some(pacer.snapshot());
+    }
+    if due.lag > Duration::ZERO {
+        tracing::debug!(
+            command_id = %command_id,
+            lag_ms = due.lag.as_millis(),
+            "edge_voice paced TTS chunk emitted after deadline"
+        );
+    }
+    complete_synthesis_if_pacer_empty(node, outputs, runtime)?;
+    Ok(())
+}
+
+fn complete_synthesis_if_pacer_empty(
+    node: &mut DoraNode,
+    outputs: &Outputs,
+    runtime: &mut RuntimeState,
+) -> Result<()> {
+    if runtime
+        .pacer
+        .as_ref()
+        .map(|pacer| pacer.has_pending())
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    let Some(completion) = runtime.pending_completion.take() else {
+        return Ok(());
+    };
+
+    if let Some(pacer) = runtime.pacer.take() {
+        runtime.last_metrics_snapshot = Some(pacer.snapshot());
+    }
+    runtime.synthesis_finished = true;
+    emit_synthesis_state(
+        node,
+        outputs,
+        command_result(
+            &runtime.entity_id,
+            &completion.command_id,
+            TtsResultState::Completed,
+            None,
+            None,
+        ),
+    )?;
+    emit_metric(
+        node,
+        outputs,
+        json!({
+            "event":"synthesis_paced_completed",
+            "command_id":completion.command_id,
+            "elapsed_ms":completion.elapsed_ms,
+            "samples":completion.samples,
+            "pacing":runtime.last_metrics_snapshot,
+        }),
+    )?;
+    Ok(())
+}
+
+fn fail_active_command(
+    node: &mut DoraNode,
+    outputs: &Outputs,
+    runtime: &mut RuntimeState,
+    command_id: &str,
+    reason: VoiceReasonCode,
+    detail: Option<String>,
+) -> Result<()> {
+    runtime.clear_pacing_for_active_command();
+    emit_synthesis_state(
+        node,
+        outputs,
+        command_result(
+            &runtime.entity_id,
+            command_id,
+            TtsResultState::Failed,
+            Some(reason),
+            detail.clone(),
+        ),
+    )?;
+    finish_active_command(
+        node,
+        outputs,
+        runtime,
+        command_id,
+        TtsResultState::Failed,
+        Some(reason),
+        detail,
+    )
+}
+
+fn request_worker_cancel(
+    runtime: &mut RuntimeState,
+    worker: &WorkerHandle,
+    reason: VoiceReasonCode,
+) {
+    runtime.counters.cancellation_count = runtime.counters.cancellation_count.saturating_add(1);
+    worker.cancel(reason);
+}
+
+fn emit_periodic_metrics(
+    node: &mut DoraNode,
+    outputs: &Outputs,
+    runtime: &mut RuntimeState,
+) -> Result<()> {
+    if runtime.last_metrics_emit.elapsed() < METRICS_INTERVAL {
+        return Ok(());
+    }
+    runtime.last_metrics_emit = Instant::now();
+    emit_pacing_metrics(node, outputs, runtime, "periodic")
+}
+
+fn emit_pacing_metrics(
+    node: &mut DoraNode,
+    outputs: &Outputs,
+    runtime: &RuntimeState,
+    event: &str,
+) -> Result<()> {
+    let Some(value) = pacing_metrics_payload(runtime, event) else {
+        return Ok(());
+    };
+    emit_metric(node, outputs, value)
+}
+
+fn pacing_metrics_payload(runtime: &RuntimeState, event: &str) -> Option<serde_json::Value> {
+    let snapshot = runtime
+        .pacer
+        .as_ref()
+        .map(TtsPacer::snapshot)
+        .or(runtime.last_metrics_snapshot)
+        .unwrap_or_default();
+    if snapshot == PacingSnapshot::default()
+        && runtime.counters == RuntimeCounters::default()
+        && runtime.active_command_id.is_none()
+    {
+        return None;
+    }
+    Some(json!({
+        "event": "tts_pacing_metrics",
+        "phase": event,
+        "active_command_id": runtime.active_command_id.clone(),
+        "generated_frames": snapshot.generated_frames,
+        "generated_samples": snapshot.generated_samples,
+        "emitted_frames": snapshot.emitted_frames,
+        "emitted_samples": snapshot.emitted_samples,
+        "pending_depth": snapshot.pending_depth,
+        "pacing_lag_ms": snapshot.pacing_lag_ms,
+        "worker_backpressure_count": runtime.counters.worker_backpressure_count,
+        "cancellation_count": runtime.counters.cancellation_count,
+        "terminal_reason": runtime.counters.terminal_reason.clone(),
+    }))
 }
 
 fn emit_status(
@@ -693,18 +1049,26 @@ fn finish_active_command(
     reason: Option<VoiceReasonCode>,
     detail: Option<String>,
 ) -> Result<()> {
+    runtime.record_terminal(state, reason);
+    let terminal_metrics = pacing_metrics_payload(runtime, "terminal");
     runtime.busy = false;
     runtime.active_command_id = None;
     runtime.active_revision = None;
     runtime.active_config = None;
     runtime.synthesis_finished = false;
     runtime.playback_failure_pending = false;
+    runtime.clear_pacing_for_active_command();
     emit_result(
         node,
         outputs,
         command_result(&runtime.entity_id, command_id, state, reason, detail),
     )?;
     emit_status(node, outputs, runtime.status(VoiceState::Ready, None, None))?;
+    if let Some(value) = terminal_metrics {
+        if let Err(error) = emit_metric(node, outputs, value) {
+            tracing::warn!(%error, command_id, "failed to emit terminal TTS pacing metrics");
+        }
+    }
     Ok(())
 }
 
@@ -738,6 +1102,19 @@ fn binary_payload(data: &dyn Array) -> Result<&[u8]> {
         return Err(eyre!("empty BinaryArray payload"));
     }
     Ok(array.value(0))
+}
+
+fn terminal_reason_label(state: TtsResultState, reason: Option<VoiceReasonCode>) -> String {
+    if state == TtsResultState::Completed {
+        return "completed".to_string();
+    }
+    reason
+        .and_then(|value| {
+            serde_json::to_value(value)
+                .ok()
+                .and_then(|json| json.as_str().map(str::to_string))
+        })
+        .unwrap_or_else(|| format!("{state:?}").to_ascii_lowercase())
 }
 
 #[cfg(test)]
@@ -820,5 +1197,172 @@ mod tests {
         }));
         assert_eq!(runtime.current_revision, 3);
         assert_eq!(runtime.current_config, newer);
+    }
+
+    #[test]
+    fn clear_pacing_preserves_snapshot_for_terminal_metrics() {
+        let mut runtime = RuntimeState::new(deployment());
+        let mut pacer = TtsPacer::new("cmd", InstantClock::default());
+        pacer
+            .accept(TtsAudioChunk {
+                command_id: "cmd".to_string(),
+                priority: robo_rover_lib::TtsPriority::Normal,
+                frame_id: 0,
+                timestamp_ms: 1,
+                samples: vec![0.0; 882],
+            })
+            .unwrap();
+        runtime.pacer = Some(pacer);
+
+        runtime.clear_pacing_for_active_command();
+
+        let snapshot = runtime.last_metrics_snapshot.unwrap();
+        assert_eq!(snapshot.generated_frames, 1);
+        assert_eq!(snapshot.pending_depth, 0);
+    }
+
+    #[test]
+    fn pacing_metrics_payload_includes_backpressure_cancellation_and_terminal_reason() {
+        let mut runtime = RuntimeState::new(deployment());
+        runtime.active_command_id = Some("cmd".to_string());
+        runtime.last_metrics_snapshot = Some(PacingSnapshot {
+            generated_frames: 2,
+            generated_samples: 1764,
+            emitted_frames: 1,
+            emitted_samples: 882,
+            pending_depth: 1,
+            pacing_lag_ms: 7,
+        });
+        runtime.counters.worker_backpressure_count = 3;
+        runtime.counters.cancellation_count = 1;
+        runtime.record_terminal(
+            TtsResultState::Interrupted,
+            Some(VoiceReasonCode::InterruptedByWalkie),
+        );
+
+        let payload = pacing_metrics_payload(&runtime, "periodic").unwrap();
+
+        assert_eq!(payload["event"], "tts_pacing_metrics");
+        assert_eq!(payload["phase"], "periodic");
+        assert_eq!(payload["active_command_id"], "cmd");
+        assert_eq!(payload["generated_frames"], 2);
+        assert_eq!(payload["emitted_frames"], 1);
+        assert_eq!(payload["worker_backpressure_count"], 3);
+        assert_eq!(payload["cancellation_count"], 1);
+        assert_eq!(payload["terminal_reason"], "interrupted_by_walkie");
+    }
+
+    #[test]
+    fn terminal_reason_uses_completed_without_reason() {
+        assert_eq!(
+            terminal_reason_label(TtsResultState::Completed, None),
+            "completed"
+        );
+        assert_eq!(
+            terminal_reason_label(
+                TtsResultState::Failed,
+                Some(VoiceReasonCode::PlaybackFailed)
+            ),
+            "playback_failed"
+        );
+    }
+
+    #[test]
+    fn command_start_resets_per_command_metrics() {
+        let mut runtime = RuntimeState::new(deployment());
+        runtime.last_metrics_snapshot = Some(PacingSnapshot {
+            generated_frames: 9,
+            generated_samples: 9,
+            emitted_frames: 9,
+            emitted_samples: 9,
+            pending_depth: 0,
+            pacing_lag_ms: 2,
+        });
+        runtime.counters.worker_backpressure_count = 7;
+        runtime.counters.cancellation_count = 3;
+        runtime.record_terminal(
+            TtsResultState::Failed,
+            Some(VoiceReasonCode::PlaybackFailed),
+        );
+
+        start_active_command(
+            &mut runtime,
+            "next".to_string(),
+            4,
+            TtsRuntimeConfig::default(),
+        );
+
+        assert_eq!(runtime.counters, RuntimeCounters::default());
+        assert!(runtime.last_metrics_snapshot.is_none());
+        assert_eq!(runtime.active_command_id.as_deref(), Some("next"));
+        assert_eq!(runtime.active_revision, Some(4));
+    }
+
+    #[test]
+    fn stale_worker_audio_is_discarded_before_dora_handling() {
+        let mut runtime = RuntimeState::new(deployment());
+        runtime.active_command_id = Some("current".to_string());
+        let stale = WorkerEvent::AudioChunk {
+            command_id: "stale".to_string(),
+            priority: robo_rover_lib::TtsPriority::Normal,
+            frame_id: 42,
+            timestamp_ms: 1,
+            samples: vec![0.0; 882],
+        };
+        let current = WorkerEvent::AudioChunk {
+            command_id: "current".to_string(),
+            priority: robo_rover_lib::TtsPriority::Normal,
+            frame_id: 0,
+            timestamp_ms: 1,
+            samples: vec![0.0; 882],
+        };
+
+        assert!(discard_stale_worker_audio(&runtime, &stale));
+        assert!(!discard_stale_worker_audio(&runtime, &current));
+    }
+
+    #[test]
+    fn worker_drain_budget_covers_large_stale_prefix_plus_lifecycle_event() {
+        let stale_prefix = 129;
+        assert!(stale_prefix > 128);
+        assert!(MAX_WORKER_EVENTS_PER_TICK > stale_prefix + 1);
+        assert_eq!(
+            MAX_WORKER_EVENTS_PER_TICK,
+            crate::worker::WORKER_EVENT_CAPACITY + 1
+        );
+    }
+
+    #[test]
+    fn terminal_metrics_survive_until_emitted_before_next_command_reset() {
+        let mut runtime = RuntimeState::new(deployment());
+        start_active_command(
+            &mut runtime,
+            "first".to_string(),
+            1,
+            TtsRuntimeConfig::default(),
+        );
+        runtime.counters.cancellation_count = 1;
+        runtime.record_terminal(
+            TtsResultState::Interrupted,
+            Some(VoiceReasonCode::InterruptedByWalkie),
+        );
+
+        let terminal_payload = pacing_metrics_payload(&runtime, "terminal").unwrap();
+
+        start_active_command(
+            &mut runtime,
+            "second".to_string(),
+            2,
+            TtsRuntimeConfig::default(),
+        );
+        let next_payload = pacing_metrics_payload(&runtime, "periodic").unwrap();
+
+        assert_eq!(terminal_payload["phase"], "terminal");
+        assert_eq!(terminal_payload["active_command_id"], "first");
+        assert_eq!(terminal_payload["cancellation_count"], 1);
+        assert_eq!(terminal_payload["terminal_reason"], "interrupted_by_walkie");
+        assert_eq!(next_payload["active_command_id"], "second");
+        assert_eq!(next_payload["cancellation_count"], 0);
+        assert!(next_payload["terminal_reason"].is_null());
     }
 }
