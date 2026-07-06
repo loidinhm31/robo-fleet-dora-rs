@@ -99,34 +99,40 @@ mod tests {
 
     #[test]
     fn decodes_versioned_walkie_packet_and_restores_dora_metadata() {
-        let payload: Vec<u8> = [0.25_f32, -0.5]
-            .into_iter()
-            .flat_map(f32::to_le_bytes)
-            .collect();
-        let metadata = AudioFrameMetadata {
-            stream_id: Uuid::nil(),
-            frame_id: 7,
-            capture_timestamp_ms: 1,
-            sample_rate: 16_000,
-            channels: 1,
-            sample_count: 2,
-            format: PcmSampleFormat::F32Le,
-        };
-        let packet = PcmFramePacket {
-            metadata,
-            payload: &payload,
+        for sample_rate in [16_000_u32, 44_100, 48_000] {
+            let payload: Vec<u8> = [0.25_f32, -0.5, 0.75]
+                .into_iter()
+                .flat_map(f32::to_le_bytes)
+                .collect();
+            let metadata = AudioFrameMetadata {
+                stream_id: Uuid::nil(),
+                frame_id: 7,
+                capture_timestamp_ms: 1,
+                sample_rate,
+                channels: 1,
+                sample_count: 3,
+                format: PcmSampleFormat::F32Le,
+            };
+            let packet = PcmFramePacket {
+                metadata,
+                payload: &payload,
+            }
+            .encode()
+            .unwrap();
+
+            let decoded = WalkieDecoder::new().decode(&packet).unwrap();
+
+            assert_eq!(decoded.samples, vec![0.25, -0.5, 0.75]);
+            assert_eq!(
+                decoded.parameters["source_kind"],
+                Parameter::String("walkie".into())
+            );
+            assert_eq!(decoded.parameters["frame_id"], Parameter::Integer(7));
+            assert_eq!(
+                decoded.parameters["sample_rate"],
+                Parameter::Integer(i64::from(sample_rate))
+            );
         }
-        .encode()
-        .unwrap();
-
-        let decoded = WalkieDecoder::new().decode(&packet).unwrap();
-
-        assert_eq!(decoded.samples, vec![0.25, -0.5]);
-        assert_eq!(
-            decoded.parameters["source_kind"],
-            Parameter::String("walkie".into())
-        );
-        assert_eq!(decoded.parameters["frame_id"], Parameter::Integer(7));
     }
 
     #[test]

@@ -13,3 +13,6 @@ crossbeam-queue = "0.3"
 rubato = { version = "=3.0.0", default-features = false }
 serde_json = { workspace = true }
 uuid = { workspace = true }
+
+[dev-dependencies]
+serde_yaml = "0.9"

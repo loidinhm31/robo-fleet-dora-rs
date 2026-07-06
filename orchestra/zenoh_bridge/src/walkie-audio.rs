@@ -77,7 +77,7 @@ fn encode_f32le(samples: &[f32]) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    fn parameters() -> BTreeMap<String, Parameter> {
+    fn parameters(sample_rate: i64, frame_id: i64, sample_count: i64) -> BTreeMap<String, Parameter> {
         BTreeMap::from([
             ("source_kind".into(), Parameter::String("walkie".into())),
             ("priority".into(), Parameter::String("high".into())),
@@ -85,27 +85,31 @@ mod tests {
                 "stream_id".into(),
                 Parameter::String(Uuid::nil().to_string()),
             ),
-            ("frame_id".into(), Parameter::Integer(1)),
+            ("frame_id".into(), Parameter::Integer(frame_id)),
             ("capture_timestamp_ms".into(), Parameter::Integer(1)),
-            ("sample_rate".into(), Parameter::Integer(16_000)),
+            ("sample_rate".into(), Parameter::Integer(sample_rate)),
             ("channels".into(), Parameter::Integer(1)),
-            ("sample_count".into(), Parameter::Integer(2)),
+            ("sample_count".into(), Parameter::Integer(sample_count)),
             ("format".into(), Parameter::String("f32le".into())),
         ])
     }
 
     #[test]
     fn preserves_walkie_pcm_envelope_for_zenoh() {
-        let packet = encode_walkie_packet(&parameters(), &[0.25, -0.5]).unwrap();
-        let decoded = PcmFramePacket::decode(&packet).unwrap();
-        assert_eq!(decoded.metadata.sample_rate, 16_000);
-        assert_eq!(decoded.metadata.sample_count, 2);
-        assert_eq!(decoded.payload.len(), 8);
+        for sample_rate in [16_000_i64, 44_100, 48_000] {
+            let packet = encode_walkie_packet(&parameters(sample_rate, 7, 3), &[0.25, -0.5, 0.75])
+                .unwrap();
+            let decoded = PcmFramePacket::decode(&packet).unwrap();
+            assert_eq!(decoded.metadata.sample_rate, sample_rate as u32);
+            assert_eq!(decoded.metadata.frame_id, 7);
+            assert_eq!(decoded.metadata.sample_count, 3);
+            assert_eq!(decoded.payload.len(), 12);
+        }
     }
 
     #[test]
     fn rejects_payload_metadata_mismatch() {
-        assert!(encode_walkie_packet(&parameters(), &[0.25]).is_err());
-        assert!(encode_walkie_packet(&parameters(), &vec![0.0; 16_385]).is_err());
+        assert!(encode_walkie_packet(&parameters(16_000, 1, 2), &[0.25]).is_err());
+        assert!(encode_walkie_packet(&parameters(16_000, 1, 16_385), &vec![0.0; 16_385]).is_err());
     }
 }

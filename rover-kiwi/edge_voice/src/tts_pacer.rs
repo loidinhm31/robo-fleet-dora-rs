@@ -305,4 +305,45 @@ mod tests {
         assert_eq!(snapshot.emitted_samples, 882);
         assert_eq!(snapshot.pending_depth, 0);
     }
+
+    #[test]
+    fn final_partial_chunk_paces_once_and_keeps_exact_sample_accounting() {
+        let clock = FakeClock::default();
+        let mut pacer = TtsPacer::new("cmd", clock.clone());
+
+        pacer.accept(chunk(0, TTS_FRAME_SAMPLES_20_MS)).unwrap();
+        assert!(pacer.pop_due().is_some());
+
+        pacer.accept(chunk(1, 441)).unwrap();
+        assert!(pacer.pop_due().is_none());
+        clock.advance(Duration::from_millis(19));
+        assert!(pacer.pop_due().is_none());
+        clock.advance(Duration::from_millis(1));
+        let due = pacer.pop_due().expect("partial frame should emit exactly once");
+        assert_eq!(due.chunk.frame_id, 1);
+        assert_eq!(due.chunk.samples.len(), 441);
+        assert!(pacer.pop_due().is_none());
+
+        let snapshot = pacer.snapshot();
+        assert_eq!(snapshot.generated_frames, 2);
+        assert_eq!(snapshot.emitted_frames, 2);
+        assert_eq!(snapshot.generated_samples, 1_323);
+        assert_eq!(snapshot.emitted_samples, 1_323);
+    }
+
+    #[test]
+    fn clear_pending_cancels_waiting_chunk_without_emission() {
+        let clock = FakeClock::default();
+        let mut pacer = TtsPacer::new("cmd", clock);
+
+        pacer.accept(chunk(0, TTS_FRAME_SAMPLES_20_MS)).unwrap();
+        pacer.clear_pending();
+
+        assert!(!pacer.has_pending());
+        assert!(pacer.pop_due().is_none());
+        let snapshot = pacer.snapshot();
+        assert_eq!(snapshot.generated_frames, 1);
+        assert_eq!(snapshot.emitted_frames, 0);
+        assert_eq!(snapshot.pending_depth, 0);
+    }
 }

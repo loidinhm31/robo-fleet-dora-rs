@@ -3,6 +3,7 @@ use crate::buffers::PlaybackBuffers;
 use crate::playback_event::ArbiterEvent;
 use crate::protocol::AudioSource;
 use crate::protocol::SourceFrame;
+use std::f32::consts::TAU;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -25,6 +26,17 @@ fn frame_with_id(
         samples,
         normalized_samples: 0,
     }
+}
+
+fn tone(rate: u32, seconds: usize, frequency: f32) -> Vec<f32> {
+    (0..rate as usize * seconds)
+        .map(|index| (TAU * frequency * index as f32 / rate as f32).sin() * 0.5)
+        .collect()
+}
+
+fn rms(samples: &[f32]) -> f32 {
+    let energy = samples.iter().map(|sample| sample * sample).sum::<f32>();
+    (energy / samples.len().max(1) as f32).sqrt()
 }
 
 #[test]
@@ -355,6 +367,100 @@ fn playback_failure_clears_all_queued_sources() {
     );
     assert!(buffers.tts_is_empty());
     assert!(buffers.walkie_is_empty());
+}
+
+#[test]
+fn long_tts_accounting_matches_resampled_enqueued_retired_and_consumed_samples() {
+    for seconds in [10usize, 30, 60] {
+        let input_rate = 44_100;
+        let input = vec![0.2; input_rate as usize * seconds];
+        let expected_output = 48_000 * seconds;
+        let buffers = Arc::new(PlaybackBuffers::new(expected_output + 1_024, 64));
+        let mut arbiter = SourceArbiter::new(48_000, buffers.clone(), Duration::from_millis(60));
+        let command_id = Uuid::new_v4().to_string();
+        let now = Instant::now();
+
+        for (frame_id, chunk) in input.chunks(882).enumerate() {
+            let mut frame = frame_with_id(
+                AudioSource::Tts,
+                Some(command_id.clone()),
+                frame_id as u64,
+                chunk.to_vec(),
+            );
+            frame.sample_rate = input_rate;
+            assert_eq!(arbiter.accept(frame, now).unwrap(), None);
+        }
+
+        assert_eq!(arbiter.finish_tts(&command_id, now).unwrap(), None);
+        assert_eq!(
+            buffers.playback_counts().tts_enqueued,
+            expected_output as u64,
+            "seconds={seconds}"
+        );
+
+        let mut consumed = 0usize;
+        while buffers.pop_for_output().is_some() {
+            consumed += 1;
+        }
+
+        assert_eq!(consumed, expected_output, "seconds={seconds}");
+        assert_eq!(buffers.tts_retired_total(), expected_output as u64);
+        assert_eq!(
+            arbiter.tick(now),
+            Some(ArbiterEvent::TtsPlaybackCompleted {
+                command_id: command_id.clone()
+            })
+        );
+        assert_eq!(arbiter.tts_stats().pending_frames, 0);
+    }
+}
+
+#[test]
+fn walkie_resampling_preserves_duration_and_rms_for_16k_44k1_and_48k_inputs() {
+    for input_rate in [16_000, 44_100, 48_000] {
+        let input = tone(input_rate, 1, 440.0);
+        let chunk_size = match input_rate {
+            16_000 => 320,
+            44_100 => 882,
+            48_000 => 960,
+            _ => unreachable!(),
+        };
+        let buffers = Arc::new(PlaybackBuffers::new(64, 49_152));
+        let mut arbiter = SourceArbiter::new(48_000, buffers.clone(), Duration::from_millis(60));
+        let now = Instant::now();
+
+        for (frame_id, chunk) in input.chunks(chunk_size).enumerate() {
+            let mut frame =
+                frame_with_id(AudioSource::Walkie, None, frame_id as u64, chunk.to_vec());
+            frame.sample_rate = input_rate;
+            assert_eq!(
+                arbiter
+                    .accept(frame, now + Duration::from_millis(frame_id as u64 * 20))
+                    .unwrap(),
+                (frame_id == 0).then_some(ArbiterEvent::WalkieStarted { interrupted: None })
+            );
+        }
+
+        let mut output = Vec::new();
+        while let Some((source, sample)) = buffers.pop_for_output() {
+            assert_eq!(source, crate::buffers::SOURCE_WALKIE);
+            output.push(sample.value);
+        }
+
+        assert!(
+            output.len().abs_diff(48_000) <= 256,
+            "input_rate={input_rate} output_len={}",
+            output.len()
+        );
+        assert!(
+            (rms(&output) - rms(&input)).abs() < 0.03,
+            "input_rate={input_rate}"
+        );
+        assert_eq!(
+            arbiter.tick(now + Duration::from_millis(1_250)),
+            Some(ArbiterEvent::WalkieEnded)
+        );
+    }
 }
 
 #[test]

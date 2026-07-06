@@ -37,6 +37,7 @@ Snapshot date: 2026-07-03
 - Orchestra dataflow wires web-bridge `voice_command_audio`, `voice_command_control`, and `stt_status_request` outputs to central STT, and routes central `transcription` and `stt_status` outputs back to web-bridge.
 - Browser STT transport limits are configured with `WEB_STT_QUEUE_CAPACITY`, `WEB_STT_STREAM_IDLE_SECONDS`, and `WEB_STT_CLOSING_SECONDS`.
 - `web_bridge` maintains process-level `Arc<AudioDeliveryCounters>` (atomic, relaxed ordering) in `SharedState` so shutdown totals survive client disconnects; per-client `ClientState` counters remain for live debugging. Resolves the Approach A Phase 5 backlog item (Phase 06 completion report).
+- Phase 05 added verification coverage for walkie/TTS pacing, queue policy assertions, and benchmark harness contract alignment; physical acoustic acceptance is still pending.
 
 ## Documentation Notes
 

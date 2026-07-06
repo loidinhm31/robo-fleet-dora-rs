@@ -1,15 +1,22 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { io as createSocket } from 'socket.io-client';
 
 const repoDir = fileURLToPath(new URL('..', import.meta.url));
-const planDir = `${repoDir}/plans/260704-1318-edge-voice-supertonic-x86`;
 const corpusFile = `${repoDir}/scripts/fixtures/edge-voice-corpus.json`;
-const outputDir = `${planDir}/reports`;
-const summaryJson = `${outputDir}/phase-08-native-x86-benchmark.json`;
-const evidenceLog = `${outputDir}/phase-08-native-x86-evidence.log`;
+const cli = new Map(process.argv.slice(2).map((value) => {
+  const [key, raw = ''] = value.split('=', 2);
+  return [key, raw];
+}));
+const outputDir = cli.get('--output-dir')
+  ?? `${repoDir}/plans/260706-0155-audio-playback-tts-fix/reports`;
+const summaryJson = cli.get('--summary-json')
+  ?? `${outputDir}/phase-05-audio-acceptance.json`;
+const evidenceLog = cli.get('--evidence-log')
+  ?? `${outputDir}/phase-05-audio-acceptance.log`;
 const socketUrl = 'http://127.0.0.1:3030';
 const targetEntityId = 'rover-kiwi';
 const performanceMetricIntervalMs = 5000;
@@ -107,6 +114,22 @@ function runCommand(command, args, timeoutMs = 15000) {
   }
 }
 
+function runLogCommand(command, args, timeoutMs = 15000) {
+  const result = spawnSync(command, args, {
+    encoding: 'utf8',
+    maxBuffer: 10 * 1024 * 1024,
+    timeout: timeoutMs,
+  });
+  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+  if (result.error && !output) {
+    throw result.error;
+  }
+  if (result.status !== 0 && !output) {
+    throw new Error(`${command} ${args.join(' ')} failed with status ${result.status}`);
+  }
+  return output;
+}
+
 function parseLatestInteger(output, pattern) {
   const matches = [...output.matchAll(pattern)];
   if (!matches.length) return null;
@@ -123,13 +146,25 @@ function buildConfig(baseConfig, override) {
   };
 }
 
-function makeWalkieFrame(frameIndex, frameSize, amplitude) {
-  const samples = new Array(frameSize);
+function makeWalkieFrame(streamId, frameIndex, frameSize, amplitude, sampleRate = 48_000) {
+  const samples = new Float32Array(frameSize);
   for (let i = 0; i < frameSize; i += 1) {
-    const phase = ((frameIndex * frameSize) + i) / 48_000;
+    const phase = ((frameIndex * frameSize) + i) / sampleRate;
     samples[i] = amplitude * Math.sin(2 * Math.PI * 220 * phase);
   }
-  return { audio_data: samples };
+  return {
+    metadata: {
+      protocol_version: 1,
+      stream_id: streamId,
+      frame_id: frameIndex,
+      capture_timestamp_ms: Date.now(),
+      sample_rate: sampleRate,
+      channels: 1,
+      sample_count: samples.length,
+      format: 'f32le',
+    },
+    samples,
+  };
 }
 
 class SocketSession {
@@ -179,9 +214,12 @@ class SocketSession {
     }
   }
 
-  emit(event, payload) {
+  emit(event, ...args) {
     if (!this.connected || !this.socket) throw new Error(`cannot emit ${event} before socket connection`);
-    this.socket.emit(event, payload);
+    if (event === 'audio_stream' && args.length !== 2) {
+      throw new Error(`audio_stream requires metadata plus one binary attachment, got ${args.length} args`);
+    }
+    this.socket.emit(event, ...args);
   }
 
   async waitFor(event, predicate = () => true, timeoutMs = 15000) {
@@ -402,6 +440,7 @@ async function runWalkiePreemption(client, currentRevision) {
   const config = buildConfig(corpus.default_config, walkieCase);
   const updated = await updateConfig(client, currentRevision, config);
   const commandStart = Date.now();
+  const streamId = randomUUID();
 
   client.emit('tts_command', { text: walkieCase.text });
   const ack = await client.waitFor(
@@ -418,7 +457,14 @@ async function runWalkiePreemption(client, currentRevision) {
 
   await sleep(walkieCase.preemption_delay_ms ?? 150);
   for (let index = 0; index < (walkieCase.frame_count ?? 8); index += 1) {
-    client.emit('audio_stream', makeWalkieFrame(index, walkieCase.frame_size ?? 512, walkieCase.amplitude ?? 0.2));
+    const frame = makeWalkieFrame(
+      streamId,
+      index,
+      walkieCase.frame_size ?? 512,
+      walkieCase.amplitude ?? 0.2,
+      walkieCase.sample_rate ?? 48_000,
+    );
+    client.emit('audio_stream', frame.metadata, frame.samples);
     await sleep(walkieCase.frame_spacing_ms ?? 20);
   }
 
@@ -499,22 +545,30 @@ async function runSoak(client, currentRevision) {
   return summary;
 }
 
-async function collectCaptureSuppression() {
-  const output = runCommand('timeout', ['15', 'dora', 'logs', 'rover-kiwi', 'audio-capture'], 20000);
+async function collectCaptureSuppression(startedAt) {
+  let roverContainer = null;
+  try {
+    const runningContainers = runCommand('docker', ['ps', '--format', '{{.Names}}'], 10000)
+      .split('\n')
+      .map((value) => value.trim())
+      .filter(Boolean);
+    roverContainer = runningContainers.find((value) => /rover-kiwi/i.test(value)) ?? null;
+  } catch (error) {
+    evidence.push(`capture_log_source_probe_failed=${error.message}`);
+  }
+  const output = roverContainer
+    ? runLogCommand('docker', ['logs', '--since', startedAt, roverContainer], 20000)
+    : runLogCommand('timeout', ['15', 'dora', 'logs', 'rover-kiwi', 'audio-capture'], 20000);
   const samplesRejected = parseLatestInteger(output, /samples_rejected=(\d+)/g);
   const captureDrops = parseLatestInteger(output, /drops=(\d+)/g);
   const effectiveSamplesRejected = samplesRejected ?? captureDrops;
+  evidence.push(`capture_log_source=${roverContainer ? `docker:${roverContainer}` : 'dora'}`);
   evidence.push(`capture_samples_rejected=${effectiveSamplesRejected ?? 'unavailable'} capture_drops=${captureDrops ?? 'unavailable'}`);
   return { samplesRejected: effectiveSamplesRejected, captureDrops, raw: output };
 }
 
 async function main() {
   runCommand('curl', ['-fsS', 'http://127.0.0.1:3030/health'], 5000);
-
-  const doraList = runCommand('dora', ['list'], 10000);
-  if (!/orchestra/i.test(doraList) || !/rover-kiwi/i.test(doraList)) {
-    throw new Error(`dora list does not show both dataflows:\n${doraList}`);
-  }
 
   const client = new SocketSession(socketUrl, {
     username: 'admin',
@@ -555,7 +609,7 @@ async function main() {
   const soak = await runSoak(client, revision);
 
   await sleep(500);
-  const capture = await collectCaptureSuppression();
+  const capture = await collectCaptureSuppression(startedAt);
   setMetricPhase('vision_shutdown');
   const disabledVision = await disableVision(client);
   evidence.push(`vision_state=${disabledVision.state}`);

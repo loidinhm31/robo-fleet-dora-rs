@@ -191,4 +191,23 @@ mod tests {
         assert!(!gate.can_publish(now + Duration::from_millis(399)));
         assert!(gate.can_publish(now + Duration::from_millis(400)));
     }
+
+    #[test]
+    fn repeated_active_callbacks_coalesce_into_one_suppression_window() {
+        let now = Instant::now();
+        let mut gate = CaptureGate::new(true);
+
+        gate.observe_playback(&state(PlaybackStateKind::Active, 1), now);
+        gate.observe_playback(&state(PlaybackStateKind::Active, 2), now + Duration::from_millis(80));
+        gate.observe_playback(
+            &state(PlaybackStateKind::Active, 3),
+            now + Duration::from_millis(160),
+        );
+        gate.observe_playback(&state(PlaybackStateKind::Idle, 4), now + Duration::from_millis(240));
+
+        assert_eq!(gate.metrics().suppression_entries, 1);
+        assert_eq!(gate.metrics().tail_entries, 1);
+        assert!(!gate.can_publish(now + Duration::from_millis(639)));
+        assert!(gate.can_publish(now + Duration::from_millis(640)));
+    }
 }
