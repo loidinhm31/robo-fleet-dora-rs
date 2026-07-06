@@ -13,7 +13,6 @@ const MAX_PENDING_FRAMES: usize = 3;
 
 struct AwaitingPlayback {
     command_id: String,
-    token: u64,
     consumed_target: u64,
 }
 
@@ -174,7 +173,6 @@ impl TtsArbiter {
             return None;
         }
         let completed = self.awaiting.take().expect("finished playback is pending");
-        self.command_ids.remove(&completed.token);
         Some(ArbiterEvent::TtsPlaybackCompleted {
             command_id: completed.command_id,
         })
@@ -226,6 +224,7 @@ impl TtsArbiter {
             && self.awaiting.is_none()
             && self.pending.is_empty()
             && self.buffers.tts_is_empty()
+            && !self.buffers.may_report_tts_activity()
         {
             self.command_ids.clear();
         }
@@ -320,10 +319,9 @@ impl TtsArbiter {
         if !self.synthesis_completed || !self.pending.is_empty() {
             return;
         }
-        if let Some((command_id, token)) = self.current.take() {
+        if let Some((command_id, _token)) = self.current.take() {
             self.awaiting = Some(AwaitingPlayback {
                 command_id,
-                token,
                 consumed_target: self.buffers.tts_enqueued_total(),
             });
         }
@@ -371,15 +369,20 @@ impl TtsArbiter {
     }
 
     fn active_command_id(&self) -> Option<String> {
-        let (source, token) = self.buffers.active_consumption();
-        if source == SOURCE_TTS {
-            return self.command_ids.get(&token).cloned();
-        }
-        self.current.as_ref().map(|(id, _)| id.clone()).or_else(|| {
-            self.awaiting
-                .as_ref()
-                .map(|pending| pending.command_id.clone())
-        })
+        self.current
+            .as_ref()
+            .map(|(id, _)| id.clone())
+            .or_else(|| {
+                self.awaiting
+                    .as_ref()
+                    .map(|pending| pending.command_id.clone())
+            })
+            .or_else(|| {
+                let (source, token) = self.buffers.active_consumption();
+                (source == SOURCE_TTS)
+                    .then(|| self.command_ids.get(&token).cloned())
+                    .flatten()
+            })
     }
 
     fn clear_pending(&mut self) {

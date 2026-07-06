@@ -143,6 +143,15 @@ impl PlaybackBuffers {
         ConsumptionEvent { source, token }
     }
 
+    pub fn may_report_tts_activity(&self) -> bool {
+        let interval = self.interval_activity.load(Ordering::Acquire);
+        if unpack_consumption(interval).0 == SOURCE_TTS {
+            return true;
+        }
+        let current = self.current_consumption.load(Ordering::Acquire);
+        unpack_consumption(current).0 == SOURCE_TTS
+    }
+
     pub fn walkie_is_active(&self) -> bool {
         self.walkie_active.load(Ordering::Acquire)
     }

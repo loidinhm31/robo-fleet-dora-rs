@@ -1,5 +1,5 @@
 use crate::arbiter::SourceArbiter;
-use crate::buffers::PlaybackBuffers;
+use crate::buffers::{PlaybackBuffers, SOURCE_IDLE, SOURCE_TTS};
 use crate::playback_event::ArbiterEvent;
 use crate::protocol::AudioSource;
 use crate::protocol::SourceFrame;
@@ -96,6 +96,109 @@ fn one_hundred_sequential_short_utterances_do_not_overrun() {
     }
     assert_eq!(buffers.dropped_counts(), (0, 0));
     assert!(arbiter.command_ids().is_empty());
+}
+
+#[test]
+fn completed_tts_keeps_command_id_until_idle_callback_arrives() {
+    let buffers = Arc::new(PlaybackBuffers::new(64, 64));
+    let mut arbiter = SourceArbiter::new(48_000, buffers.clone(), Duration::from_millis(60));
+    let now = Instant::now();
+    let id = Uuid::new_v4().to_string();
+
+    arbiter
+        .accept(frame(AudioSource::Tts, Some(id.clone()), vec![0.1; 8]), now)
+        .unwrap();
+    arbiter.finish_tts(&id, now).unwrap();
+
+    while buffers.pop_for_output().is_some() {}
+
+    let token = *arbiter.command_ids().keys().next().expect("token retained");
+    buffers.publish_consumption(SOURCE_TTS, token);
+
+    assert_eq!(
+        arbiter.tick(now),
+        Some(ArbiterEvent::TtsPlaybackCompleted {
+            command_id: id.clone()
+        })
+    );
+
+    arbiter.prune_command_ids();
+    assert_eq!(arbiter.command_ids().get(&token), Some(&id));
+    assert_eq!(buffers.take_interval_consumption().source, SOURCE_TTS);
+
+    buffers.publish_consumption(SOURCE_IDLE, 0);
+    arbiter.prune_command_ids();
+    assert!(arbiter.command_ids().is_empty());
+}
+
+#[test]
+fn aborted_tts_keeps_command_id_until_idle_callback_arrives() {
+    let buffers = Arc::new(PlaybackBuffers::new(64, 64));
+    let mut arbiter = SourceArbiter::new(48_000, buffers.clone(), Duration::from_millis(60));
+    let now = Instant::now();
+    let id = Uuid::new_v4().to_string();
+
+    arbiter
+        .accept(frame(AudioSource::Tts, Some(id.clone()), vec![0.1; 8]), now)
+        .unwrap();
+
+    let token = *arbiter.command_ids().keys().next().expect("token retained");
+    buffers.publish_consumption(SOURCE_TTS, token);
+
+    arbiter.abort_tts(&id);
+    assert_eq!(arbiter.command_ids().get(&token), Some(&id));
+    assert_eq!(buffers.take_interval_consumption().source, SOURCE_TTS);
+
+    buffers.publish_consumption(SOURCE_IDLE, 0);
+    arbiter.prune_command_ids();
+    assert!(arbiter.command_ids().is_empty());
+}
+
+#[test]
+fn stale_completed_token_does_not_override_new_command_interruption() {
+    let buffers = Arc::new(PlaybackBuffers::new(64, 64));
+    let mut arbiter = SourceArbiter::new(48_000, buffers.clone(), Duration::from_millis(60));
+    let now = Instant::now();
+    let first = Uuid::new_v4().to_string();
+
+    arbiter
+        .accept(
+            frame(AudioSource::Tts, Some(first.clone()), vec![0.1; 8]),
+            now,
+        )
+        .unwrap();
+    arbiter.finish_tts(&first, now).unwrap();
+    while buffers.pop_for_output().is_some() {}
+
+    let stale_token = *arbiter.command_ids().keys().next().expect("token retained");
+    buffers.publish_consumption(SOURCE_TTS, stale_token);
+    assert_eq!(
+        arbiter.tick(now),
+        Some(ArbiterEvent::TtsPlaybackCompleted {
+            command_id: first.clone()
+        })
+    );
+    arbiter.prune_command_ids();
+
+    let second = Uuid::new_v4().to_string();
+    arbiter
+        .accept(
+            frame_with_id(AudioSource::Tts, Some(second.clone()), 0, vec![0.2; 8]),
+            now + Duration::from_millis(1),
+        )
+        .unwrap();
+
+    assert_eq!(
+        arbiter
+            .accept(
+                frame(AudioSource::Walkie, None, vec![0.7]),
+                now + Duration::from_millis(1),
+            )
+            .unwrap(),
+        Some(ArbiterEvent::WalkieStarted {
+            interrupted: Some(second)
+        })
+    );
 }
 
 #[test]
