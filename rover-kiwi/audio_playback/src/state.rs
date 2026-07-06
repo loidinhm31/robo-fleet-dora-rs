@@ -34,16 +34,22 @@ impl PlaybackOutputs {
 
 pub struct StateReporter {
     entity_id: String,
+    producer_instance_id: String,
     last_playback: Option<ReportedState>,
     walkie_control_active: bool,
+    next_playback_sequence_id: u64,
+    next_walkie_sequence_id: u64,
 }
 
 impl StateReporter {
     pub fn new(entity_id: String) -> Self {
         Self {
             entity_id,
+            producer_instance_id: uuid::Uuid::new_v4().to_string(),
             last_playback: None,
             walkie_control_active: false,
+            next_playback_sequence_id: 0,
+            next_walkie_sequence_id: 0,
         }
     }
 
@@ -85,6 +91,8 @@ impl StateReporter {
         }
         let state = PlaybackState {
             entity_id: self.entity_id.clone(),
+            producer_instance_id: self.producer_instance_id.clone(),
+            sequence_id: self.next_playback_sequence_id(),
             state: next.kind,
             source: next.source,
             command_id: next.command_id.clone(),
@@ -109,6 +117,8 @@ impl StateReporter {
         let interrupted = interrupted_command_id.is_some();
         let state = PlaybackState {
             entity_id: self.entity_id.clone(),
+            producer_instance_id: self.producer_instance_id.clone(),
+            sequence_id: self.next_walkie_sequence_id(),
             state: PlaybackStateKind::Active,
             source: Some(PlaybackSource::Walkie),
             command_id: interrupted_command_id,
@@ -129,7 +139,18 @@ impl StateReporter {
         if !self.walkie_control_active {
             return Ok(());
         }
-        send_state(node, outputs.walkie_state.clone(), &self.idle_state())?;
+        let state = PlaybackState {
+            entity_id: self.entity_id.clone(),
+            producer_instance_id: self.producer_instance_id.clone(),
+            sequence_id: self.next_walkie_sequence_id(),
+            state: PlaybackStateKind::Idle,
+            source: None,
+            command_id: None,
+            timestamp: current_time_ms(),
+            reason_code: None,
+            detail: None,
+        };
+        send_state(node, outputs.walkie_state.clone(), &state)?;
         self.walkie_control_active = false;
         Ok(())
     }
@@ -139,8 +160,10 @@ impl StateReporter {
         node: &mut DoraNode,
         outputs: &PlaybackOutputs,
     ) -> Result<()> {
-        let state = PlaybackState {
+        let playback_state = PlaybackState {
             entity_id: self.entity_id.clone(),
+            producer_instance_id: self.producer_instance_id.clone(),
+            sequence_id: self.next_playback_sequence_id(),
             state: PlaybackStateKind::Unavailable,
             source: None,
             command_id: None,
@@ -148,21 +171,25 @@ impl StateReporter {
             reason_code: Some(VoiceReasonCode::PlaybackUnavailable),
             detail: Some("audio output unavailable".to_owned()),
         };
-        send_state(node, outputs.playback_state.clone(), &state)?;
-        send_state(node, outputs.walkie_state.clone(), &state)?;
+        send_state(node, outputs.playback_state.clone(), &playback_state)?;
+        let walkie_state = PlaybackState {
+            sequence_id: self.next_walkie_sequence_id(),
+            ..playback_state
+        };
+        send_state(node, outputs.walkie_state.clone(), &walkie_state)?;
         Ok(())
     }
 
-    fn idle_state(&self) -> PlaybackState {
-        PlaybackState {
-            entity_id: self.entity_id.clone(),
-            state: PlaybackStateKind::Idle,
-            source: None,
-            command_id: None,
-            timestamp: current_time_ms(),
-            reason_code: None,
-            detail: None,
-        }
+    fn next_playback_sequence_id(&mut self) -> u64 {
+        let next = self.next_playback_sequence_id;
+        self.next_playback_sequence_id = self.next_playback_sequence_id.saturating_add(1);
+        next
+    }
+
+    fn next_walkie_sequence_id(&mut self) -> u64 {
+        let next = self.next_walkie_sequence_id;
+        self.next_walkie_sequence_id = self.next_walkie_sequence_id.saturating_add(1);
+        next
     }
 }
 

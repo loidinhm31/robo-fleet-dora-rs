@@ -499,6 +499,58 @@ Ownership invariants:
 - `audio_capture` combines user capture enablement with playback suppression;
   neither state overwrites the other.
 
+### Walkie Contract and Queue Budgets
+
+Frozen target contract after coordinated cutover: walkie uses a versioned
+Socket.IO binary event and paced 20 ms mono frames. The client emits metadata
+first and exactly one binary `Float32Array` or `ArrayBuffer` attachment:
+
+```text
+audio_stream(
+  {
+    protocol_version: 1,
+    stream_id: <UUID>,
+    frame_id: <safe integer>,
+    capture_timestamp_ms: <safe integer>,
+    sample_rate: 8000..192000,
+    channels: 1,
+    sample_count: <scalar samples>,
+    format: "f32le"
+  },
+  <binary attachment of sample_count * 4 bytes>
+)
+```
+
+Contract invariants:
+
+- Current runtime path remains legacy JSON walkie frames until the backend
+  cutover lands. The binary shape below is the frozen target contract.
+- Browser walkie capture owns 20 ms pacing at the actual
+  `AudioContext.sampleRate` after cutover.
+- `audio_stream` is metadata plus exactly one binary attachment; it is never a
+  binary-only event.
+- Legacy JSON `{ audio_data }` payloads are rejected after the coordinated UI
+  and backend cutover.
+- `sample_count` counts scalar mono samples and must match the binary payload
+  exactly.
+- Browser payloads cannot carry authoritative rover routing fields; backend
+  fleet selection remains authoritative.
+- `PlaybackState.producer_instance_id` identifies one producer lifetime and
+  resets ordering after producer restart.
+- `PlaybackState.sequence_id` is a required monotonic `u64` per producer output
+  lifetime. Consumers ignore duplicate or lower sequence IDs on the stream they
+  subscribe to.
+
+Frozen defaults for this flow:
+
+- web ingress queue: 40 ms (two 20 ms browser frames)
+- Dora media queues: four 20 ms frames
+- Dora lifecycle/control queues: eight events
+- walkie playback queue: 80 ms
+- TTS playback queue: 1,000 ms
+- TTS full-buffer stall timeout: 60 ms
+- playback metrics interval: 5,000 ms
+
 ### Frozen Transport Names
 
 Socket.IO client-to-server events:
@@ -507,6 +559,7 @@ Socket.IO client-to-server events:
 |---|---|
 | `tts_command` | Backward-compatible `{ text }`; server assigns command ID, timestamp, and priority |
 | `tts_config_update` | `{ base_revision, config }` compare-and-set request |
+| `audio_stream` | Frozen target: `WalkieAudioFrameMetadata` plus exactly one F32LE binary attachment |
 
 Socket.IO server-to-client events:
 
@@ -619,6 +672,9 @@ subsequent TTS admissions while that local walkie window remains active.
 Walkie remains active until 250 ms after its last valid frame. Rover
 microphone publication is suppressed throughout any playback and for 400 ms
 after playback becomes idle; browser-origin STT is not suppressed.
+Each `PlaybackState` publication includes a monotonic `sequence_id`, so
+downstream consumers can reject stale lifecycle regressions after reconnects or
+cross-node reordering.
 
 ### PCM and Error Contracts
 

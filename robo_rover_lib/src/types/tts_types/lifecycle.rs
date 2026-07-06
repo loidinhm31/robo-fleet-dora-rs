@@ -101,6 +101,8 @@ pub enum PlaybackStateKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlaybackState {
     pub entity_id: String,
+    pub producer_instance_id: String,
+    pub sequence_id: u64,
     pub state: PlaybackStateKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<PlaybackSource>,

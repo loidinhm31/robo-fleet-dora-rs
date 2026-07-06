@@ -84,6 +84,9 @@ impl VoiceStatus {
 impl PlaybackState {
     pub fn validate(&self) -> Result<(), String> {
         validate_entity(&self.entity_id)?;
+        validate_command_id(&self.producer_instance_id)
+            .map_err(|_| "playback producer_instance_id must be a UUID".to_string())?;
+        validate_wire_integer(self.sequence_id, "playback sequence")?;
         validate_timestamp(self.timestamp)?;
         validate_external_detail(&self.detail)?;
         match (

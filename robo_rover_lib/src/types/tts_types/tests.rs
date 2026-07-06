@@ -182,6 +182,8 @@ fn lifecycle_validation_rejects_inconsistent_optional_fields() {
 
     let invalid_playback = PlaybackState {
         entity_id: "rover-kiwi".into(),
+        producer_instance_id: "550e8400-e29b-41d4-a716-446655440001".into(),
+        sequence_id: 1,
         state: PlaybackStateKind::Active,
         source: Some(PlaybackSource::Tts),
         command_id: None,

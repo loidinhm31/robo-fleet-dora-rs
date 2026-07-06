@@ -3,6 +3,7 @@ use serde_json::to_string;
 use super::*;
 
 const COMMAND_ID: &str = "550e8400-e29b-41d4-a716-446655440000";
+const PRODUCER_INSTANCE_ID: &str = "550e8400-e29b-41d4-a716-446655440001";
 const TIMESTAMP: u64 = 1_720_000_000_000;
 
 fn default_status() -> VoiceStatus {
@@ -121,6 +122,8 @@ fn status_config_state_and_playback_match_typescript_fixtures() {
 
     let playback = PlaybackState {
         entity_id: "rover-kiwi".into(),
+        producer_instance_id: PRODUCER_INSTANCE_ID.into(),
+        sequence_id: 7,
         state: PlaybackStateKind::Active,
         source: Some(PlaybackSource::Tts),
         command_id: Some(COMMAND_ID.into()),
@@ -130,7 +133,7 @@ fn status_config_state_and_playback_match_typescript_fixtures() {
     };
     assert_eq!(
         to_string(&playback).unwrap(),
-        r#"{"entity_id":"rover-kiwi","state":"active","source":"tts","command_id":"550e8400-e29b-41d4-a716-446655440000","timestamp":1720000000000}"#
+        r#"{"entity_id":"rover-kiwi","producer_instance_id":"550e8400-e29b-41d4-a716-446655440001","sequence_id":7,"state":"active","source":"tts","command_id":"550e8400-e29b-41d4-a716-446655440000","timestamp":1720000000000}"#
     );
     playback.validate().unwrap();
 
@@ -151,6 +154,8 @@ fn status_config_state_and_playback_match_typescript_fixtures() {
 
     let walkie_preemption = PlaybackState {
         entity_id: "rover-kiwi".into(),
+        producer_instance_id: PRODUCER_INSTANCE_ID.into(),
+        sequence_id: 8,
         state: PlaybackStateKind::Active,
         source: Some(PlaybackSource::Walkie),
         command_id: Some(COMMAND_ID.into()),
@@ -160,7 +165,41 @@ fn status_config_state_and_playback_match_typescript_fixtures() {
     };
     assert_eq!(
         to_string(&walkie_preemption).unwrap(),
-        r#"{"entity_id":"rover-kiwi","state":"active","source":"walkie","command_id":"550e8400-e29b-41d4-a716-446655440000","timestamp":1720000000000,"reason_code":"interrupted_by_walkie","detail":"live walkie started"}"#
+        r#"{"entity_id":"rover-kiwi","producer_instance_id":"550e8400-e29b-41d4-a716-446655440001","sequence_id":8,"state":"active","source":"walkie","command_id":"550e8400-e29b-41d4-a716-446655440000","timestamp":1720000000000,"reason_code":"interrupted_by_walkie","detail":"live walkie started"}"#
     );
     walkie_preemption.validate().unwrap();
+
+    let idle = PlaybackState {
+        entity_id: "rover-kiwi".into(),
+        producer_instance_id: PRODUCER_INSTANCE_ID.into(),
+        sequence_id: 9,
+        state: PlaybackStateKind::Idle,
+        source: None,
+        command_id: None,
+        timestamp: TIMESTAMP,
+        reason_code: None,
+        detail: None,
+    };
+    assert_eq!(
+        to_string(&idle).unwrap(),
+        r#"{"entity_id":"rover-kiwi","producer_instance_id":"550e8400-e29b-41d4-a716-446655440001","sequence_id":9,"state":"idle","timestamp":1720000000000}"#
+    );
+    idle.validate().unwrap();
+
+    let unavailable = PlaybackState {
+        entity_id: "rover-kiwi".into(),
+        producer_instance_id: PRODUCER_INSTANCE_ID.into(),
+        sequence_id: 10,
+        state: PlaybackStateKind::Unavailable,
+        source: None,
+        command_id: None,
+        timestamp: TIMESTAMP,
+        reason_code: Some(VoiceReasonCode::PlaybackUnavailable),
+        detail: Some("audio output unavailable".into()),
+    };
+    assert_eq!(
+        to_string(&unavailable).unwrap(),
+        r#"{"entity_id":"rover-kiwi","producer_instance_id":"550e8400-e29b-41d4-a716-446655440001","sequence_id":10,"state":"unavailable","timestamp":1720000000000,"reason_code":"playback_unavailable","detail":"audio output unavailable"}"#
+    );
+    unavailable.validate().unwrap();
 }
