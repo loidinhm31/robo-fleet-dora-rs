@@ -22,31 +22,50 @@ pub struct ConsumptionEvent {
 pub struct PlaybackBuffers {
     tts: ArrayQueue<BufferedSample>,
     walkie: ArrayQueue<BufferedSample>,
+    monitor: ArrayQueue<f32>,
     walkie_active: AtomicBool,
     current_consumption: AtomicU64,
     interval_activity: AtomicU64,
     dropped_tts: AtomicU64,
     dropped_walkie: AtomicU64,
+    dropped_monitor: AtomicU64,
     cleared_tts: AtomicU64,
     walkie_enqueued: AtomicU64,
     tts_enqueued: AtomicU64,
+    monitor_enqueued: AtomicU64,
     tts_retired: AtomicU64,
     stream_errors: AtomicU64,
 }
 
 impl PlaybackBuffers {
+    #[cfg(test)]
     pub fn new(tts_capacity: usize, walkie_capacity: usize) -> Self {
+        Self::with_monitor_capacity(
+            tts_capacity,
+            walkie_capacity,
+            tts_capacity.max(walkie_capacity),
+        )
+    }
+
+    pub fn with_monitor_capacity(
+        tts_capacity: usize,
+        walkie_capacity: usize,
+        monitor_capacity: usize,
+    ) -> Self {
         Self {
             tts: ArrayQueue::new(tts_capacity),
             walkie: ArrayQueue::new(walkie_capacity),
+            monitor: ArrayQueue::new(monitor_capacity),
             walkie_active: AtomicBool::new(false),
             current_consumption: AtomicU64::new(0),
             interval_activity: AtomicU64::new(0),
             dropped_tts: AtomicU64::new(0),
             dropped_walkie: AtomicU64::new(0),
+            dropped_monitor: AtomicU64::new(0),
             cleared_tts: AtomicU64::new(0),
             walkie_enqueued: AtomicU64::new(0),
             tts_enqueued: AtomicU64::new(0),
+            monitor_enqueued: AtomicU64::new(0),
             tts_retired: AtomicU64::new(0),
             stream_errors: AtomicU64::new(0),
         }
@@ -120,6 +139,24 @@ impl PlaybackBuffers {
         }
     }
 
+    pub fn record_monitor_sample(&self, sample: f32) {
+        self.monitor_enqueued.fetch_add(1, Ordering::Relaxed);
+        if self.monitor.force_push(sample).is_some() {
+            self.dropped_monitor.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn drain_monitor_samples(&self, max_samples: usize) -> Vec<f32> {
+        let mut samples = Vec::with_capacity(max_samples.min(self.monitor.len()));
+        while samples.len() < max_samples {
+            let Some(sample) = self.monitor.pop() else {
+                break;
+            };
+            samples.push(sample);
+        }
+        samples
+    }
+
     pub fn publish_consumption(&self, source: u8, token: u64) {
         let packed = pack_consumption(source, token);
         self.current_consumption.store(packed, Ordering::Release);
@@ -186,11 +223,14 @@ impl PlaybackBuffers {
             tts_retired: self.tts_retired.load(Ordering::Relaxed),
             tts_cleared: self.cleared_tts.load(Ordering::Relaxed),
             walkie_enqueued: self.walkie_enqueued.load(Ordering::Relaxed),
+            monitor_enqueued: self.monitor_enqueued.load(Ordering::Relaxed),
             dropped_tts: self.dropped_tts.load(Ordering::Relaxed),
             dropped_walkie: self.dropped_walkie.load(Ordering::Relaxed),
+            dropped_monitor: self.dropped_monitor.load(Ordering::Relaxed),
             stream_errors: self.stream_errors.load(Ordering::Relaxed),
             tts_depth: self.tts.len(),
             walkie_depth: self.walkie.len(),
+            monitor_depth: self.monitor.len(),
         }
     }
 
@@ -209,11 +249,14 @@ pub struct PlaybackCounts {
     pub tts_retired: u64,
     pub tts_cleared: u64,
     pub walkie_enqueued: u64,
+    pub monitor_enqueued: u64,
     pub dropped_tts: u64,
     pub dropped_walkie: u64,
+    pub dropped_monitor: u64,
     pub stream_errors: u64,
     pub tts_depth: usize,
     pub walkie_depth: usize,
+    pub monitor_depth: usize,
 }
 
 fn pack_consumption(source: u8, token: u64) -> u64 {

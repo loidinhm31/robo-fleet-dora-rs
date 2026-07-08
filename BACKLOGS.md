@@ -32,7 +32,7 @@ Items are grouped by domain and ordered by severity within each group. Each item
 **Resolved:** 2026-03-26 — Phase 01 (web-bridge-auth-improvements)
 
 Replaced plaintext comparison with bcrypt verify via `verify_password_blocking` (spawn_blocking).
-Credentials now stored as bcrypt hashes in MongoDB (`qm_hub.robo_control_user`).
+Credentials now stored as bcrypt hashes in MongoDB (`db.robo_control_user`).
 
 **Effort:** Small (< 1 day)
 

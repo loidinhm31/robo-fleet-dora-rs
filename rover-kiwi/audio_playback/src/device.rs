@@ -106,6 +106,9 @@ where
             active_source = source;
             active_token = if source == SOURCE_TTS { token } else { 0 };
         }
+        if source != SOURCE_IDLE {
+            buffers.record_monitor_sample(sample);
+        }
         let converted = T::from_sample(sample);
         frame.fill(converted);
     }

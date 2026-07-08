@@ -72,6 +72,7 @@ nodes:
       # Data FROM active rovers via Zenoh (subscribers)
       - video_frame         # JPEG frames from rover camera (with entity_id in metadata)
       - audio_frame         # Int16LE audio from rover microphone (with origin metadata)
+      - playback_audio_frame # Int16LE rover speaker monitor for browser clients only
       - rover_telemetry     # Rover position/velocity telemetry (with entity_id)
       - arm_telemetry       # Arm joint positions (with entity_id)
       - servo_telemetry     # Visual servoing telemetry (with entity_id)
@@ -126,7 +127,7 @@ nodes:
 
   # Command parser - NLU with pattern matching
   # Phase 02: carries authoritative target_entity_id in every actuator output.
-  # Automatic parser TTS removed — manual UI TTS preserved via kokoro-tts.
+  # Automatic parser TTS removed; manual UI TTS is routed to rover edge_voice.
   - id: command-parser
     build: cargo build --release -p command_parser
     path: ../target/release/command_parser
@@ -150,6 +151,9 @@ nodes:
       video_frame: orchestra-bridge/video_frame    # JPEG from rover-side encoder
       audio_frame:
         source: orchestra-bridge/audio_frame    # Int16LE PCM from rover
+        queue_size: 4
+      playback_audio_frame:
+        source: orchestra-bridge/playback_audio_frame # Int16LE PCM from rover speakers, not STT
         queue_size: 4
 
       # ========================================================================
@@ -212,7 +216,7 @@ nodes:
 
       # Authentication (credentials stored in MongoDB — see MONGODB_URI)
       MONGODB_URI: "${MONGODB_URI:-mongodb://localhost:27017}"
-      MONGODB_DATABASE: "${MONGODB_DATABASE:-qm_hub}"
+      MONGODB_DATABASE: "${MONGODB_DATABASE:-db}"
       JWT_SECRET: "${JWT_SECRET:-}"
       SESSION_TTL_SECONDS: "3600"
       # Local validation default. Override to false in stricter environments.

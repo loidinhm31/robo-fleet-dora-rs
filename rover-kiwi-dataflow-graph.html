@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+</head>
+
+<body>
+    <div class="mermaid">
+        flowchart TB
+  arm-controller["**arm-controller**"]
+  audio-capture["**audio-capture**"]
+  audio-converter["**audio-converter**"]
+  audio-playback["**audio-playback**"]
+  edge-voice["**edge-voice**"]
+  gst-camera["**gst-camera**"]
+  performance-monitor["**performance-monitor**"]
+  rover-controller["**rover-controller**"]
+  video-encoder["**video-encoder**"]
+  visual-servo-controller["**visual-servo-controller**"]
+  zenoh-bridge["**zenoh-bridge**"]
+subgraph ___dora___ [dora]
+  subgraph ___timer_timer___ [timer]
+    dora/timer/millis/20[\millis/20/]
+    dora/timer/millis/33[\millis/33/]
+    dora/timer/millis/50[\millis/50/]
+    dora/timer/secs/5[\secs/5/]
+  end
+end
+  zenoh-bridge -- arm_command --> arm-controller
+  zenoh-bridge -- audio_command as audio_control --> audio-capture
+  audio-playback -- playback_state --> audio-capture
+  dora/timer/millis/50 -- tick --> audio-capture
+  audio-capture -- audio as audio_input --> audio-converter
+  dora/timer/millis/20 -- tick --> audio-playback
+  edge-voice -- tts_audio --> audio-playback
+  edge-voice -- tts_synthesis_state --> audio-playback
+  zenoh-bridge -- audio_stream as walkie_audio --> audio-playback
+  audio-playback -- playback_result --> edge-voice
+  audio-playback -- walkie_state as playback_state --> edge-voice
+  zenoh-bridge -- tts_command --> edge-voice
+  zenoh-bridge -- tts_config_command --> edge-voice
+  zenoh-bridge -- camera_command as camera_control --> gst-camera
+  zenoh-bridge -- stream_command as stream_control --> gst-camera
+  dora/timer/millis/33 -- tick --> gst-camera
+  zenoh-bridge -- tracking_command --> gst-camera
+  dora/timer/secs/5 -- tick --> performance-monitor
+  zenoh-bridge -- rover_command --> rover-controller
+  visual-servo-controller -- servo_command --> rover-controller
+  gst-camera -- frame as video_frame --> video-encoder
+  gst-camera -- tracking_telemetry --> visual-servo-controller
+  audio-converter -- audio_output as audio_frame --> zenoh-bridge
+  gst-camera -- detections --> zenoh-bridge
+  performance-monitor -- metrics as performance_metrics --> zenoh-bridge
+  visual-servo-controller -- servo_telemetry --> zenoh-bridge
+  gst-camera -- tracked_detections --> zenoh-bridge
+  gst-camera -- tracking_telemetry --> zenoh-bridge
+  edge-voice -- tts_command_result --> zenoh-bridge
+  video-encoder -- encoded_frame as video_frame --> zenoh-bridge
+  edge-voice -- voice_status --> zenoh-bridge
+
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({ startOnLoad: true, securityLevel: 'loose', theme: 'base' });
+    </script>
+</body>
+
+</html>

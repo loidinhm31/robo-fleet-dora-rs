@@ -145,7 +145,7 @@ preserves the old cache until the staging cache has passed validation.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MONGODB_URI` | `mongodb://localhost:27017` | MongoDB connection string |
-| `MONGODB_DATABASE` | `qm_hub` | MongoDB database name |
+| `MONGODB_DATABASE` | `db` | MongoDB database name |
 | `JWT_SECRET` | *(auto-generated)* | JWT signing secret — set explicitly in production |
 | `ALLOW_DEFAULT_CREDENTIALS` | `false` | Bootstrap mode: allow default admin/password login |
 | `SESSION_TTL_SECONDS` | `3600` | Session expiry in seconds |

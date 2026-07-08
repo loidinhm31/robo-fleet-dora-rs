@@ -19,6 +19,7 @@ struct ReportedState {
 pub struct PlaybackOutputs {
     playback_state: DataId,
     walkie_state: DataId,
+    pub(crate) playback_audio: DataId,
     pub(crate) playback_result: DataId,
 }
 
@@ -27,6 +28,7 @@ impl PlaybackOutputs {
         Self {
             playback_state: DataId::from("playback_state".to_owned()),
             walkie_state: DataId::from("walkie_state".to_owned()),
+            playback_audio: DataId::from("playback_audio".to_owned()),
             playback_result: DataId::from("playback_result".to_owned()),
         }
     }

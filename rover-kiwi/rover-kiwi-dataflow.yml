@@ -98,6 +98,7 @@ nodes:
     outputs:
       - playback_state  # Actual samples consumed; gates rover microphone publication
       - walkie_state    # 250 ms walkie authority window; cancels/rejects edge TTS
+      - playback_audio   # Digital speaker monitor for browser clients
       - playback_result # Terminal only after final CPAL consumption or playback failure
     env:
       RUST_LOG: info
@@ -244,6 +245,9 @@ nodes:
       video_frame: video-encoder/encoded_frame
       audio_frame:
         source: audio-converter/audio_output
+        queue_size: 4
+      playback_audio:
+        source: audio-playback/playback_audio
         queue_size: 4
       # rover_telemetry: sim-interface/rover_telemetry
       # arm_telemetry: sim-interface/arm_telemetry

@@ -77,7 +77,11 @@ fn encode_f32le(samples: &[f32]) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    fn parameters(sample_rate: i64, frame_id: i64, sample_count: i64) -> BTreeMap<String, Parameter> {
+    fn parameters(
+        sample_rate: i64,
+        frame_id: i64,
+        sample_count: i64,
+    ) -> BTreeMap<String, Parameter> {
         BTreeMap::from([
             ("source_kind".into(), Parameter::String("walkie".into())),
             ("priority".into(), Parameter::String("high".into())),
@@ -97,8 +101,8 @@ mod tests {
     #[test]
     fn preserves_walkie_pcm_envelope_for_zenoh() {
         for sample_rate in [16_000_i64, 44_100, 48_000] {
-            let packet = encode_walkie_packet(&parameters(sample_rate, 7, 3), &[0.25, -0.5, 0.75])
-                .unwrap();
+            let packet =
+                encode_walkie_packet(&parameters(sample_rate, 7, 3), &[0.25, -0.5, 0.75]).unwrap();
             let decoded = PcmFramePacket::decode(&packet).unwrap();
             assert_eq!(decoded.metadata.sample_rate, sample_rate as u32);
             assert_eq!(decoded.metadata.frame_id, 7);

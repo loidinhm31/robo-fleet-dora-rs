@@ -321,7 +321,11 @@ fn audio_frame_metadata(
     Ok((metadata, entity_id))
 }
 
-fn browser_audio_frame_payload(metadata: AudioFrameMetadata, entity_id: Option<String>) -> Value {
+fn browser_audio_frame_payload(
+    metadata: AudioFrameMetadata,
+    entity_id: Option<String>,
+    source_kind: &'static str,
+) -> Value {
     let duration_ms = f64::from(metadata.sample_count) * 1_000.0
         / (f64::from(metadata.sample_rate) * f64::from(metadata.channels));
     serde_json::json!({
@@ -336,6 +340,7 @@ fn browser_audio_frame_payload(metadata: AudioFrameMetadata, entity_id: Option<S
         "duration_ms": duration_ms,
         "format": metadata.format.metadata_name(),
         "entity_id": entity_id,
+        "source_kind": source_kind,
     })
 }
 
@@ -1489,7 +1494,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // MongoDB startup
     let mongodb_uri =
         env::var("MONGODB_URI").unwrap_or_else(|_| "mongodb://localhost:27017".to_string());
-    let mongodb_database = env::var("MONGODB_DATABASE").unwrap_or_else(|_| "qm_hub".to_string());
+    let mongodb_database = env::var("MONGODB_DATABASE").unwrap_or_else(|_| "db".to_string());
 
     tracing::info!(
         "Connecting to MongoDB at {}, database: {}",
@@ -2155,7 +2160,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Event::Input {
                     id, data, metadata, ..
                 } => match id.as_str() {
-                    "audio_frame" => {
+                    "audio_frame" | "playback_audio_frame" => {
+                        let source_kind = if id.as_str() == "playback_audio_frame" {
+                            "rover_playback"
+                        } else {
+                            "rover_microphone"
+                        };
                         let started = Instant::now();
                         if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
                             if binary_array.len() != 1 {
@@ -2169,8 +2179,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let audio_bytes = binary_array.value(0);
                             match audio_frame_metadata(&metadata.parameters, audio_bytes.len()) {
                                 Ok((origin, entity_id)) => {
-                                    let sequence_key =
+                                    let sequence_key_base =
                                         entity_id.clone().unwrap_or_else(|| "direct".into());
+                                    let sequence_key = format!("{source_kind}:{sequence_key_base}");
                                     match audio_sequences
                                         .entry(sequence_key)
                                         .or_default()
@@ -2208,7 +2219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         );
                                     }
                                     let audio_frame_data =
-                                        browser_audio_frame_payload(origin, entity_id);
+                                        browser_audio_frame_payload(origin, entity_id, source_kind);
 
                                     if let Ok(clients) = state_for_video.video_clients.lock() {
                                         for client in clients
@@ -3179,7 +3190,8 @@ mod tests {
             sample_count: 800,
             format: PcmSampleFormat::S16Le,
         };
-        let payload = browser_audio_frame_payload(origin, Some("rover-a".into()));
+        let payload =
+            browser_audio_frame_payload(origin, Some("rover-a".into()), "rover_microphone");
         let pcm = vec![0u8; 1_600];
         let packet = Packet::bin_event("/", "audio_frame", payload, vec![pcm.clone()]);
 

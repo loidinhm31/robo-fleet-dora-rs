@@ -1,8 +1,10 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use dora_node_api::{DoraNode, Event};
+use dora_node_api::{arrow::array::BinaryArray, DoraNode, Event, MetadataParameters, Parameter};
 use eyre::Result;
+use robo_rover_lib::{AudioFrameMetadata, PcmSampleFormat, TtsResultState};
+use uuid::Uuid;
 
 use crate::arbiter::SourceArbiter;
 use crate::buffers::PlaybackBuffers;
@@ -10,9 +12,8 @@ use crate::device::default_output_plan;
 use crate::playback_event::ArbiterEvent;
 use crate::playback_result::report_tts_result;
 use crate::protocol::{parse_source_frame, AudioSource};
-use crate::state::{PlaybackOutputs, StateReporter};
+use crate::state::{current_time_ms, PlaybackOutputs, StateReporter};
 use crate::tts_result::parse_tts_result;
-use robo_rover_lib::TtsResultState;
 
 const DEFAULT_TTS_BUFFER_MILLIS: usize = 1_000;
 const DEFAULT_WALKIE_BUFFER_MILLIS: usize = 80;
@@ -37,11 +38,13 @@ pub fn run() -> Result<()> {
         .map(|plan| plan.sample_rate())
         .unwrap_or(48_000);
     let config = PlaybackRuntimeConfig::from_env(output_rate);
-    let buffers = Arc::new(PlaybackBuffers::new(
+    let buffers = Arc::new(PlaybackBuffers::with_monitor_capacity(
         config.tts_capacity_samples,
         config.walkie_capacity_samples,
+        config.monitor_capacity_samples,
     ));
     let mut arbiter = SourceArbiter::new(output_rate, buffers.clone(), config.tts_stall_timeout);
+    let mut playback_monitor = PlaybackMonitor::new(output_rate);
     let mut last_metric = Instant::now();
     let opened_device = plan.and_then(|plan| plan.open(buffers.clone(), volume));
     let mut device = None;
@@ -83,6 +86,12 @@ pub fn run() -> Result<()> {
                             event.source,
                             event.token,
                             arbiter.command_ids(),
+                        )?;
+                        playback_monitor.flush(
+                            &buffers,
+                            &mut node,
+                            &outputs,
+                            event.source == crate::buffers::SOURCE_IDLE,
                         )?;
                         if let Some(event) = arbiter.tick(Instant::now()) {
                             handle_arbiter_event(event, &mut reporter, &mut node, &outputs)?;
@@ -197,6 +206,7 @@ pub fn run() -> Result<()> {
 struct PlaybackRuntimeConfig {
     tts_capacity_samples: usize,
     walkie_capacity_samples: usize,
+    monitor_capacity_samples: usize,
     tts_stall_timeout: Duration,
 }
 
@@ -220,23 +230,167 @@ impl PlaybackRuntimeConfig {
             MIN_BUFFER_MILLIS as u64,
             MAX_TTS_STALL_MILLIS,
         );
+        let monitor_buffer_ms = env_millis(
+            "PLAYBACK_MONITOR_BUFFER_MS",
+            DEFAULT_TTS_BUFFER_MILLIS,
+            MIN_BUFFER_MILLIS,
+            MAX_TTS_BUFFER_MILLIS,
+        );
         let tts_capacity_samples = millis_to_samples(output_rate, tts_buffer_ms).max(1);
         let walkie_capacity_samples = millis_to_samples(output_rate, walkie_buffer_ms).max(1);
+        let monitor_capacity_samples = millis_to_samples(output_rate, monitor_buffer_ms).max(1);
         tracing::info!(
             output_rate,
             tts_buffer_ms,
             walkie_buffer_ms,
+            monitor_buffer_ms,
             stall_ms,
             tts_capacity_samples,
             walkie_capacity_samples,
+            monitor_capacity_samples,
             "audio playback buffer configuration"
         );
         Self {
             tts_capacity_samples,
             walkie_capacity_samples,
+            monitor_capacity_samples,
             tts_stall_timeout: Duration::from_millis(stall_ms),
         }
     }
+}
+
+struct PlaybackMonitor {
+    stream_id: Uuid,
+    next_frame_id: u64,
+    frame_samples: usize,
+    sample_rate: u32,
+    pending: Vec<f32>,
+}
+
+impl PlaybackMonitor {
+    fn new(sample_rate: u32) -> Self {
+        let frame_samples = millis_to_samples(sample_rate, 20).max(1);
+        Self {
+            stream_id: Uuid::new_v4(),
+            next_frame_id: 0,
+            frame_samples,
+            sample_rate,
+            pending: Vec::with_capacity(frame_samples),
+        }
+    }
+
+    fn flush(
+        &mut self,
+        buffers: &PlaybackBuffers,
+        node: &mut DoraNode,
+        outputs: &PlaybackOutputs,
+        flush_partial: bool,
+    ) -> Result<()> {
+        loop {
+            let needed = self.frame_samples.saturating_sub(self.pending.len());
+            if needed > 0 {
+                let drained = buffers.drain_monitor_samples(needed);
+                if drained.is_empty() {
+                    break;
+                }
+                self.pending.extend(drained);
+            }
+            if self.pending.len() < self.frame_samples {
+                break;
+            }
+
+            let remainder = self.pending.split_off(self.frame_samples);
+            let samples = std::mem::replace(&mut self.pending, remainder);
+            self.send_frame(samples, node, outputs)?;
+        }
+        if flush_partial && !self.pending.is_empty() {
+            let samples = std::mem::take(&mut self.pending);
+            self.send_frame(samples, node, outputs)?;
+        }
+        Ok(())
+    }
+
+    fn send_frame(
+        &mut self,
+        samples: Vec<f32>,
+        node: &mut DoraNode,
+        outputs: &PlaybackOutputs,
+    ) -> Result<()> {
+        let payload = float32_to_s16le(&samples);
+        let metadata = AudioFrameMetadata {
+            stream_id: self.stream_id,
+            frame_id: self.next_frame_id,
+            capture_timestamp_ms: current_time_ms(),
+            sample_rate: self.sample_rate,
+            channels: 1,
+            sample_count: samples.len().try_into()?,
+            format: PcmSampleFormat::S16Le,
+        };
+        metadata
+            .validate_payload_len(payload.len())
+            .map_err(eyre::Report::msg)?;
+        self.next_frame_id = self.next_frame_id.saturating_add(1);
+        let params = audio_parameters(metadata, payload.len())?;
+        node.send_output(
+            outputs.playback_audio.clone(),
+            params,
+            BinaryArray::from_vec(vec![payload.as_slice()]),
+        )?;
+        Ok(())
+    }
+}
+
+fn audio_parameters(
+    metadata: AudioFrameMetadata,
+    payload_len: usize,
+) -> Result<MetadataParameters> {
+    metadata
+        .validate_payload_len(payload_len)
+        .map_err(eyre::Report::msg)?;
+    Ok(MetadataParameters::from([
+        (
+            "stream_id".into(),
+            Parameter::String(metadata.stream_id.to_string()),
+        ),
+        (
+            "frame_id".into(),
+            Parameter::Integer(metadata.frame_id.try_into()?),
+        ),
+        (
+            "capture_timestamp_ms".into(),
+            Parameter::Integer(metadata.capture_timestamp_ms.try_into()?),
+        ),
+        (
+            "sample_rate".into(),
+            Parameter::Integer(i64::from(metadata.sample_rate)),
+        ),
+        (
+            "channels".into(),
+            Parameter::Integer(i64::from(metadata.channels)),
+        ),
+        (
+            "sample_count".into(),
+            Parameter::Integer(i64::from(metadata.sample_count)),
+        ),
+        (
+            "format".into(),
+            Parameter::String(metadata.format.metadata_name().into()),
+        ),
+        ("size".into(), Parameter::Integer(payload_len.try_into()?)),
+    ]))
+}
+
+fn float32_to_s16le(samples: &[f32]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(samples.len() * 2);
+    for &sample in samples {
+        let converted = if sample <= -1.0 {
+            i16::MIN
+        } else {
+            (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)).round() as i16
+        };
+        output.extend_from_slice(&converted.to_le_bytes());
+    }
+    output
 }
 
 fn env_millis(name: &str, default: usize, min: usize, max: usize) -> usize {
@@ -279,11 +433,14 @@ fn log_playback_metrics(
         tts_retired = counts.tts_retired,
         tts_cleared = counts.tts_cleared,
         walkie_enqueued = counts.walkie_enqueued,
+        monitor_enqueued = counts.monitor_enqueued,
         dropped_tts = counts.dropped_tts,
         dropped_walkie = counts.dropped_walkie,
+        dropped_monitor = counts.dropped_monitor,
         stream_errors = counts.stream_errors,
         tts_depth = counts.tts_depth,
         walkie_depth = counts.walkie_depth,
+        monitor_depth = counts.monitor_depth,
         pending_tts_frames = tts.pending_frames,
         pending_tts_samples = tts.pending_samples,
         pending_overflows = tts.pending_overflows,

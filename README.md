@@ -208,7 +208,6 @@ Check - [ARCHITECTURE](ARCHITECTURE.md)
 - **central-speech-recognizer**: Sherpa VAD/offline speech-to-text with browser-private and rover source-aware routing
 - **command-parser**: NLU for voice command intent extraction
 - **edge-voice** (rover): Supertonic 3 INT8 TTS service for edge synthesis
-- **kokoro-tts** (orchestra): Legacy package retained in-tree, not part of the current production voice path
 - **audio-playback**: Real-time audio playback for walkie-talkie mode
 
 **Control & Communication:**
@@ -331,10 +330,6 @@ edge-voice:
 - Ten voice SIDs are available; default M1 is SID 5
 - Supertonic OpenRAIL-M notice is tracked in `models/SUPERTONIC-OPENRAIL-M-NOTICE.txt`
 
-The legacy orchestra Kokoro package remains in the repository for historical
-reference, but it is not part of the current production or phase 10 verified
-voice path.
-
 ### Web Bridge Authentication
 
 Authentication uses MongoDB + bcrypt + JWT. Configure via environment variables in the dataflow YAML:
@@ -343,7 +338,7 @@ Authentication uses MongoDB + bcrypt + JWT. Configure via environment variables 
 web-bridge:
   env:
     MONGODB_URI: "mongodb://localhost:27017"
-    MONGODB_DATABASE: "qm_hub"
+    MONGODB_DATABASE: "db"
     JWT_SECRET: "your-secret"           # auto-generated with warning if unset
     ALLOW_DEFAULT_CREDENTIALS: "false"  # set true only for first-run bootstrap
     SESSION_TTL_SECONDS: "3600"
@@ -533,12 +528,6 @@ pnpm check-types
 - Confirm `EDGE_VOICE_MODEL_DIR` points at the Supertonic directory
 - Playback output is owned by `audio-playback`; Phase 04 wires `tts_audio` consumption and suppression
 
-**Legacy orchestra Kokoro path not working**:
-- Verify Kokoro models downloaded: `ls -lh models/.cache/kokoros/kokoro-v1.0.onnx`
-- Confirm whether your local `orchestra-dataflow.yml` explicitly re-enables `kokoro-tts` before relying on orchestra-side TTS
-- Check audio output device: `pactl list sinks`
-- Increase `TTS_VOLUME` in kokoro-tts config
-
 **Walkie-talkie audio choppy**:
 - Check network latency (ping between client and server)
 - Reduce audio chunk size in web UI
@@ -565,7 +554,6 @@ pnpm check-types
 - **Audio Capture**: 16 kHz, Mono, 20 Hz chunks (50ms); F32 locally, S16LE after rover conversion
 - **Speech Recognition**: Workstation central recognizer with Sherpa VAD/offline decode; browser transcripts stay private, rover transcripts stay fleet-visible
 - **TTS Synthesis** (rover): Sherpa-ONNX Supertonic 3 INT8 via `edge_voice`
-- **TTS Synthesis** (orchestra): legacy-only if you explicitly re-enable the Kokoro path
 - **Walkie-talkie Latency**: <100ms on local network
 
 **Network:**
@@ -706,7 +694,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 **Audio & Voice:**
 - [cpal](https://github.com/RustAudio/cpal) - Cross-platform audio I/O
 - [Sherpa-ONNX](https://github.com/k2-fsa/sherpa-onnx) - STT and Supertonic TTS runtime
-- [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) - High-quality TTS (orchestra)
 - [Aho-Corasick](https://docs.rs/aho-corasick/) - Efficient pattern matching
 
 **Web & UI:**

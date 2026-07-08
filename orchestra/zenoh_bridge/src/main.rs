@@ -31,6 +31,7 @@ struct RoverSubscriptions {
     // Data subscribers (FROM rover)
     video_sub: ZenohSubscriber,
     audio_sub: ZenohSubscriber,
+    playback_audio_sub: ZenohSubscriber,
     rover_telemetry_sub: ZenohSubscriber,
     arm_telemetry_sub: ZenohSubscriber,
     servo_telemetry_sub: ZenohSubscriber,
@@ -73,6 +74,13 @@ async fn subscribe_to_rover(
         .await
         .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", audio_topic, e))?;
     tracing::info!("{}", audio_topic);
+
+    let playback_audio_topic = format!("rover/{}/audio/playback/raw", entity_id);
+    let playback_audio_sub = session
+        .declare_subscriber(&playback_audio_topic)
+        .await
+        .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", playback_audio_topic, e))?;
+    tracing::info!("{}", playback_audio_topic);
 
     let rover_telemetry_topic = format!("rover/{}/telemetry/rover", entity_id);
     let rover_telemetry_sub = session
@@ -141,6 +149,7 @@ async fn subscribe_to_rover(
         entity_id: entity_id.to_string(),
         video_sub,
         audio_sub,
+        playback_audio_sub,
         rover_telemetry_sub,
         arm_telemetry_sub,
         servo_telemetry_sub,
@@ -363,6 +372,7 @@ async fn main() -> Result<()> {
 
     let video_frame_output = DataId::from("video_frame".to_owned());
     let audio_frame_output = DataId::from("audio_frame".to_owned());
+    let playback_audio_frame_output = DataId::from("playback_audio_frame".to_owned());
     let rover_telemetry_output = DataId::from("rover_telemetry".to_owned());
     let arm_telemetry_output = DataId::from("arm_telemetry".to_owned());
     let servo_telemetry_output = DataId::from("servo_telemetry".to_owned());
@@ -382,6 +392,7 @@ async fn main() -> Result<()> {
     let mut audio_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut audio_age_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut audio_sequences: HashMap<String, AudioFrameSequenceTracker> = HashMap::new();
+    let mut playback_audio_sequences: HashMap<String, AudioFrameSequenceTracker> = HashMap::new();
     let mut legacy_audio_states: HashMap<String, LegacyAudioState> = HashMap::new();
     let mut audio_errors = 0u64;
     let mut audio_sequence_drops = 0u64;
@@ -742,6 +753,68 @@ async fn main() -> Result<()> {
                             audio_errors = audio_errors.saturating_add(1);
                             audio_metrics.record_error();
                             tracing::warn!(%error, %entity_id, "rejected invalid audio packet");
+                        }
+                    }
+                }
+            }
+
+            // Receive rover speaker monitor audio for browser operators only.
+            result = receive_from_rovers(&active_rovers, |subs| &subs.playback_audio_sub) => {
+                if let Some((entity_id, sample)) = result {
+                    let receive_started = Instant::now();
+                    let payload = sample.payload().to_bytes();
+                    match PcmFramePacket::decode(payload.as_ref()) {
+                        Ok(frame) if frame.metadata.format == PcmSampleFormat::S16Le => {
+                            match playback_audio_sequences.entry(entity_id.clone()).or_default()
+                                .observe(frame.metadata) {
+                                Ok(observation) => {
+                                    audio_metrics.record_drops(observation.missing_frames);
+                                    audio_sequence_drops = audio_sequence_drops
+                                        .saturating_add(observation.missing_frames);
+                                }
+                                Err(error) => {
+                                    audio_errors = audio_errors.saturating_add(1);
+                                    audio_metrics.record_error();
+                                    tracing::warn!(%error, %entity_id, "rejected duplicate or regressed playback audio frame");
+                                    continue;
+                                }
+                            }
+                            let frame_age_ms = record_capture_age(
+                                &mut audio_age_metrics,
+                                frame.metadata.capture_timestamp_ms,
+                            );
+                            if frame_age_ms.is_none() {
+                                audio_errors = audio_errors.saturating_add(1);
+                                audio_metrics.record_error();
+                            }
+                            let params = audio_dora_parameters(frame.metadata, &entity_id, frame.payload.len());
+                            let audio_array = BinaryArray::from_vec(vec![frame.payload]);
+                            if let Err(error) = node.send_output(playback_audio_frame_output.clone(), params, audio_array) {
+                                audio_errors = audio_errors.saturating_add(1);
+                                audio_metrics.record_error();
+                                tracing::error!(%error, %entity_id, "failed to forward playback audio frame to Dora");
+                            } else {
+                                audio_metrics.record(receive_started.elapsed(), payload.len());
+                            }
+                            if let Some(snapshot) = audio_metrics.snapshot_if_due() {
+                                tracing::info!(metric="audio_pipeline", stage="orchestra_zenoh_receive_playback",
+                                    %entity_id, stream_id=%frame.metadata.stream_id,
+                                    frame_id=frame.metadata.frame_id, frame_age_ms=?frame_age_ms,
+                                    count=snapshot.count, bytes=snapshot.bytes,
+                                    drops=snapshot.drops, errors=snapshot.errors,
+                                    p50_us=snapshot.p50_us, p95_us=snapshot.p95_us,
+                                    p99_us=snapshot.p99_us, max_us=snapshot.max_us);
+                            }
+                        }
+                        Ok(_) => {
+                            audio_errors = audio_errors.saturating_add(1);
+                            audio_metrics.record_error();
+                            tracing::warn!(%entity_id, "rejected non-s16le playback audio packet");
+                        }
+                        Err(error) => {
+                            audio_errors = audio_errors.saturating_add(1);
+                            audio_metrics.record_error();
+                            tracing::warn!(%error, %entity_id, "rejected invalid playback audio packet");
                         }
                     }
                 }

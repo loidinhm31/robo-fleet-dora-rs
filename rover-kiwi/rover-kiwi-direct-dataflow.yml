@@ -40,6 +40,7 @@ nodes:
     outputs:
       - playback_state
       - walkie_state
+      - playback_audio
       - playback_result
     env:
       RUST_LOG: info
@@ -214,6 +215,9 @@ nodes:
       video_frame: video-encoder/encoded_frame
       audio_frame:
         source: audio-converter/audio_output
+        queue_size: 4
+      playback_audio_frame:
+        source: audio-playback/playback_audio
         queue_size: 4
       servo_telemetry: visual-servo-controller/servo_telemetry
       detections: gst-camera/detections

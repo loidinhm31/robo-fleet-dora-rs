@@ -78,6 +78,19 @@ async fn main() -> Result<()> {
         .map_err(|e| eyre::eyre!("Failed to declare publisher {}: {}", audio_topic, e))?;
     tracing::info!("Publisher: {}", audio_topic);
 
+    let playback_audio_topic = format!("rover/{}/audio/playback/raw", entity_id);
+    let playback_audio_pub = session
+        .declare_publisher(&playback_audio_topic)
+        .await
+        .map_err(|e| {
+            eyre::eyre!(
+                "Failed to declare publisher {}: {}",
+                playback_audio_topic,
+                e
+            )
+        })?;
+    tracing::info!("Publisher: {}", playback_audio_topic);
+
     let rover_telemetry_topic = format!("rover/{}/telemetry/rover", entity_id);
     let rover_telemetry_pub = session
         .declare_publisher(&rover_telemetry_topic)
@@ -270,6 +283,7 @@ async fn main() -> Result<()> {
     let mut walkie_forward_failures: u64 = 0;
     let mut audio_age_metrics = MetricWindow::new(Duration::from_secs(5));
     let mut audio_sequence = AudioFrameSequenceTracker::default();
+    let mut playback_audio_sequence = AudioFrameSequenceTracker::default();
 
     // Create channel to bridge Dora's sync events to async
     let (dora_tx, dora_rx) = flume::unbounded();
@@ -415,6 +429,65 @@ async fn main() -> Result<()> {
                                         audio_errors = audio_errors.saturating_add(1);
                                         audio_metrics.record_error();
                                         tracing::warn!(%error, "rejected invalid audio frame");
+                                    }
+                                }
+                            }
+                            "playback_audio" => {
+                                let started = Instant::now();
+                                let result = (|| -> Result<_, String> {
+                                    let binary = data.as_any().downcast_ref::<BinaryArray>()
+                                        .ok_or_else(|| "playback audio frame must be BinaryArray".to_string())?;
+                                    if binary.len() != 1 {
+                                        return Err("playback audio frame must contain exactly one payload".into());
+                                    }
+                                    let payload = binary.value(0);
+                                    let audio_metadata = audio_frame_metadata(&metadata.parameters)?;
+                                    if audio_metadata.format != PcmSampleFormat::S16Le {
+                                        return Err("rover Zenoh bridge requires s16le playback audio".into());
+                                    }
+                                    audio_metadata.validate_payload_len(payload.len())?;
+                                    let observation = playback_audio_sequence.observe(audio_metadata)?;
+                                    audio_metrics.record_drops(observation.missing_frames);
+                                    audio_sequence_drops = audio_sequence_drops
+                                        .saturating_add(observation.missing_frames);
+                                    let age_ms = record_capture_age(
+                                        &mut audio_age_metrics,
+                                        audio_metadata.capture_timestamp_ms,
+                                    );
+                                    if age_ms.is_none() {
+                                        audio_errors = audio_errors.saturating_add(1);
+                                        audio_metrics.record_error();
+                                    }
+                                    let packet = PcmFramePacket { metadata: audio_metadata, payload }.encode()?;
+                                    Ok((audio_metadata, age_ms, packet))
+                                })();
+
+                                match result {
+                                    Ok((audio_metadata, frame_age_ms, packet)) => {
+                                        match playback_audio_pub.put(&packet).await {
+                                            Ok(_) => {
+                                                audio_count = audio_count.saturating_add(1);
+                                                audio_metrics.record(started.elapsed(), packet.len());
+                                            }
+                                            Err(error) => {
+                                                audio_errors = audio_errors.saturating_add(1);
+                                                audio_metrics.record_error();
+                                                tracing::error!(%error, "failed to publish playback audio frame");
+                                            }
+                                        }
+                                        if let Some(snapshot) = audio_metrics.snapshot_if_due() {
+                                            tracing::info!(metric="audio_pipeline", stage="rover_zenoh_publish_playback",
+                                                stream_id=%audio_metadata.stream_id, frame_id=audio_metadata.frame_id,
+                                                frame_age_ms=?frame_age_ms, count=snapshot.count, bytes=snapshot.bytes,
+                                                drops=snapshot.drops, errors=snapshot.errors,
+                                                p50_us=snapshot.p50_us, p95_us=snapshot.p95_us,
+                                                p99_us=snapshot.p99_us, max_us=snapshot.max_us);
+                                        }
+                                    }
+                                    Err(error) => {
+                                        audio_errors = audio_errors.saturating_add(1);
+                                        audio_metrics.record_error();
+                                        tracing::warn!(%error, "rejected invalid playback audio frame");
                                     }
                                 }
                             }

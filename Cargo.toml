@@ -13,7 +13,6 @@ members = [
     "orchestra/central_speech_recognizer",
     "orchestra/command_parser",
     "orchestra/zenoh_bridge",
-    "orchestra/kokoro_tts",
 
     # Rover-kiwi - On-robot nodes
     "rover-kiwi/rover_controller",
@@ -46,6 +45,3 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.0", features = ["v4"] }
 zenoh = "1.0"
 zenoh-config = "1.0"
-
-[patch.crates-io]
-espeak-rs-sys = { path = "third_party/espeak-rs-sys" }
