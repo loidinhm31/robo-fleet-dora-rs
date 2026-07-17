@@ -30,7 +30,16 @@ Snapshot date: 2026-07-17
 - Rover Zenoh publishes versioned PCM v1 packets; orchestra validates them and only accepts bounded legacy F32LE during rollout.
 - Orchestra forwards S16LE directly to `web_bridge`, which emits binary audio attachments to browsers.
 - `orchestra/media_recorder` is the Phase 2 Dora node for validated rover JPEG and PCM ingestion. It reads `RECORDING_ROOT`, optional `FFMPEG_PATH`/`FFPROBE_PATH`, and `RECORDING_*` limits; ingests FIFO JPEG and PCM frames through bounded queues; writes `.partial/<recording_id>.mp4.partial` plus adjacent manifests; and atomically promotes finalized MP4/manifest pairs only after FFmpeg and ffprobe validation succeed.
-- Phase 3 and Phase 4 still own the remaining control/query/playback and deployment wiring around recorder output.
+- Phase 3 now wires `media-recorder` into `orchestra/orchestra-dataflow.yml`,
+  exposes authenticated/rate-limited `recording_session_command`,
+  `recording_clip_list`, and `recording_playback_ticket` Socket.IO events, and
+  correlates recorder responses by request ID with reconnect status replay.
+  `RECORDING_CONTROL_QUEUE_CAPACITY` and `RECORDING_REQUEST_TIMEOUT_SECONDS`
+  bound bridge control state. Playback tickets are short-lived in-memory
+  capabilities; `/recordings/playback/:ticket` streams finalized MP4 content
+  with one-range `GET`/`HEAD` support after component-wise no-follow path
+  authorization and file/manifest identity checks. Phase 4 still owns container
+  deployment wiring around recorder output.
 - `central_speech_recognizer` now follows the Phase 01 STT contract: `SpeechTranscription` carries `source_kind`, `profile`, `target_entity_id`, `entity_id`, `stream_id`, `utterance_id`, `language`, `timestamp`, `duration_ms`, and optional `confidence`; `SttStatus` carries `state`, `profile`, `language`, `timestamp`, `error`.
 - Authenticated browsers control STT streams with `voice_command_control` start/stop events and send ordered Float32 frames with `voice_command_audio`; the web bridge owns stream identity, snapshots the selected rover at start, and forwards bounded start/audio/stop messages to central STT.
 - `central_speech_recognizer` has completed the Sherpa Phase 02 runtime cutover: it provisions fixed English/Vietnamese offline profile catalogs under `models/.cache/sherpa-onnx/asr`, validates required files, and loads Silero VAD plus the selected offline recognizer at startup.

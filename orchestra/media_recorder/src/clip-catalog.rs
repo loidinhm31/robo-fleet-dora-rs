@@ -63,6 +63,15 @@ impl ClipCatalog {
             .collect())
     }
 
+    pub fn lookup(&self, recording_id: &str) -> Result<RecordingClip, String> {
+        robo_rover_lib::validate_uuid("recording_id", recording_id)?;
+        self.scan()
+            .0
+            .into_iter()
+            .find(|clip| clip.recording_id == recording_id)
+            .ok_or_else(|| "recording clip not found".into())
+    }
+
     pub fn publish(
         &self,
         partial: &Path,

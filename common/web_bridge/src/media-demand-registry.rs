@@ -179,6 +179,23 @@ impl MediaDemandRegistry {
             .collect()
     }
 
+    pub fn rename_consumer(&mut self, old_id: &str, new_id: &str) {
+        let demands: Vec<_> = self
+            .demands
+            .iter()
+            .filter(|demand| demand.consumer_id == old_id)
+            .cloned()
+            .collect();
+        for demand in demands {
+            self.demands.remove(&demand);
+            self.demands.insert(MediaDemand {
+                entity_id: demand.entity_id,
+                consumer_id: new_id.to_owned(),
+                resource: demand.resource,
+            });
+        }
+    }
+
     pub fn shutdown(&mut self) -> Vec<MediaDemandTransition> {
         let consumers: BTreeSet<_> = self
             .demands
@@ -281,6 +298,23 @@ mod tests {
             .release_consumer_resource("browser:one:stream", MediaResource::Jpeg)
             .unwrap();
         assert_eq!(stop.entity_id, "rover-a");
+    }
+
+    #[test]
+    fn renaming_request_consumer_preserves_demand_without_upstream_flap() {
+        let mut registry = MediaDemandRegistry::default();
+        registry.acquire("rover-a", "recording:request", MediaResource::Camera);
+        registry.rename_consumer("recording:request", "recording:session");
+        assert!(registry
+            .release("rover-a", "recording:request", MediaResource::Camera)
+            .is_none());
+        assert_eq!(
+            registry
+                .release("rover-a", "recording:session", MediaResource::Camera)
+                .unwrap()
+                .enabled,
+            false
+        );
     }
 
     #[test]

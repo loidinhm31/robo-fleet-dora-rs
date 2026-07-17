@@ -144,13 +144,46 @@ nodes:
       RUST_LOG: info
       CONFIDENCE_THRESHOLD: "0.7"
 
+  # Orchestra-side recorder. Media inputs are direct fan-out from the bridge so
+  # recorder backpressure cannot block browser delivery or speech processing.
+  - id: media-recorder
+    build: cargo build --release -p media_recorder
+    path: ../target/release/media_recorder
+    inputs:
+      video_frame:
+        source: orchestra-bridge/video_frame
+        queue_size: 8
+      audio_frame:
+        source: orchestra-bridge/audio_frame
+        queue_size: 8
+      recording_session_command:
+        source: web-bridge/recording_session_command
+        queue_size: 8
+      recording_clip_query:
+        source: web-bridge/recording_clip_query
+        queue_size: 8
+      recording_playback_ticket:
+        source: web-bridge/recording_playback_ticket
+        queue_size: 8
+    outputs:
+      - recording_session_command_result
+      - recording_session_status
+      - recording_clip_list_result
+      - recording_playback_clip_result
+    env:
+      RUST_LOG: info
+      RECORDING_ROOT: "${RECORDING_ROOT:-/home/robo-fleet-recordings}"
+      RECORDING_CONTROL_QUEUE_CAPACITY: "${RECORDING_CONTROL_QUEUE_CAPACITY:-64}"
+
   # Web bridge - Fleet control with entity selection
   - id: web-bridge
     build: cargo build --release -p web_bridge
     path: ../target/release/web_bridge
     inputs:
       # Media streams (encoded data for web clients)
-      video_frame: orchestra-bridge/video_frame    # JPEG from rover-side encoder
+      video_frame:
+        source: orchestra-bridge/video_frame    # JPEG from rover-side encoder
+        queue_size: 8
       audio_frame:
         source: orchestra-bridge/audio_frame    # Int16LE PCM from rover
         queue_size: 4
@@ -182,6 +215,18 @@ nodes:
       tts_command_result:
         source: orchestra-bridge/tts_command_result
         queue_size: 8
+      recording_session_command_result:
+        source: media-recorder/recording_session_command_result
+        queue_size: 8
+      recording_session_status:
+        source: media-recorder/recording_session_status
+        queue_size: 8
+      recording_clip_list_result:
+        source: media-recorder/recording_clip_list_result
+        queue_size: 8
+      recording_playback_clip_result:
+        source: media-recorder/recording_playback_clip_result
+        queue_size: 8
       transcription:
         source: central-speech-recognizer/transcription
         queue_size: 8
@@ -206,6 +251,9 @@ nodes:
       - stt_status_request    # Request current central STT lifecycle status
       - fleet_subscription_command  # Fleet subscription management (activate/deactivate rovers)
       - fleet_select_command        # Fleet selection (which rover receives commands)
+      - recording_session_command
+      - recording_clip_query
+      - recording_playback_ticket
     env:
       RUST_LOG: info
 

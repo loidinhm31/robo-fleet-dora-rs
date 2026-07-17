@@ -258,13 +258,14 @@ fn recording_contract_golden_result_catalog_query_and_ticket_json() {
         request_id: request_id(),
         recording_id: recording_id.into(),
         ticket: "opaque.ticket".into(),
+        url: "/recordings/playback/opaque.ticket".into(),
         expires_at_ms: 2,
     };
     assert_eq!(
         serde_json::to_value(ticket).unwrap(),
         json!({
             "protocol_version": 1, "request_id": request_id(), "recording_id": recording_id,
-            "ticket": "opaque.ticket", "expires_at_ms": 2
+            "ticket": "opaque.ticket", "url": "/recordings/playback/opaque.ticket", "expires_at_ms": 2
         })
     );
 }
