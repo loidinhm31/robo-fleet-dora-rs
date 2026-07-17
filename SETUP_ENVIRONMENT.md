@@ -140,3 +140,13 @@ Notes:
   `STT_MODEL_ROOT` pointing at the Sherpa ASR bundle root.
 * Rover voice output is the `edge_voice` Supertonic path. Playback routing and
   source-aware mic suppression are active in the current dataflows.
+* `media_recorder` requires `RECORDING_ROOT` and uses `FFMPEG_PATH` /
+  `FFPROBE_PATH` only when you need to override the default executables.
+* Tune recorder limits with `RECORDING_MAX_CONCURRENT`,
+  `RECORDING_MAX_DURATION_SECONDS`, `RECORDING_MAX_OUTPUT_BYTES`,
+  `RECORDING_STARTUP_TIMEOUT_SECONDS`,
+  `RECORDING_FINALIZATION_TIMEOUT_SECONDS`, `RECORDING_MIN_FREE_BYTES`,
+  `RECORDING_QUEUE_CAPACITY`, `RECORDING_AUDIO_SAMPLE_RATE`,
+  `RECORDING_AUDIO_CHANNELS`, and `RECORDING_VIDEO_FPS`.
+* The recorder writes finalized MP4 plus manifest pairs under the configured
+  root and stages in `.partial/` until FFmpeg validation passes.
