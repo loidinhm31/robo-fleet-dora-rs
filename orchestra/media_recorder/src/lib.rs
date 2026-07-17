@@ -1,0 +1,12 @@
+#[path = "clip-catalog.rs"]
+pub mod clip_catalog;
+#[path = "config.rs"]
+pub mod config;
+#[path = "ffmpeg-session.rs"]
+pub mod ffmpeg_session;
+#[path = "frame-timeline.rs"]
+pub mod frame_timeline;
+#[path = "path-resolver.rs"]
+pub mod path_resolver;
+#[path = "session-manager.rs"]
+pub mod session_manager;

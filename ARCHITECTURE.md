@@ -700,6 +700,97 @@ sanitized detail of at most 256 characters. Unknown enum values, non-finite
 floats, out-of-range config, malformed UUIDs, absolute model paths, and invalid
 state/source combinations are rejected before publication.
 
+### Manual Fleet Media Recording and Playback
+
+Manual recording is an Orchestra-side concern. The completed Phase 2
+`orchestra/media_recorder` crate is a dedicated Dora node that consumes the
+JPEG and rover-microphone PCM outputs already validated by `orchestra-bridge`;
+it does not add Zenoh topics or change rover capture. The recorder may run one
+session per rover concurrently, up to a configured fleet-wide limit. Each start
+command pins its `entity_id` until finalization.
+
+```mermaid
+flowchart LR
+    Rover["Rover camera and microphone"]
+    RoverBridge["Rover Zenoh bridge"]
+    OrchestraBridge["Orchestra Zenoh bridge<br/>validate and fan out"]
+    Recorder["media-recorder<br/>per-rover FFmpeg session"]
+    Store["Allowlisted recording root<br/>partial then ready MP4"]
+    WebBridge["web-bridge<br/>auth, commands, tickets, HTTP Range"]
+    UI["Web and Tauri UI<br/>path, record, list, play"]
+
+    Rover --> RoverBridge
+    RoverBridge -->|"JPEG v1 and S16LE PCM v1"| OrchestraBridge
+    OrchestraBridge -->|"Dora JPEG and microphone PCM"| Recorder
+    UI -->|"authenticated Socket.IO control/query"| WebBridge
+    WebBridge -->|"Dora command/query"| Recorder
+    Recorder -->|"status and clip metadata"| WebBridge
+    WebBridge -->|"targeted aggregate camera, JPEG, and mic demand"| OrchestraBridge
+    OrchestraBridge -->|"existing targeted control topics"| RoverBridge
+    Recorder -->|"H.264 and AAC MP4"| Store
+    Store -->|"ticketed byte-range response"| WebBridge
+    WebBridge -->|"status, catalog, playback"| UI
+```
+
+Recording invariants:
+
+- `RECORDING_ROOT` is required and configured by the Orchestra deployment. It
+  must resolve to a dedicated existing directory below `/home`, not `/home`
+  itself. Browser input is a normalized relative subdirectory and never an
+  arbitrary absolute host path.
+- `FFMPEG_PATH` and `FFPROBE_PATH` are optional overrides; if unset, the
+  recorder resolves `ffmpeg` and `ffprobe` from `PATH`.
+- `RECORDING_MAX_CONCURRENT`, `RECORDING_MAX_DURATION_SECONDS`,
+  `RECORDING_MAX_OUTPUT_BYTES`, `RECORDING_STARTUP_TIMEOUT_SECONDS`,
+  `RECORDING_FINALIZATION_TIMEOUT_SECONDS`, `RECORDING_MIN_FREE_BYTES`,
+  `RECORDING_QUEUE_CAPACITY`, `RECORDING_AUDIO_SAMPLE_RATE`,
+  `RECORDING_AUDIO_CHANNELS`, and `RECORDING_VIDEO_FPS` bound runtime
+  concurrency, storage, and encoder behavior.
+- The recorder keys active sessions by `entity_id`; later fleet-selection
+  changes cannot retarget a running session. Duplicate starts for one rover are
+  rejected, while different rovers may record concurrently within the limit.
+- `web-bridge` owns an in-memory, per-rover demand registry for camera capture,
+  JPEG publication, and microphone capture. Browser viewers and recording
+  sessions acquire independent demands; only aggregate zero-to-one and
+  one-to-zero transitions reach a rover. A recording stop or failure cannot
+  disable media still required by a viewer or another consumer.
+- Recorder demand uses target-aware control envelopes. `orchestra-bridge`
+  validates the requested `entity_id` against the active fleet and routes it
+  explicitly; recording never relies on the mutable selected-rover fallback.
+  A session remains `starting` until valid media arrives and fails with a
+  bounded timeout that also releases its demand.
+- JPEG frames remain in bounded memory and flow directly to an owned FFmpeg
+  child through anonymous pipes. Individual JPEG files are never created. Rover
+  microphone S16LE is the only audio source in the first release; timestamp
+  gaps are represented by inserted silence so one missing input does not stall
+  finalization. The recorder ingests video as FIFO JPEG frames and audio as FIFO
+  PCM frames, both bounded by the queue capacity.
+- FFmpeg writes an encoded `<recording_id>.mp4.partial` under `.partial/` and
+  the recorder atomically renames it to a collision-free `<recording_id>.mp4`
+  only after both inputs close and the child exits successfully. The adjacent
+  manifest is written as `<recording_id>.manifest.json` in the final directory.
+  Only finalized clips are playable. Stale partials are reported and handled
+  only within the configured root.
+- H.264 video plus AAC audio in MP4 is the browser playback contract. Capture
+  timestamps establish each session timeline; regressions, resets, dropped
+  video, inserted silence, and encoder failures remain observable in status and
+  clip metadata.
+- Recorder media queues are bounded and cannot backpressure the live web,
+  tracking, speech, or control paths. Duration, concurrent-session, free-space,
+  and output-size limits fail closed for new starts without stopping other
+  Orchestra nodes.
+- The recorder owns clip discovery and metadata. `web-bridge` owns external
+  signed-in session checks, request correlation, short-lived playback
+  tickets, and HTTP byte-range delivery. Browser-visible records use opaque clip
+  IDs and relative display paths; absolute host paths never leave the server.
+- The recording UI lives in the separately versioned
+  `/mnt/data/ws/sharing/glean-oak/embed-app/robo-control-app` checkout. Shared UI
+  components serve both web and Tauri shells. The browser never records the
+  live JPEG stream or assembles media files locally.
+- Phase 3 and Phase 4 still own the remaining control/query/playback wiring and
+  deployment integration around this node. Phase 2 only provides the recorder,
+  storage layout, and safe FFmpeg finalization path.
+
 ## References
 
 - **Zenoh Protocol**: https://zenoh.io

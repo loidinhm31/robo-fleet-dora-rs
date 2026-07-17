@@ -3754,6 +3754,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "media_recorder"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "dora-node-api",
+ "eyre",
+ "libc",
+ "os_pipe",
+ "robo_rover_lib",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "memchr"
 version = "2.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4514,6 +4532,16 @@ dependencies = [
  "vswhom",
  "winapi",
  "zip",
+]
+
+[[package]]
+name = "os_pipe"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

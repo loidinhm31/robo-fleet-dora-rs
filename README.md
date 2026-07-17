@@ -36,6 +36,7 @@ A hybrid robotic rover control system with autonomous object tracking and visual
 - **Text-to-Speech** with rover-resident `edge_voice` using Sherpa-ONNX Supertonic 3 INT8
 - **Audio Playback** for walkie-talkie/intercom functionality
 - **Multi-modal Voice Communication** (command, feedback, and direct streaming)
+- **Manual Media Recording** via `orchestra/media_recorder`, which turns validated rover JPEG and PCM into finalized MP4 clips under a deployment-controlled `RECORDING_ROOT`
 - **Docker-verified workstation path** for amd64 Orchestra + Rover containers on the current host
 
 ## Prerequisites
@@ -191,6 +192,26 @@ The web UI displays:
 dora destroy
 ```
 
+## Media Recording Notes
+
+The Phase 2 recorder is Orchestra-side only and already present in the repo as
+`orchestra/media_recorder`.
+
+- `RECORDING_ROOT` is required and must point to a dedicated existing
+  directory below `/home`.
+- `FFMPEG_PATH` and `FFPROBE_PATH` are optional overrides; otherwise the node
+  resolves `ffmpeg` and `ffprobe` from `PATH`.
+- `RECORDING_MAX_CONCURRENT`, `RECORDING_MAX_DURATION_SECONDS`,
+  `RECORDING_MAX_OUTPUT_BYTES`, `RECORDING_STARTUP_TIMEOUT_SECONDS`,
+  `RECORDING_FINALIZATION_TIMEOUT_SECONDS`, `RECORDING_MIN_FREE_BYTES`,
+  `RECORDING_QUEUE_CAPACITY`, `RECORDING_AUDIO_SAMPLE_RATE`,
+  `RECORDING_AUDIO_CHANNELS`, and `RECORDING_VIDEO_FPS` bound the recorder.
+- The node ingests FIFO JPEG video and FIFO S16LE PCM audio, writes partial
+  MP4s under `.partial/`, and publishes final MP4 plus manifest pairs only
+  after FFmpeg exits cleanly.
+- Phase 3 and Phase 4 still add the remaining web/control/playback wiring and
+  deployment integration around the recorder.
+
 ## System Architecture with Dataflow Pipeline
 Check - [ARCHITECTURE](ARCHITECTURE.md)
 
@@ -214,6 +235,7 @@ Check - [ARCHITECTURE](ARCHITECTURE.md)
 - **rover-controller**: Command arbitration, priority handling, mecanum kinematics
 - **arm-controller**: 6-DOF arm control with safety checks
 - **web-bridge**: Socket.IO server (port 3030) with authentication
+- **media-recorder**: Orchestra Dora node for validated rover media ingestion and finalized clip storage
 - **sim-interface**: Unity simulation communication (port 4567)
 
 ### Visual Servoing Pipeline
