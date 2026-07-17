@@ -24,9 +24,11 @@ pub enum RecordingReasonCode {
     InvalidDirectory,
     AlreadyRecording,
     StartupTimeout,
+    Timeout,
     StorageUnavailable,
     EncoderFailed,
     ResourceLimit,
+    NotFound,
     Internal,
 }
 
@@ -101,6 +103,16 @@ pub struct RecordingClipListResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordingClipQueryResult {
+    pub protocol_version: u8,
+    pub request_id: String,
+    pub accepted: bool,
+    pub clips: Vec<RecordingClip>,
+    pub reason_code: Option<RecordingReasonCode>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordingPlaybackTicketRequest {
     pub protocol_version: u8,
     pub request_id: String,
@@ -113,6 +125,7 @@ pub struct RecordingPlaybackTicketResult {
     pub request_id: String,
     pub recording_id: String,
     pub ticket: String,
+    pub url: String,
     pub expires_at_ms: u64,
 }
 
@@ -251,6 +264,27 @@ impl RecordingClipListResult {
     }
 }
 
+impl RecordingClipQueryResult {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_version(self.protocol_version)?;
+        validate_uuid("request_id", &self.request_id)?;
+        if self.accepted != self.reason_code.is_none() {
+            return Err("query result has inconsistent reason_code".into());
+        }
+        if !self.accepted && !self.clips.is_empty() {
+            return Err("rejected query result cannot contain clips".into());
+        }
+        if self
+            .detail
+            .as_ref()
+            .is_some_and(|detail| detail.len() > 256)
+        {
+            return Err("query result detail exceeds 256 characters".into());
+        }
+        self.clips.iter().try_for_each(RecordingClip::validate)
+    }
+}
+
 impl RecordingPlaybackTicketRequest {
     pub fn validate(&self) -> Result<(), String> {
         validate_version(self.protocol_version)?;
@@ -264,7 +298,7 @@ impl RecordingPlaybackTicketResult {
         validate_version(self.protocol_version)?;
         validate_uuid("request_id", &self.request_id)?;
         validate_uuid("recording_id", &self.recording_id)?;
-        validate_ticket(&self.ticket)
+        validate_ticket(&self.ticket).and_then(|_| validate_playback_url(&self.url))
     }
 }
 
@@ -316,4 +350,15 @@ fn validate_ticket(value: &str) -> Result<(), String> {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')))
     .then_some(())
     .ok_or_else(|| "invalid playback ticket".into())
+}
+
+fn validate_playback_url(value: &str) -> Result<(), String> {
+    (value.starts_with("/recordings/playback/")
+        && value.len() <= 256
+        && !value.contains('\\')
+        && !value.contains('\0')
+        && !value.contains('?')
+        && !value.contains('#'))
+    .then_some(())
+    .ok_or_else(|| "invalid playback URL".into())
 }

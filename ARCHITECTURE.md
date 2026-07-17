@@ -787,9 +787,17 @@ Recording invariants:
   `/mnt/data/ws/sharing/glean-oak/embed-app/robo-control-app` checkout. Shared UI
   components serve both web and Tauri shells. The browser never records the
   live JPEG stream or assembles media files locally.
-- Phase 3 and Phase 4 still own the remaining control/query/playback wiring and
-  deployment integration around this node. Phase 2 only provides the recorder,
-  storage layout, and safe FFmpeg finalization path.
+- Phase 3 completes the backend control/query/playback wiring: authenticated and
+  rate-limited Socket.IO handlers route commands and catalog lookups through
+  Dora by request ID, replay cached session status on reconnect, and maintain
+  recorder media demand independently of the initiating browser. Playback uses
+  short-lived opaque tickets and a streaming `GET`/`HEAD` route with one-byte
+  range support; the server opens each path component with no-follow semantics
+  before rechecking MP4 and manifest identity. `RECORDING_CONTROL_QUEUE_CAPACITY`
+  and `RECORDING_REQUEST_TIMEOUT_SECONDS` bound bridge control state.
+- Phase 4 owns deployment integration around this node, and Phases 5-6 own UI
+  consumption and end-to-end rollout. Phase 2 provides the recorder, storage
+  layout, and safe FFmpeg finalization path.
 
 ## References
 

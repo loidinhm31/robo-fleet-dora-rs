@@ -5,9 +5,10 @@ use dora_node_api::{
 };
 use eyre::Result;
 use robo_rover_lib::{
-    init_tracing, AudioFrameMetadata, PcmSampleFormat, RecordingReasonCode, RecordingSessionAction,
-    RecordingSessionCommand, RecordingSessionCommandResult, VideoFrameMetadata,
-    RECORDING_PROTOCOL_VERSION,
+    init_tracing, AudioFrameMetadata, PcmSampleFormat, RecordingClipQuery,
+    RecordingClipQueryResult, RecordingPlaybackTicketRequest, RecordingReasonCode,
+    RecordingSessionAction, RecordingSessionCommand, RecordingSessionCommandResult,
+    VideoFrameMetadata, RECORDING_PROTOCOL_VERSION,
 };
 use std::convert::TryFrom;
 use std::time::Duration;
@@ -24,6 +25,8 @@ fn main() -> Result<()> {
     let (mut node, mut events) = DoraNode::init_from_env()?;
     let result_output = DataId::from("recording_session_command_result".to_owned());
     let status_output = DataId::from("recording_session_status".to_owned());
+    let clip_list_output = DataId::from("recording_clip_list_result".to_owned());
+    let playback_lookup_output = DataId::from("recording_playback_clip_result".to_owned());
     tracing::info!("media recorder ready");
     while let Some(event) = events.recv_timeout(Duration::from_millis(100)) {
         for status in manager.reap() {
@@ -41,6 +44,12 @@ fn main() -> Result<()> {
                     &mut manager,
                     &*data,
                 )?,
+                "recording_clip_query" => {
+                    handle_clip_query(&mut node, &clip_list_output, &manager, &*data)?
+                }
+                "recording_playback_ticket" => {
+                    handle_playback_lookup(&mut node, &playback_lookup_output, &manager, &*data)?
+                }
                 "video_frame" => {
                     if let Ok((entity, frame)) = parse_video(&metadata.parameters, &*data) {
                         let _ = manager.push_video(&entity, frame);
@@ -61,6 +70,99 @@ fn main() -> Result<()> {
         send_json(&mut node, &status_output, &status.wire())?;
     }
     Ok(())
+}
+
+fn handle_clip_query(
+    node: &mut DoraNode,
+    output: &DataId,
+    manager: &SessionManager,
+    data: &dyn Array,
+) -> Result<()> {
+    let bytes = match single_binary(data) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            tracing::warn!(%error, "invalid recording clip query payload");
+            return Ok(());
+        }
+    };
+    let query: RecordingClipQuery = match serde_json::from_slice(bytes) {
+        Ok(query) => query,
+        Err(error) => {
+            tracing::warn!(%error, "invalid recording clip query");
+            return Ok(());
+        }
+    };
+    let result = match query.validate().and_then(|_| {
+        manager.catalog().list(
+            query.entity_id.as_deref(),
+            query.relative_directory.as_deref(),
+        )
+    }) {
+        Ok(clips) => RecordingClipQueryResult {
+            protocol_version: RECORDING_PROTOCOL_VERSION,
+            request_id: query.request_id,
+            accepted: true,
+            clips,
+            reason_code: None,
+            detail: None,
+        },
+        Err(error) => query_failure(&query.request_id, error),
+    };
+    send_json(node, output, &result)?;
+    Ok(())
+}
+
+fn handle_playback_lookup(
+    node: &mut DoraNode,
+    output: &DataId,
+    manager: &SessionManager,
+    data: &dyn Array,
+) -> Result<()> {
+    let bytes = match single_binary(data) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            tracing::warn!(%error, "invalid recording playback lookup payload");
+            return Ok(());
+        }
+    };
+    let request: RecordingPlaybackTicketRequest = match serde_json::from_slice(bytes) {
+        Ok(request) => request,
+        Err(error) => {
+            tracing::warn!(%error, "invalid recording playback lookup");
+            return Ok(());
+        }
+    };
+    let result = match request
+        .validate()
+        .and_then(|_| manager.catalog().lookup(&request.recording_id))
+    {
+        Ok(clip) => RecordingClipQueryResult {
+            protocol_version: RECORDING_PROTOCOL_VERSION,
+            request_id: request.request_id,
+            accepted: true,
+            clips: vec![clip],
+            reason_code: None,
+            detail: None,
+        },
+        Err(error) => query_failure(&request.request_id, error),
+    };
+    send_json(node, output, &result)?;
+    Ok(())
+}
+
+fn query_failure(request_id: &str, detail: String) -> RecordingClipQueryResult {
+    RecordingClipQueryResult {
+        protocol_version: RECORDING_PROTOCOL_VERSION,
+        request_id: request_id.into(),
+        accepted: false,
+        clips: Vec::new(),
+        reason_code: Some(if detail.contains("not found") {
+            RecordingReasonCode::NotFound
+        } else {
+            RecordingReasonCode::InvalidRequest
+        }),
+        detail: Some(detail.chars().take(256).collect()),
+    }
 }
 
 fn handle_command(

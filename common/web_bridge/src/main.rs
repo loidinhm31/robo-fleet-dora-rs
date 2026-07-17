@@ -6,15 +6,18 @@ use dora_node_api::{
 use eyre::Result;
 use robo_rover_lib::types::{
     ActiveRoversStatus, DetectionFrame, FleetSelectCommand, FleetStatus, FleetSubscriptionCommand,
-    SpeechTranscription, SttStatus, SystemMetrics, TrackingCommand, TrackingTelemetry,
+    RecordingClipQuery, RecordingPlaybackTicketRequest, RecordingSessionAction,
+    RecordingSessionCommand, RecordingSessionState, SpeechTranscription, SttStatus, SystemMetrics,
+    TrackingCommand, TrackingTelemetry,
 };
 use robo_rover_lib::{
     capture_age_ms, init_tracing, record_capture_age, ArmCommand, ArmCommandWithMetadata,
     AudioAction, AudioControl, AudioFrameMetadata, AudioFrameSequenceTracker, CameraAction,
     CameraControl, CommandMetadata, CommandPriority, FrameSequenceTracker, InputSource,
-    MetricWindow, PcmSampleFormat, RoverCommand, RoverCommandWithMetadata, StreamControl,
-    TargetedMediaControl, TtsAckState, TtsCommand, TtsCommandAck, TtsCommandResult, TtsConfigState,
-    TtsConfigUpdate, TtsLanguage, TtsRuntimeConfig, VoiceReasonCode, VoiceStatus,
+    MetricWindow, PcmSampleFormat, RecordingClipQueryResult, RecordingReasonCode,
+    RecordingSessionCommandResult, RecordingSessionStatus, RoverCommand, RoverCommandWithMetadata,
+    StreamControl, TargetedMediaControl, TtsAckState, TtsCommand, TtsCommandAck, TtsCommandResult,
+    TtsConfigState, TtsConfigUpdate, TtsLanguage, TtsRuntimeConfig, VoiceReasonCode, VoiceStatus,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -44,6 +47,15 @@ use security::{
 
 mod audio_counters;
 use audio_counters::AudioDeliveryCounters;
+
+#[path = "recording-access.rs"]
+mod recording_access;
+#[path = "recording-playback.rs"]
+mod recording_playback;
+#[path = "recording-socket.rs"]
+mod recording_socket;
+use recording_access::RecordingAccess;
+use recording_socket::{PendingRequest, RecordingState, RequestKind};
 
 #[path = "media-demand-registry.rs"]
 mod media_demand_registry;
@@ -510,6 +522,8 @@ struct SharedState {
     /// `SharedState` (not on `ClientState`) so lifetime totals survive
     /// client disconnects. See `audio_counters::AudioDeliveryCounters`.
     pub audio_counters: Arc<AudioDeliveryCounters>,
+    pub recording: RecordingState,
+    pub recording_access: Arc<RecordingAccess>,
 }
 
 impl SharedState {
@@ -570,6 +584,8 @@ impl SharedState {
             voice_runtime: Arc::new(Mutex::new(voice_runtime)),
             voice_admission: Arc::new(Mutex::new(VoiceAdmissionState::default())),
             audio_counters: Arc::new(AudioDeliveryCounters::new()),
+            recording: RecordingState::from_env(),
+            recording_access: Arc::new(RecordingAccess::from_env()),
         }
     }
 }
@@ -759,6 +775,285 @@ fn setup_socketio(
         } else {
             shared_state.stt_bridge.request_status();
         }
+
+        for status in shared_state.recording.status_snapshot() {
+            emit_recording_event(&socket, "recording_session_status", status);
+        }
+
+        let shared_state_clone = shared_state.clone();
+        let socket_id_clone = socket_id.clone();
+        socket.on(
+            "recording_session_command",
+            move |socket: SocketRef, Data::<Value>(data)| {
+                if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
+                    socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                    socket.disconnect().ok();
+                    return;
+                }
+                if !shared_state_clone.command_rate_limiter.check_command(&socket_id_clone) {
+                    log_rate_limit_exceeded(&socket_id_clone, "recording_session_command");
+                    return;
+                }
+                touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
+                let command = match serde_json::from_value::<RecordingSessionCommand>(data) {
+                    Ok(command) => command,
+                    Err(error) => {
+                        log_validation_error(&socket_id_clone, &format!("recording command: {error}"));
+                        return;
+                    }
+                };
+                if let Err(error) = command.validate() {
+                    log_validation_error(&socket_id_clone, &format!("recording command: {error}"));
+                    emit_recording_event(
+                        &socket,
+                        "recording_session_command_result",
+                        rejected_recording_command(
+                            &command.request_id,
+                            RecordingReasonCode::InvalidRequest,
+                            &error,
+                        ),
+                    );
+                    return;
+                }
+                let request_id = command.request_id.clone();
+                let consumer_id = recording_consumer_id(&request_id);
+                match &command.action {
+                    RecordingSessionAction::Start { entity_id, .. } => {
+                        if !is_target_active(&shared_state_clone, entity_id) {
+                            emit_recording_event(
+                                &socket,
+                                "recording_session_command_result",
+                                rejected_recording_command(
+                                    &request_id,
+                                    RecordingReasonCode::InvalidEntity,
+                                    "target rover is not active",
+                                ),
+                            );
+                            return;
+                        }
+                        if shared_state_clone.recording.active_entities.lock().ok().is_some_and(|active| {
+                            active.values().any(|active_entity| active_entity == entity_id)
+                        }) {
+                            emit_recording_event(
+                                &socket,
+                                "recording_session_command_result",
+                                rejected_recording_command(
+                                    &request_id,
+                                    RecordingReasonCode::AlreadyRecording,
+                                    "rover already has an active recording",
+                                ),
+                            );
+                            return;
+                        }
+                        if let Err(reason) = shared_state_clone
+                            .recording
+                            .admit(&request_id, &socket_id_clone, RequestKind::Command)
+                        {
+                            emit_recording_event(
+                                &socket,
+                                "recording_session_command_result",
+                                rejected_recording_command(&request_id, RecordingReasonCode::ResourceLimit, reason),
+                            );
+                            return;
+                        }
+                        if enqueue_recording_demand(&shared_state_clone, entity_id, &consumer_id, true).is_err()
+                            || shared_state_clone.recording.commands.lock().map(|mut queue| {
+                                queue.push_back(command.clone());
+                            }).is_err()
+                        {
+                            shared_state_clone.recording.take(&request_id);
+                            let _ = enqueue_recording_demand(&shared_state_clone, entity_id, &consumer_id, false);
+                            emit_recording_event(
+                                &socket,
+                                "recording_session_command_result",
+                                rejected_recording_command(&request_id, RecordingReasonCode::Internal, "recording queue unavailable"),
+                            );
+                            return;
+                        }
+                        tracing::info!(action = "recording_start", entity_id, request_id = %request_id, outcome = "queued", "recording request admitted");
+                    }
+                    RecordingSessionAction::Stop { recording_id } => {
+                        if shared_state_clone.recording.active_entity(recording_id).is_none() {
+                            emit_recording_event(
+                                &socket,
+                                "recording_session_command_result",
+                                rejected_recording_command(&request_id, RecordingReasonCode::NotFound, "recording session not found"),
+                            );
+                            return;
+                        }
+                        if let Err(reason) = shared_state_clone
+                            .recording
+                            .admit(&request_id, &socket_id_clone, RequestKind::Command)
+                        {
+                            emit_recording_event(
+                                &socket,
+                                "recording_session_command_result",
+                                rejected_recording_command(&request_id, RecordingReasonCode::ResourceLimit, reason),
+                            );
+                            return;
+                        }
+                        if shared_state_clone.recording.commands.lock().map(|mut queue| {
+                            queue.push_back(command.clone());
+                        }).is_err() {
+                            shared_state_clone.recording.take(&request_id);
+                            emit_recording_event(
+                                &socket,
+                                "recording_session_command_result",
+                                rejected_recording_command(&request_id, RecordingReasonCode::Internal, "recording queue unavailable"),
+                            );
+                            return;
+                        }
+                        tracing::info!(action = "recording_stop", clip_id = %recording_id, request_id = %request_id, outcome = "queued", "recording stop admitted");
+                    }
+                }
+            },
+        );
+
+        let shared_state_clone = shared_state.clone();
+        let socket_id_clone = socket_id.clone();
+        socket.on(
+            "recording_clip_list",
+            move |socket: SocketRef, Data::<Value>(data)| {
+                if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
+                    socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                    socket.disconnect().ok();
+                    return;
+                }
+                if !shared_state_clone.command_rate_limiter.check_command(&socket_id_clone) {
+                    log_rate_limit_exceeded(&socket_id_clone, "recording_clip_list");
+                    return;
+                }
+                let query = match serde_json::from_value::<RecordingClipQuery>(data) {
+                    Ok(query) => query,
+                    Err(error) => {
+                        log_validation_error(&socket_id_clone, &format!("recording clip query: {error}"));
+                        return;
+                    }
+                };
+                if let Err(error) = query.validate() {
+                    emit_recording_event(&socket, "recording_clip_list_result", RecordingClipQueryResult {
+                        protocol_version: robo_rover_lib::RECORDING_PROTOCOL_VERSION,
+                        request_id: query.request_id,
+                        accepted: false,
+                        clips: Vec::new(),
+                        reason_code: Some(RecordingReasonCode::InvalidRequest),
+                        detail: Some(error.chars().take(256).collect()),
+                    });
+                    return;
+                }
+                let request_id = query.request_id.clone();
+                let admitted = shared_state_clone
+                    .recording
+                    .admit(&request_id, &socket_id_clone, RequestKind::ClipList);
+                if let Err(reason) = admitted {
+                    emit_recording_event(&socket, "recording_clip_list_result", RecordingClipQueryResult {
+                        protocol_version: robo_rover_lib::RECORDING_PROTOCOL_VERSION,
+                        request_id,
+                        accepted: false,
+                        clips: Vec::new(),
+                        reason_code: Some(RecordingReasonCode::ResourceLimit),
+                        detail: Some(reason.into()),
+                    });
+                    return;
+                }
+                let queued = admitted.is_ok()
+                    && shared_state_clone
+                        .recording
+                        .clip_queries
+                        .lock()
+                        .map(|mut queue| queue.push_back(query))
+                        .is_ok();
+                if !queued {
+                    shared_state_clone.recording.take(&request_id);
+                    emit_recording_event(
+                        &socket,
+                        "recording_clip_list_result",
+                        rejected_recording_clip_query(
+                            &request_id,
+                            RecordingReasonCode::Internal,
+                            "recording queue unavailable",
+                        ),
+                    );
+                    tracing::warn!(action = "recording_clip_list", request_id = %request_id, outcome = "rejected", reason = "queue_full", "recording catalog request rejected");
+                    return;
+                }
+            },
+        );
+
+        let shared_state_clone = shared_state.clone();
+        let socket_id_clone = socket_id.clone();
+        socket.on(
+            "recording_playback_ticket",
+            move |socket: SocketRef, Data::<Value>(data)| {
+                if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
+                    socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                    socket.disconnect().ok();
+                    return;
+                }
+                if !shared_state_clone.command_rate_limiter.check_command(&socket_id_clone) {
+                    log_rate_limit_exceeded(&socket_id_clone, "recording_playback_ticket");
+                    return;
+                }
+                let request = match serde_json::from_value::<RecordingPlaybackTicketRequest>(data) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        log_validation_error(&socket_id_clone, &format!("recording playback request: {error}"));
+                        return;
+                    }
+                };
+                if let Err(error) = request.validate() {
+                    tracing::warn!(action = "playback_ticket", request_id = %request.request_id, outcome = "rejected", reason = %error, "invalid playback ticket request");
+                    emit_recording_event(
+                        &socket,
+                        "recording_playback_ticket_result",
+                        rejected_recording_playback_ticket(
+                            &request.request_id,
+                            RecordingReasonCode::InvalidRequest,
+                            &error,
+                        ),
+                    );
+                    return;
+                }
+                let request_id = request.request_id.clone();
+                let admitted = shared_state_clone
+                    .recording
+                    .admit(&request_id, &socket_id_clone, RequestKind::PlaybackTicket);
+                if let Err(reason) = admitted {
+                    emit_recording_event(
+                        &socket,
+                        "recording_playback_ticket_result",
+                        serde_json::json!({
+                            "protocol_version": robo_rover_lib::RECORDING_PROTOCOL_VERSION,
+                            "request_id": request_id,
+                            "accepted": false,
+                            "reason_code": "resource_limit",
+                            "detail": reason,
+                        }),
+                    );
+                    return;
+                }
+                let queued = admitted.is_ok()
+                    && shared_state_clone
+                        .recording
+                        .playback_queries
+                        .lock()
+                        .map(|mut queue| queue.push_back(request))
+                        .is_ok();
+                if !queued {
+                    shared_state_clone.recording.take(&request_id);
+                    tracing::warn!(action = "playback_ticket", request_id = %request_id, outcome = "rejected", reason = "queue_full", "playback ticket request rejected");
+                    emit_recording_event(
+                        &socket,
+                        "recording_playback_ticket_result",
+                        rejected_recording_playback_ticket(
+                            &request_id,
+                            RecordingReasonCode::Internal,
+                            "recording queue unavailable",
+                        ),
+                    );
+                }
+            },
+        );
 
         let shared_state_clone = shared_state.clone();
         let socket_id_clone = socket_id.clone();
@@ -1617,6 +1912,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let fleet_subscription_command_output = DataId::from("fleet_subscription_command".to_owned());
     let fleet_select_command_output = DataId::from("fleet_select_command".to_owned());
+    let recording_session_command_output = DataId::from("recording_session_command".to_owned());
+    let recording_clip_query_output = DataId::from("recording_clip_query".to_owned());
+    let recording_playback_ticket_output = DataId::from("recording_playback_ticket".to_owned());
 
     let node_handle = Arc::new(Mutex::new(node));
     let shared_state = SharedState::new();
@@ -1740,19 +2038,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Start Socket.IO server
+    let recording_sweep_io = io.clone();
+    let recording_sweep_state = shared_state.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            for (request_id, pending) in recording_sweep_state.recording.expire() {
+                if pending.kind == RequestKind::Command {
+                    release_recording_demand(&recording_sweep_state, &request_id);
+                }
+                emit_recording_timeout(
+                    &recording_sweep_io,
+                    &recording_sweep_state,
+                    &request_id,
+                    &pending,
+                );
+                tracing::warn!(
+                    action = ?pending.kind,
+                    request_id = %request_id,
+                    outcome = "timeout",
+                    reason = "correlation_deadline",
+                    "recording request expired"
+                );
+            }
+        }
+    });
+
+    // Start Socket.IO and ticketed playback server
+    let recording_access_for_http = shared_state.recording_access.clone();
     let socketio_handle = tokio::spawn(async move {
         // Get allowed origins from environment
         let allowed_origins = parse_allowed_origins();
         warn_http_origins(&allowed_origins);
         tracing::info!("CORS allowed origins: {:?}", allowed_origins);
-
-        // Define allowed headers explicitly (required when using credentials)
-        let allowed_headers = [
-            axum::http::header::CONTENT_TYPE,
-            axum::http::header::AUTHORIZATION,
-            axum::http::header::ACCEPT,
-        ];
 
         let cors_layer = if allowed_origins.iter().any(|o| o == "*") {
             // Wildcard: AllowOrigin::list rejects "*", must use permissive()
@@ -1772,14 +2090,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "http://localhost:3000".parse::<HeaderValue>().unwrap(),
                         "http://localhost:5173".parse::<HeaderValue>().unwrap(),
                     ])
-                    .allow_methods([Method::GET, Method::POST])
-                    .allow_headers(allowed_headers)
+                    .allow_methods([Method::GET, Method::POST, Method::HEAD])
+                    .allow_headers([
+                        axum::http::header::CONTENT_TYPE,
+                        axum::http::header::AUTHORIZATION,
+                        axum::http::header::ACCEPT,
+                        axum::http::header::RANGE,
+                    ])
+                    .expose_headers([
+                        axum::http::header::CONTENT_RANGE,
+                        axum::http::header::ACCEPT_RANGES,
+                        axum::http::header::CONTENT_LENGTH,
+                    ])
                     .allow_credentials(true)
             } else {
                 CorsLayer::new()
                     .allow_origin(origins)
-                    .allow_methods([Method::GET, Method::POST])
-                    .allow_headers(allowed_headers)
+                    .allow_methods([Method::GET, Method::POST, Method::HEAD])
+                    .allow_headers([
+                        axum::http::header::CONTENT_TYPE,
+                        axum::http::header::AUTHORIZATION,
+                        axum::http::header::ACCEPT,
+                        axum::http::header::RANGE,
+                    ])
+                    .expose_headers([
+                        axum::http::header::CONTENT_RANGE,
+                        axum::http::header::ACCEPT_RANGES,
+                        axum::http::header::CONTENT_LENGTH,
+                    ])
                     .allow_credentials(true)
             }
         };
@@ -1789,6 +2127,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "/health",
                 axum::routing::get(|| async { axum::Json(serde_json::json!({"status": "ok"})) }),
             )
+            .route(
+                "/recordings/playback/:ticket",
+                axum::routing::get(recording_playback::serve_playback)
+                    .head(recording_playback::serve_playback),
+            )
+            .with_state(recording_access_for_http)
             .layer(middleware::from_fn(security_headers))
             .layer(ServiceBuilder::new().layer(cors_layer).layer(layer));
 
@@ -1816,7 +2160,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node_clone_audio_stream = node_clone_arm.clone();
     let node_clone_stt = node_clone_arm.clone();
     let node_clone_fleet_sub = node_clone_arm.clone();
+    let node_clone_recording = node_clone_arm.clone();
     let state_clone_arm = shared_state.clone();
+
+    let state_clone_recording = shared_state.clone();
+    let _recording_processor = tokio::spawn(async move {
+        loop {
+            let next = state_clone_recording
+                .recording
+                .commands
+                .lock()
+                .ok()
+                .and_then(|mut queue| {
+                    queue
+                        .pop_front()
+                        .and_then(|command| serde_json::to_vec(&command).ok())
+                        .map(|bytes| (recording_session_command_output.clone(), bytes))
+                })
+                .or_else(|| {
+                    state_clone_recording
+                        .recording
+                        .clip_queries
+                        .lock()
+                        .ok()
+                        .and_then(|mut queue| {
+                            queue
+                                .pop_front()
+                                .and_then(|query| serde_json::to_vec(&query).ok())
+                                .map(|bytes| (recording_clip_query_output.clone(), bytes))
+                        })
+                })
+                .or_else(|| {
+                    state_clone_recording
+                        .recording
+                        .playback_queries
+                        .lock()
+                        .ok()
+                        .and_then(|mut queue| {
+                            queue
+                                .pop_front()
+                                .and_then(|request| serde_json::to_vec(&request).ok())
+                                .map(|bytes| (recording_playback_ticket_output.clone(), bytes))
+                        })
+                });
+            if let Some((output, bytes)) = next {
+                let arrow_data = BinaryArray::from_vec(vec![bytes.as_slice()]);
+                if let Ok(mut node_guard) = node_clone_recording.lock() {
+                    let _ = node_guard.send_output(output, Default::default(), arrow_data);
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
 
     let arm_command_processor = tokio::spawn(async move {
         loop {
@@ -2993,6 +3388,200 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
+                    "recording_session_command_result" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() > 0 {
+                                let result = match serde_json::from_slice::<
+                                    RecordingSessionCommandResult,
+                                >(
+                                    binary_array.value(0)
+                                ) {
+                                    Ok(result) => result,
+                                    Err(error) => {
+                                        tracing::warn!(%error, "rejected malformed recording command result");
+                                        continue;
+                                    }
+                                };
+                                if let Err(error) = result.validate() {
+                                    tracing::warn!(%error, "rejected invalid recording command result");
+                                    continue;
+                                }
+                                if !result.accepted {
+                                    release_recording_demand(&state_for_video, &result.request_id);
+                                }
+                                if let Some(pending) =
+                                    state_for_video.recording.take(&result.request_id)
+                                {
+                                    if let Ok(payload) = serde_json::to_value(&result) {
+                                        if let Some(io) =
+                                            io_for_video.lock().ok().and_then(|io| io.clone())
+                                        {
+                                            emit_recording_to_owner(
+                                                &io,
+                                                &state_for_video,
+                                                &pending.socket_id,
+                                                "recording_session_command_result",
+                                                payload,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "recording_session_status" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() > 0 {
+                                let status = match serde_json::from_slice::<RecordingSessionStatus>(
+                                    binary_array.value(0),
+                                ) {
+                                    Ok(status) => status,
+                                    Err(error) => {
+                                        tracing::warn!(%error, "rejected malformed recording status");
+                                        continue;
+                                    }
+                                };
+                                if let Err(error) = status.validate() {
+                                    tracing::warn!(%error, "rejected invalid recording status");
+                                    continue;
+                                }
+                                if matches!(
+                                    status.state,
+                                    RecordingSessionState::Starting
+                                        | RecordingSessionState::Recording
+                                        | RecordingSessionState::Stopping
+                                ) {
+                                    if status.state == RecordingSessionState::Starting {
+                                        rename_recording_demand(
+                                            &state_for_video,
+                                            &status.request_id,
+                                            &status.recording_id,
+                                        );
+                                    }
+                                    state_for_video
+                                        .recording
+                                        .remember_active(&status.recording_id, &status.entity_id);
+                                } else {
+                                    release_recording_demand(
+                                        &state_for_video,
+                                        &status.recording_id,
+                                    );
+                                    state_for_video
+                                        .recording
+                                        .forget_active(&status.recording_id);
+                                }
+                                let status_changed =
+                                    state_for_video.recording.cache_status(status.clone());
+                                if status_changed {
+                                    if let Some(io) =
+                                        io_for_video.lock().ok().and_then(|io| io.clone())
+                                    {
+                                        if let Some(namespace) = io.of("/") {
+                                            emit_authenticated(
+                                                namespace,
+                                                &state_for_video.session_registry,
+                                                "recording_session_status",
+                                                serde_json::to_value(status).unwrap_or(Value::Null),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "recording_clip_list_result" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() > 0 {
+                                let result = match serde_json::from_slice::<RecordingClipQueryResult>(
+                                    binary_array.value(0),
+                                ) {
+                                    Ok(result) => result,
+                                    Err(error) => {
+                                        tracing::warn!(%error, "rejected malformed recording clip result");
+                                        continue;
+                                    }
+                                };
+                                if let Err(error) = result.validate() {
+                                    tracing::warn!(%error, "rejected invalid recording clip result");
+                                    continue;
+                                }
+                                if let Some(pending) =
+                                    state_for_video.recording.take(&result.request_id)
+                                {
+                                    if let Some(io) =
+                                        io_for_video.lock().ok().and_then(|io| io.clone())
+                                    {
+                                        emit_recording_to_owner(
+                                            &io,
+                                            &state_for_video,
+                                            &pending.socket_id,
+                                            "recording_clip_list_result",
+                                            serde_json::to_value(result).unwrap_or(Value::Null),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "recording_playback_clip_result" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() > 0 {
+                                let result = match serde_json::from_slice::<RecordingClipQueryResult>(
+                                    binary_array.value(0),
+                                ) {
+                                    Ok(result) => result,
+                                    Err(error) => {
+                                        tracing::warn!(%error, "rejected malformed playback lookup result");
+                                        continue;
+                                    }
+                                };
+                                if let Err(error) = result.validate() {
+                                    tracing::warn!(%error, "rejected invalid playback lookup result");
+                                    continue;
+                                }
+                                if let Some(pending) =
+                                    state_for_video.recording.take(&result.request_id)
+                                {
+                                    if let Some(io) =
+                                        io_for_video.lock().ok().and_then(|io| io.clone())
+                                    {
+                                        let payload = if result.accepted && result.clips.len() == 1
+                                        {
+                                            match state_for_video
+                                                .recording_access
+                                                .issue(&result.request_id, &result.clips[0])
+                                            {
+                                                Ok(ticket) => serde_json::to_value(ticket)
+                                                    .unwrap_or(Value::Null),
+                                                Err(error) => serde_json::json!({
+                                                    "protocol_version": robo_rover_lib::RECORDING_PROTOCOL_VERSION,
+                                                    "request_id": result.request_id,
+                                                    "accepted": false,
+                                                    "reason_code": "storage_unavailable",
+                                                    "detail": error.chars().take(256).collect::<String>(),
+                                                }),
+                                            }
+                                        } else {
+                                            serde_json::json!({
+                                                "protocol_version": robo_rover_lib::RECORDING_PROTOCOL_VERSION,
+                                                "request_id": result.request_id,
+                                                "accepted": false,
+                                                "reason_code": result.reason_code.map(|code| serde_json::to_value(code).unwrap_or(Value::Null)).unwrap_or(serde_json::json!("not_found")),
+                                                "detail": result.detail,
+                                            })
+                                        };
+                                        emit_recording_to_owner(
+                                            &io,
+                                            &state_for_video,
+                                            &pending.socket_id,
+                                            "recording_playback_ticket_result",
+                                            payload,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                     "performance_metrics" => {
                         // Handle performance metrics from performance_monitor
                         // Only forward if monitoring is enabled
@@ -3521,6 +4110,165 @@ fn is_target_active(shared_state: &SharedState, entity_id: &str) -> bool {
         .lock()
         .map(|status| status.active_rovers.contains(&entity_id.to_string()))
         .unwrap_or(false)
+}
+
+fn recording_consumer_id(recording_id: &str) -> String {
+    format!("recording:{recording_id}")
+}
+
+fn enqueue_recording_demand(
+    shared_state: &SharedState,
+    entity_id: &str,
+    consumer_id: &str,
+    enabled: bool,
+) -> Result<(), &'static str> {
+    let resources = [
+        MediaResource::Camera,
+        MediaResource::Jpeg,
+        MediaResource::Microphone,
+    ];
+    let transitions = shared_state
+        .media_demand_registry
+        .lock()
+        .map_err(|_| "media demand unavailable")
+        .map(|mut registry| {
+            resources
+                .into_iter()
+                .filter_map(|resource| {
+                    if enabled {
+                        registry.acquire(entity_id, consumer_id, resource)
+                    } else {
+                        registry.release_consumer_resource(consumer_id, resource)
+                    }
+                })
+                .collect::<Vec<_>>()
+        })?;
+    enqueue_media_transitions(&shared_state.targeted_media_control_queue, transitions);
+    Ok(())
+}
+
+fn rename_recording_demand(shared_state: &SharedState, request_id: &str, recording_id: &str) {
+    if let Ok(mut registry) = shared_state.media_demand_registry.lock() {
+        registry.rename_consumer(
+            &recording_consumer_id(request_id),
+            &recording_consumer_id(recording_id),
+        );
+    }
+}
+
+fn release_recording_demand(shared_state: &SharedState, recording_id: &str) {
+    let transitions = shared_state
+        .media_demand_registry
+        .lock()
+        .ok()
+        .map(|mut registry| registry.release_consumer(&recording_consumer_id(recording_id)))
+        .unwrap_or_default();
+    enqueue_media_transitions(&shared_state.targeted_media_control_queue, transitions);
+}
+
+fn rejected_recording_command(
+    request_id: &str,
+    reason_code: RecordingReasonCode,
+    detail: &str,
+) -> RecordingSessionCommandResult {
+    RecordingSessionCommandResult {
+        protocol_version: robo_rover_lib::RECORDING_PROTOCOL_VERSION,
+        request_id: request_id.to_owned(),
+        accepted: false,
+        recording_id: None,
+        reason_code: Some(reason_code),
+        detail: Some(detail.chars().take(256).collect()),
+    }
+}
+
+fn rejected_recording_clip_query(
+    request_id: &str,
+    reason_code: RecordingReasonCode,
+    detail: &str,
+) -> RecordingClipQueryResult {
+    RecordingClipQueryResult {
+        protocol_version: robo_rover_lib::RECORDING_PROTOCOL_VERSION,
+        request_id: request_id.to_owned(),
+        accepted: false,
+        clips: Vec::new(),
+        reason_code: Some(reason_code),
+        detail: Some(detail.chars().take(256).collect()),
+    }
+}
+
+fn rejected_recording_playback_ticket(
+    request_id: &str,
+    reason_code: RecordingReasonCode,
+    detail: &str,
+) -> Value {
+    serde_json::json!({
+        "protocol_version": robo_rover_lib::RECORDING_PROTOCOL_VERSION,
+        "request_id": request_id,
+        "accepted": false,
+        "reason_code": reason_code,
+        "detail": detail.chars().take(256).collect::<String>(),
+    })
+}
+
+fn emit_recording_timeout(
+    io: &SocketIo,
+    state: &SharedState,
+    request_id: &str,
+    pending: &PendingRequest,
+) {
+    let detail = "recording request timed out";
+    let (event, payload) = match pending.kind {
+        RequestKind::Command => (
+            "recording_session_command_result",
+            serde_json::to_value(rejected_recording_command(
+                request_id,
+                RecordingReasonCode::Timeout,
+                detail,
+            ))
+            .unwrap_or(Value::Null),
+        ),
+        RequestKind::ClipList => (
+            "recording_clip_list_result",
+            serde_json::to_value(rejected_recording_clip_query(
+                request_id,
+                RecordingReasonCode::Timeout,
+                detail,
+            ))
+            .unwrap_or(Value::Null),
+        ),
+        RequestKind::PlaybackTicket => (
+            "recording_playback_ticket_result",
+            rejected_recording_playback_ticket(request_id, RecordingReasonCode::Timeout, detail),
+        ),
+    };
+    emit_recording_to_owner(io, state, &pending.socket_id, event, payload);
+}
+
+fn emit_recording_event(socket: &SocketRef, event: &'static str, payload: impl Serialize) {
+    if let Err(error) = socket.emit(event, payload) {
+        tracing::debug!(%error, event, "recording event delivery failed");
+    }
+}
+
+fn emit_recording_to_owner(
+    io: &SocketIo,
+    state: &SharedState,
+    owner: &str,
+    event: &'static str,
+    payload: Value,
+) {
+    if !state.session_registry.is_valid(owner) {
+        return;
+    }
+    let Some(namespace) = io.of("/") else {
+        return;
+    };
+    let Ok(socket_id) = owner.parse() else {
+        return;
+    };
+    if let Some(socket) = namespace.get_socket(socket_id) {
+        socket.emit(event, payload).ok();
+    }
 }
 
 fn is_walkie_active(shared_state: &SharedState, entity_id: &str) -> bool {

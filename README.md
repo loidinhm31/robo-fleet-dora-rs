@@ -209,8 +209,11 @@ The Phase 2 recorder is Orchestra-side only and already present in the repo as
 - The node ingests FIFO JPEG video and FIFO S16LE PCM audio, writes partial
   MP4s under `.partial/`, and publishes final MP4 plus manifest pairs only
   after FFmpeg exits cleanly.
-- Phase 3 and Phase 4 still add the remaining web/control/playback wiring and
-  deployment integration around the recorder.
+- Phase 3 adds authenticated, rate-limited Socket.IO recording commands, catalog
+  correlation, reconnect status replay, short-lived playback tickets, and
+  streaming HTTP range playback. `RECORDING_CONTROL_QUEUE_CAPACITY` and
+  `RECORDING_REQUEST_TIMEOUT_SECONDS` bound bridge control queues and request
+  deadlines. Phase 4 still owns container deployment integration.
 
 ## System Architecture with Dataflow Pipeline
 Check - [ARCHITECTURE](ARCHITECTURE.md)
