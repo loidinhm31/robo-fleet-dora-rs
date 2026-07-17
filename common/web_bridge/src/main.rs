@@ -12,8 +12,8 @@ use robo_rover_lib::{
     capture_age_ms, init_tracing, record_capture_age, ArmCommand, ArmCommandWithMetadata,
     AudioAction, AudioControl, AudioFrameMetadata, AudioFrameSequenceTracker, CameraAction,
     CameraControl, CommandMetadata, CommandPriority, FrameSequenceTracker, InputSource,
-    MetricWindow, PcmSampleFormat, RoverCommand, RoverCommandWithMetadata, StreamCommand,
-    StreamControl, TtsAckState, TtsCommand, TtsCommandAck, TtsCommandResult, TtsConfigState,
+    MetricWindow, PcmSampleFormat, RoverCommand, RoverCommandWithMetadata, StreamControl,
+    TargetedMediaControl, TtsAckState, TtsCommand, TtsCommandAck, TtsCommandResult, TtsConfigState,
     TtsConfigUpdate, TtsLanguage, TtsRuntimeConfig, VoiceReasonCode, VoiceStatus,
 };
 use serde::{Deserialize, Serialize};
@@ -44,6 +44,10 @@ use security::{
 
 mod audio_counters;
 use audio_counters::AudioDeliveryCounters;
+
+#[path = "media-demand-registry.rs"]
+mod media_demand_registry;
+use media_demand_registry::{MediaDemandRegistry, MediaDemandTransition, MediaResource};
 
 mod stt_bridge;
 mod stt_ingress;
@@ -190,60 +194,104 @@ fn touch_activity(clients: &Mutex<Vec<ClientState>>, socket_id: &str) {
     }
 }
 
-fn stream_control_for_video_demand(enabled: bool, target_fps: u8) -> StreamControl {
-    StreamControl {
-        command: if enabled {
-            StreamCommand::Start
-        } else {
-            StreamCommand::Stop
-        },
-        video_enabled: enabled,
-        audio_enabled: false,
-        quality: None,
-        target_fps: Some(target_fps),
+fn browser_consumer_prefix(socket_id: &str) -> String {
+    format!("browser:{socket_id}:")
+}
+
+fn browser_consumer_id(socket_id: &str, intent: &str) -> String {
+    format!("{}{}", browser_consumer_prefix(socket_id), intent)
+}
+
+fn enqueue_media_transitions(
+    queue: &Mutex<Vec<TargetedMediaControl>>,
+    transitions: impl IntoIterator<Item = MediaDemandTransition>,
+) {
+    if let Ok(mut queue) = queue.lock() {
+        queue.extend(
+            transitions
+                .into_iter()
+                .map(|transition| transition.targeted_control()),
+        );
     }
 }
 
-fn update_client_video_demand(
-    clients: &Mutex<Vec<ClientState>>,
+fn selected_browser_target(shared_state: &SharedState) -> Option<String> {
+    let selected = shared_state
+        .fleet_status
+        .lock()
+        .ok()?
+        .selected_entity
+        .clone();
+    shared_state
+        .active_rovers_status
+        .lock()
+        .ok()?
+        .active_rovers
+        .contains(&selected)
+        .then_some(selected)
+}
+
+fn active_rover_status_includes(status: &ActiveRoversStatus, entity_id: &str) -> bool {
+    status
+        .active_rovers
+        .iter()
+        .any(|active| active == entity_id)
+}
+
+fn set_browser_media_demand(
+    shared_state: &SharedState,
     socket_id: &str,
+    intent: &str,
+    resource: MediaResource,
     enabled: bool,
-    target_fps: Option<u8>,
-) -> Option<StreamControl> {
-    let mut clients = clients.lock().ok()?;
-    let active_before = clients.iter().filter(|client| client.video_enabled).count();
-
-    let client = clients
-        .iter_mut()
-        .find(|client| client.socket_id == socket_id)?;
-    client.video_enabled = enabled;
-    if let Some(target_fps) = target_fps {
-        client.target_fps = target_fps.clamp(1, 120);
-    }
-    let effective_target_fps = client.target_fps;
-
-    let active_after = clients.iter().filter(|client| client.video_enabled).count();
-    match (active_before, active_after) {
-        (0, n) if n > 0 => Some(stream_control_for_video_demand(true, effective_target_fps)),
-        (n, 0) if n > 0 => Some(stream_control_for_video_demand(false, effective_target_fps)),
-        _ => None,
-    }
+) {
+    let consumer_id = browser_consumer_id(socket_id, intent);
+    let transitions = shared_state
+        .media_demand_registry
+        .lock()
+        .ok()
+        .and_then(|mut registry| {
+            let transition = if enabled {
+                let Some(entity_id) = selected_browser_target(shared_state) else {
+                    tracing::warn!(
+                        socket_id,
+                        "rejected browser media demand without an active selected rover"
+                    );
+                    return None;
+                };
+                registry.acquire(entity_id, consumer_id, resource)
+            } else {
+                registry.release_consumer_resource(&consumer_id, resource)
+            };
+            transition.map(|transition| vec![transition])
+        })
+        .unwrap_or_default();
+    enqueue_media_transitions(&shared_state.targeted_media_control_queue, transitions);
 }
 
-fn remove_client_and_stream_transition(
-    clients: &Mutex<Vec<ClientState>>,
-    socket_id: &str,
-) -> Option<StreamControl> {
-    let mut clients = clients.lock().ok()?;
-    let active_before = clients.iter().filter(|client| client.video_enabled).count();
-    clients.retain(|client| client.socket_id != socket_id);
-    let active_after = clients.iter().filter(|client| client.video_enabled).count();
+fn move_browser_media_demand(shared_state: &SharedState, socket_id: &str, entity_id: &str) {
+    let transitions = shared_state
+        .media_demand_registry
+        .lock()
+        .ok()
+        .map(|mut registry| {
+            registry.move_consumer_prefix(&browser_consumer_prefix(socket_id), entity_id)
+        })
+        .unwrap_or_default();
+    enqueue_media_transitions(&shared_state.targeted_media_control_queue, transitions);
+}
 
-    if active_before > 0 && active_after == 0 {
-        Some(stream_control_for_video_demand(false, 15))
-    } else {
-        None
+fn remove_browser_media_demand(shared_state: &SharedState, socket_id: &str) {
+    if let Ok(mut clients) = shared_state.video_clients.lock() {
+        clients.retain(|client| client.socket_id != socket_id);
     }
+    let transitions = shared_state
+        .media_demand_registry
+        .lock()
+        .ok()
+        .map(|mut registry| registry.release_consumer_prefix(&browser_consumer_prefix(socket_id)))
+        .unwrap_or_default();
+    enqueue_media_transitions(&shared_state.targeted_media_control_queue, transitions);
 }
 
 fn browser_video_frame_payload(
@@ -439,6 +487,7 @@ struct SharedState {
     pub camera_command_queue: Arc<Mutex<Vec<WebCameraCommand>>>,
     pub audio_command_queue: Arc<Mutex<Vec<WebAudioCommand>>>,
     pub stream_command_queue: Arc<Mutex<Vec<StreamControl>>>,
+    pub targeted_media_control_queue: Arc<Mutex<Vec<TargetedMediaControl>>>,
     pub tracking_command_queue: Arc<Mutex<Vec<WebTrackingCommand>>>,
     pub tts_command_queue: Arc<Mutex<Vec<TtsCommand>>>,
     pub walkie_ingress: Arc<Mutex<WalkieIngress>>,
@@ -446,6 +495,7 @@ struct SharedState {
     pub fleet_subscription_command_queue: Arc<Mutex<Vec<WebFleetSubscriptionCommand>>>,
     pub fleet_select_command_queue: Arc<Mutex<Vec<FleetSelectCommand>>>,
     pub video_clients: Arc<Mutex<Vec<ClientState>>>,
+    pub media_demand_registry: Arc<Mutex<MediaDemandRegistry>>,
     pub performance_monitoring_enabled: Arc<Mutex<bool>>,
     pub auth_rate_limiter: Arc<AuthRateLimiter>,
     pub ip_rate_limiter: Arc<IpRateLimiter>,
@@ -500,6 +550,7 @@ impl SharedState {
             camera_command_queue: Arc::new(Mutex::new(Vec::new())),
             audio_command_queue: Arc::new(Mutex::new(Vec::new())),
             stream_command_queue: Arc::new(Mutex::new(Vec::new())),
+            targeted_media_control_queue: Arc::new(Mutex::new(Vec::new())),
             tracking_command_queue: Arc::new(Mutex::new(Vec::new())),
             tts_command_queue: Arc::new(Mutex::new(Vec::new())),
             walkie_ingress: Arc::new(Mutex::new(WalkieIngress::default())),
@@ -507,6 +558,7 @@ impl SharedState {
             fleet_subscription_command_queue: Arc::new(Mutex::new(Vec::new())),
             fleet_select_command_queue: Arc::new(Mutex::new(Vec::new())),
             video_clients: Arc::new(Mutex::new(Vec::new())),
+            media_demand_registry: Arc::new(Mutex::new(MediaDemandRegistry::default())),
             performance_monitoring_enabled: Arc::new(Mutex::new(true)),
             auth_rate_limiter: Arc::new(AuthRateLimiter::new()),
             ip_rate_limiter: Arc::new(IpRateLimiter::new()),
@@ -803,11 +855,15 @@ fn setup_socketio(
                 touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
                 if let Ok(web_cmd) = serde_json::from_value::<WebCameraCommand>(data) {
                     tracing::debug!("Received camera control: {:?}", web_cmd.command);
-                    shared_state_clone
-                        .camera_command_queue
-                        .lock()
-                        .unwrap()
-                        .push(web_cmd);
+                    if let Some(action) = convert_web_command_to_camera_command(&web_cmd) {
+                        set_browser_media_demand(
+                            &shared_state_clone,
+                            &socket_id_clone,
+                            "camera",
+                            MediaResource::Camera,
+                            matches!(action, CameraAction::Start),
+                        );
+                    }
                 }
             },
         );
@@ -834,22 +890,17 @@ fn setup_socketio(
                         "stop" | "pause" => false,
                         _ => web_cmd.video_enabled.unwrap_or(false),
                     };
-                    if let Some(command) = update_client_video_demand(
-                        &shared_state_clone.video_clients,
-                        &socket_id_clone,
-                        enabled,
-                        web_cmd.target_fps,
-                    ) {
-                        tracing::info!(
-                            "Video stream demand transition: {:?}, enabled={}",
-                            command.command,
-                            command.video_enabled
-                        );
-                        shared_state_clone
-                            .stream_command_queue
-                            .lock()
-                            .unwrap()
-                            .push(command);
+                    if let Ok(mut clients) = shared_state_clone.video_clients.lock() {
+                        if let Some(client) = clients.iter_mut().find(|client| client.socket_id == socket_id_clone) {
+                            client.video_enabled = enabled;
+                            if let Some(target_fps) = web_cmd.target_fps { client.target_fps = target_fps.clamp(1, 120); }
+                            if let Some(audio_enabled) = web_cmd.audio_enabled { client.audio_enabled = audio_enabled; }
+                        }
+                    }
+                    set_browser_media_demand(&shared_state_clone, &socket_id_clone, "stream", MediaResource::Camera, enabled);
+                    set_browser_media_demand(&shared_state_clone, &socket_id_clone, "stream", MediaResource::Jpeg, enabled);
+                    if let Some(audio_enabled) = web_cmd.audio_enabled {
+                        set_browser_media_demand(&shared_state_clone, &socket_id_clone, "stream", MediaResource::Microphone, audio_enabled);
                     }
                 }
             },
@@ -872,11 +923,13 @@ fn setup_socketio(
                 touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
                 if let Ok(web_cmd) = serde_json::from_value::<WebAudioCommand>(data) {
                     tracing::debug!("Received audio control: {:?}", web_cmd.command);
-                    shared_state_clone
-                        .audio_command_queue
-                        .lock()
-                        .unwrap()
-                        .push(web_cmd);
+                    if let Some(action) = convert_web_command_to_audio_command(&web_cmd) {
+                        let enabled = matches!(action, AudioAction::Start);
+                        if let Ok(mut clients) = shared_state_clone.video_clients.lock() {
+                            if let Some(client) = clients.iter_mut().find(|client| client.socket_id == socket_id_clone) { client.audio_enabled = enabled; }
+                        }
+                        set_browser_media_demand(&shared_state_clone, &socket_id_clone, "audio", MediaResource::Microphone, enabled);
+                    }
                 }
             },
         );
@@ -1271,11 +1324,17 @@ fn setup_socketio(
                 if let Ok(select_cmd) = serde_json::from_value::<FleetSelectCommand>(data) {
                     tracing::info!("Fleet select requested: {}", select_cmd.entity_id);
 
+                    let target_is_active = shared_state_clone
+                        .active_rovers_status
+                        .lock()
+                        .ok()
+                        .is_some_and(|status| active_rover_status_includes(&status, &select_cmd.entity_id));
+
                     // Update fleet status with new selection
                     let mut fleet_status = shared_state_clone.fleet_status.lock().unwrap();
 
-                    // Verify the entity exists in the roster
-                    if fleet_status.fleet_roster.contains(&select_cmd.entity_id) {
+                    // A selected rover is also routing authority for browser demand.
+                    if fleet_status.fleet_roster.contains(&select_cmd.entity_id) && target_is_active {
                         fleet_status.selected_entity = select_cmd.entity_id.clone();
                         fleet_status.timestamp = select_cmd.timestamp;
 
@@ -1284,12 +1343,15 @@ fn setup_socketio(
                             queue.push(select_cmd.clone());
                         }
 
-                        // Broadcast updated fleet status to all clients
+                        // Migrate only this browser's owned demand. Recorder demand stays pinned.
                         let status_clone = fleet_status.clone();
                         drop(fleet_status); // Release lock before async operation
+                        move_browser_media_demand(&shared_state_clone, &socket_id_clone, &select_cmd.entity_id);
 
                         io_for_fleet_clone.emit("fleet_status", status_clone).ok();
                         tracing::info!("Fleet selection updated and broadcast to all clients");
+                    } else if !target_is_active {
+                        tracing::warn!("Cannot select inactive rover: {}", select_cmd.entity_id);
                     } else {
                         tracing::warn!("Invalid entity_id selection: {}", select_cmd.entity_id);
                     }
@@ -1434,16 +1496,7 @@ fn setup_socketio(
             let socket_id = socket.id.to_string();
             tracing::info!("Client disconnected: {}", socket_id);
 
-            if let Some(command) = remove_client_and_stream_transition(
-                &shared_state_clone.video_clients,
-                &socket_id,
-            ) {
-                shared_state_clone
-                    .stream_command_queue
-                    .lock()
-                    .unwrap()
-                    .push(command);
-            }
+            remove_browser_media_demand(&shared_state_clone, &socket_id);
             let stopped_voice_streams = shared_state_clone.stt_bridge.close_owner(&socket_id);
             if stopped_voice_streams > 0 {
                 tracing::info!(
@@ -1456,7 +1509,7 @@ fn setup_socketio(
                 ingress.remove_socket(&socket_id);
             }
             // Process-level cumulative: this client's per-client counters
-            // are dropped by `remove_client_and_stream_transition`, but
+            // are dropped by `remove_browser_media_demand`, but
             // the cumulative counters in `SharedState` retain all of the
             // work the bridge did for this client during its lifetime.
             shared_state_clone.audio_counters.record_client_disconnect();
@@ -1552,6 +1605,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let camera_command_output = DataId::from("camera_command".to_owned());
     let audio_command_output = DataId::from("audio_command".to_owned());
     let stream_command_output = DataId::from("stream_command".to_owned());
+    let targeted_media_control_output = DataId::from("targeted_media_control".to_owned());
     let tracking_command_output = DataId::from("tracking_command".to_owned());
     let tts_command_output = DataId::from("tts_command".to_owned());
     let tts_config_command_output = DataId::from("tts_config_command".to_owned());
@@ -1580,7 +1634,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Background sweep: disconnect sessions whose JWT has expired
     let sweep_registry = shared_state.session_registry.clone();
     let sweep_clients = shared_state.video_clients.clone();
-    let sweep_stream_queue = shared_state.stream_command_queue.clone();
+    let sweep_media_registry = shared_state.media_demand_registry.clone();
+    let sweep_media_queue = shared_state.targeted_media_control_queue.clone();
     let sweep_audio_counters = shared_state.audio_counters.clone();
     let sweep_stt = shared_state.stt_bridge.clone();
     let sweep_io = io.clone();
@@ -1591,11 +1646,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let expired = sweep_registry.sweep_expired();
             for socket_id in expired {
                 tracing::debug!("Sweep: disconnecting expired session {}", socket_id);
-                if let Some(command) =
-                    remove_client_and_stream_transition(&sweep_clients, &socket_id)
-                {
-                    sweep_stream_queue.lock().unwrap().push(command);
+                if let Ok(mut clients) = sweep_clients.lock() {
+                    clients.retain(|client| client.socket_id != socket_id);
                 }
+                let transitions = sweep_media_registry
+                    .lock()
+                    .ok()
+                    .map(|mut registry| {
+                        registry.release_consumer_prefix(&browser_consumer_prefix(&socket_id))
+                    })
+                    .unwrap_or_default();
+                enqueue_media_transitions(&sweep_media_queue, transitions);
                 sweep_stt.close_owner(&socket_id);
                 // Process-level cumulative: sweep-driven disconnects must
                 // count toward the lifetime client_disconnects total, and
@@ -1618,7 +1679,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Background sweep: disconnect idle clients exceeding IDLE_TIMEOUT_SECONDS
     let idle_clients = shared_state.video_clients.clone();
-    let idle_stream_queue = shared_state.stream_command_queue.clone();
+    let idle_media_registry = shared_state.media_demand_registry.clone();
+    let idle_media_queue = shared_state.targeted_media_control_queue.clone();
     let idle_audio_counters = shared_state.audio_counters.clone();
     let idle_stt = shared_state.stt_bridge.clone();
     let idle_io = io.clone();
@@ -1649,11 +1711,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             for socket_id in idle_ids {
                 tracing::info!("Idle sweep: disconnecting idle client {}", socket_id);
-                if let Some(command) =
-                    remove_client_and_stream_transition(&idle_clients, &socket_id)
-                {
-                    idle_stream_queue.lock().unwrap().push(command);
+                if let Ok(mut clients) = idle_clients.lock() {
+                    clients.retain(|client| client.socket_id != socket_id);
                 }
+                let transitions = idle_media_registry
+                    .lock()
+                    .ok()
+                    .map(|mut registry| {
+                        registry.release_consumer_prefix(&browser_consumer_prefix(&socket_id))
+                    })
+                    .unwrap_or_default();
+                enqueue_media_transitions(&idle_media_queue, transitions);
                 idle_stt.close_owner(&socket_id);
                 // Process-level cumulative: idle-sweep-driven disconnects
                 // must count toward the lifetime client_disconnects total.
@@ -1742,6 +1810,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node_clone_camera = node_clone_arm.clone();
     let node_clone_audio = node_clone_arm.clone();
     let node_clone_stream = node_clone_arm.clone();
+    let node_clone_targeted_media = node_clone_arm.clone();
     let node_clone_tracking = node_clone_arm.clone();
     let node_clone_tts = node_clone_arm.clone();
     let node_clone_audio_stream = node_clone_arm.clone();
@@ -1909,6 +1978,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+
+    // Target-aware media demand never relies on mutable fleet selection.
+    let state_clone_targeted_media = shared_state.clone();
+    let targeted_media_output_for_processor = targeted_media_control_output.clone();
+    let targeted_media_control_processor = tokio::spawn(async move {
+        loop {
+            let next = state_clone_targeted_media
+                .targeted_media_control_queue
+                .lock()
+                .ok()
+                .and_then(|mut queue| (!queue.is_empty()).then(|| queue.remove(0)));
+            if let Some(control) = next {
+                if let Ok(serialized) = serde_json::to_vec(&control) {
+                    let arrow_data = BinaryArray::from_vec(vec![serialized.as_slice()]);
+                    if let Ok(mut node_guard) = node_clone_targeted_media.lock() {
+                        let _ = node_guard.send_output(
+                            targeted_media_output_for_processor.clone(),
+                            Default::default(),
+                            arrow_data,
+                        );
+                    }
+                }
+            }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     });
@@ -2947,6 +3042,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 },
                 Event::Stop(_) => {
+                    let transitions = state_for_video
+                        .media_demand_registry
+                        .lock()
+                        .ok()
+                        .map(|mut registry| registry.shutdown())
+                        .unwrap_or_default();
+                    for control in transitions
+                        .into_iter()
+                        .map(|transition| transition.targeted_control())
+                    {
+                        if let Ok(serialized) = serde_json::to_vec(&control) {
+                            let arrow_data = BinaryArray::from_vec(vec![serialized.as_slice()]);
+                            if let Ok(mut node) = node_handle.lock() {
+                                let _ = node.send_output(
+                                    targeted_media_control_output.clone(),
+                                    Default::default(),
+                                    arrow_data,
+                                );
+                            }
+                        }
+                    }
                     if let Ok(ingress) = state_for_video.walkie_ingress.lock() {
                         ingress.log_metrics("shutdown");
                     }
@@ -3026,6 +3142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     rover_command_processor.abort();
     camera_command_processor.abort();
     audio_stream_processor.abort();
+    targeted_media_control_processor.abort();
     tracing::info!("Web Bridge shutdown complete");
 
     Ok(())
@@ -3257,21 +3374,6 @@ mod tests {
     }
 
     #[test]
-    fn stream_demand_only_emits_aggregate_transitions() {
-        let clients = Mutex::new(vec![
-            ClientState::new("a".to_owned()),
-            ClientState::new("b".to_owned()),
-        ]);
-
-        let start = update_client_video_demand(&clients, "a", true, Some(15)).unwrap();
-        assert!(start.video_enabled);
-        assert!(update_client_video_demand(&clients, "b", true, Some(15)).is_none());
-        assert!(update_client_video_demand(&clients, "a", false, Some(15)).is_none());
-        let stop = update_client_video_demand(&clients, "b", false, Some(15)).unwrap();
-        assert!(!stop.video_enabled);
-    }
-
-    #[test]
     fn audio_drop_accounting_is_separate_from_video_drops() {
         let client = ClientState::new("client-a".to_owned());
 
@@ -3282,13 +3384,10 @@ mod tests {
     }
 
     #[test]
-    fn active_disconnect_stops_aggregate_demand() {
-        let clients = Mutex::new(vec![ClientState::new("a".to_owned())]);
-        assert!(update_client_video_demand(&clients, "a", true, Some(15)).is_some());
-
-        let stop = remove_client_and_stream_transition(&clients, "a").unwrap();
-        assert!(matches!(stop.command, StreamCommand::Stop));
-        assert!(!stop.video_enabled);
+    fn inactive_rover_cannot_become_browser_demand_target() {
+        let active = ActiveRoversStatus::new(vec!["rover-a".into()]);
+        assert!(active_rover_status_includes(&active, "rover-a"));
+        assert!(!active_rover_status_includes(&active, "rover-b"));
     }
 
     #[test]

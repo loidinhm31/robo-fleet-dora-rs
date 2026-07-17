@@ -5,9 +5,10 @@ use dora_node_api::{
 };
 use eyre::Result;
 use robo_rover_lib::{
-    capture_age_ms, init_tracing, record_capture_age, AudioFrameMetadata,
-    AudioFrameSequenceTracker, FleetSelectCommand, FleetSubscriptionCommand, FrameSequenceTracker,
-    JpegFramePacket, MetricWindow, PcmFramePacket, PcmSampleFormat,
+    capture_age_ms, init_tracing, record_capture_age, AudioAction, AudioControl,
+    AudioFrameMetadata, AudioFrameSequenceTracker, CameraAction, CameraControl, FleetSelectCommand,
+    FleetSubscriptionCommand, FrameSequenceTracker, JpegFramePacket, MetricWindow, PcmFramePacket,
+    PcmSampleFormat, StreamCommand, StreamControl, TargetedMediaControl,
 };
 use serde_json;
 use std::collections::{BTreeMap, HashMap};
@@ -448,6 +449,17 @@ async fn main() -> Result<()> {
                                             } else {
                                                 tracing::warn!("Cannot select inactive rover: {}", cmd.entity_id);
                                             }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Sparse, explicitly targeted media changes. Never use selected_entity.
+                            "targeted_media_control" => {
+                                if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                                    if let Some(bytes) = (binary_array.len() > 0).then(|| binary_array.value(0)) {
+                                        if let Err(error) = publish_targeted_media_control(&session, &active_rovers, bytes).await {
+                                            tracing::warn!(%error, "rejected targeted media control");
                                         }
                                     }
                                 }
@@ -1021,6 +1033,79 @@ fn web_command_topic(input_id: &str, entity_id: &str) -> Option<String> {
     }
 }
 
+async fn publish_targeted_media_control(
+    session: &Arc<zenoh::Session>,
+    active_rovers: &HashMap<String, RoverSubscriptions>,
+    bytes: &[u8],
+) -> Result<()> {
+    let control: TargetedMediaControl = serde_json::from_slice(bytes)
+        .map_err(|error| eyre::eyre!("invalid targeted media JSON: {error}"))?;
+    control
+        .validate()
+        .map_err(|error| eyre::eyre!("invalid targeted media control: {error}"))?;
+    if !active_rovers.contains_key(&control.entity_id) {
+        return Err(eyre::eyre!(
+            "target rover is not active: {}",
+            control.entity_id
+        ));
+    }
+    let timestamp = current_time_ms().map_err(|error| eyre::eyre!(error))?;
+    for (topic, payload) in targeted_media_payloads(&control, timestamp)? {
+        session
+            .put(topic, payload)
+            .await
+            .map_err(|error| eyre::eyre!("failed to publish targeted media control: {error}"))?;
+    }
+    Ok(())
+}
+
+fn targeted_media_payloads(
+    control: &TargetedMediaControl,
+    timestamp: u64,
+) -> serde_json::Result<Vec<(String, Vec<u8>)>> {
+    let mut commands = Vec::new();
+    if let Some(enabled) = control.camera_enabled {
+        let payload = serde_json::to_vec(&CameraControl {
+            command: if enabled {
+                CameraAction::Start
+            } else {
+                CameraAction::Stop
+            },
+            timestamp,
+        })?;
+        commands.push((format!("rover/{}/cmd/camera", control.entity_id), payload));
+    }
+    if let Some(enabled) = control.jpeg_enabled {
+        let payload = serde_json::to_vec(&StreamControl {
+            command: if enabled {
+                StreamCommand::Start
+            } else {
+                StreamCommand::Stop
+            },
+            video_enabled: enabled,
+            audio_enabled: false,
+            quality: None,
+            target_fps: None,
+        })?;
+        commands.push((
+            format!("rover/{}/cmd/stream/v1", control.entity_id),
+            payload,
+        ));
+    }
+    if let Some(enabled) = control.microphone_enabled {
+        let payload = serde_json::to_vec(&AudioControl {
+            command: if enabled {
+                AudioAction::Start
+            } else {
+                AudioAction::Stop
+            },
+            timestamp,
+        })?;
+        commands.push((format!("rover/{}/cmd/audio", control.entity_id), payload));
+    }
+    Ok(commands)
+}
+
 fn snapshot_active_rover_ids(active_rovers: &HashMap<String, RoverSubscriptions>) -> Vec<String> {
     let mut entity_ids: Vec<String> = active_rovers.keys().cloned().collect();
     entity_ids.sort();
@@ -1217,6 +1302,10 @@ mod audio_tests {
 
 #[cfg(test)]
 mod routing_tests {
+    use robo_rover_lib::{
+        CameraAction, CameraControl, StreamCommand, StreamControl, TargetedMediaControl,
+    };
+
     /// Returns true if the given Dora input id is classified as a parser input
     /// that requires an authoritative target_entity_id.
     fn is_parser_input(id: &str) -> bool {
@@ -1411,5 +1500,29 @@ mod routing_tests {
             super::web_command_topic("tts_config_command", "rover-a"),
             None
         );
+    }
+
+    #[test]
+    fn targeted_media_payloads_preserve_exact_entity_and_changed_resources() {
+        let control = TargetedMediaControl {
+            protocol_version: 1,
+            entity_id: "rover-a".into(),
+            camera_enabled: Some(true),
+            jpeg_enabled: Some(false),
+            microphone_enabled: None,
+        };
+        let commands = super::targeted_media_payloads(&control, 42).unwrap();
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0].0, "rover/rover-a/cmd/camera");
+        assert_eq!(commands[1].0, "rover/rover-a/cmd/stream/v1");
+        assert!(matches!(
+            serde_json::from_slice::<CameraControl>(&commands[0].1)
+                .unwrap()
+                .command,
+            CameraAction::Start
+        ));
+        let stream = serde_json::from_slice::<StreamControl>(&commands[1].1).unwrap();
+        assert!(matches!(stream.command, StreamCommand::Stop));
+        assert!(!stream.video_enabled);
     }
 }

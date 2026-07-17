@@ -1,6 +1,6 @@
 # Codebase Summary
 
-Snapshot date: 2026-07-03
+Snapshot date: 2026-07-17
 
 ## Scope
 
@@ -19,8 +19,10 @@ Snapshot date: 2026-07-03
 - View/video output is throttled separately with `SOURCE_FPS` and `VIEW_STREAM_FPS`.
 - Published video topic is `rover/{entity_id}/video/jpeg/v1`.
 - Web UI receives `video_frame` as metadata plus binary JPEG bytes.
-- Web UI emits authenticated, rate-limited `stream_control` demand.
-- Web bridge aggregates demand and only forwards 0->1 / 1->0 transitions upstream.
+- Web UI emits authenticated, rate-limited media demand. `MediaDemandRegistry` scopes each hold by rover, consumer, and resource (camera, JPEG, microphone), so one browser or future recorder cannot release another consumer's media.
+- Browser demand pins its rover at acquisition and is migrated only for that browser on fleet selection; disconnect, expiry, idle cleanup, and process shutdown release owned demand idempotently.
+- Effective `0 -> 1` / `1 -> 0` transitions become `TargetedMediaControl` messages. Orchestra validates the target against the active fleet and decomposes only changed resources into the existing exact-rover camera, stream, and audio topics.
+- `robo_rover_lib::recording_types` provides version-1, validated JSON contracts for future file-session commands/statuses, clip queries/results, and playback tickets; file-session Socket/Dora names are reserved as `recording_session_*`.
 - `kornia_capture` gates view publication plus worker frame submission; local capture continues even when ML/tracking is disabled.
 - Rover dataflows set `DETECTOR_INTRA_THREADS=2` and `REID_INTRA_THREADS=1`.
 - `audio_capture` auto-selects the preferred input device, assigns `stream_id`, `frame_id`, and `capture_timestamp_ms` to F32 frames, and records signal-level observability for silence detection.

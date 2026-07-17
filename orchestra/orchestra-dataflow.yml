@@ -63,6 +63,8 @@ nodes:
         source: web-bridge/audio_command
         queue_size: 8
       stream_command_web: web-bridge/stream_command
+      # Target-aware aggregate demand from browser viewers and future recorder sessions.
+      targeted_media_control: web-bridge/targeted_media_control
       audio_stream_web:
         source: web-bridge/audio_stream
         queue_size: 4
@@ -195,6 +197,7 @@ nodes:
       - camera_command
       - audio_command
       - stream_command
+      - targeted_media_control
       - tts_command
       - tts_config_command
       - audio_stream          # Direct audio to rover speakers
