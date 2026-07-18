@@ -763,8 +763,10 @@ Recording invariants:
   child through anonymous pipes. Individual JPEG files are never created. Rover
   microphone S16LE is the only audio source in the first release; timestamp
   gaps are represented by inserted silence so one missing input does not stall
-  finalization. The recorder ingests video as FIFO JPEG frames and audio as FIFO
-  PCM frames, both bounded by the queue capacity.
+  finalization. The recorder uses one bounded FIFO queue for video and audio:
+  when full, a video frame replaces the oldest queued video, or the oldest
+  queued audio if no video is waiting; total capacity stays fixed and the live
+  paths still see no backpressure.
 - FFmpeg writes an encoded `<recording_id>.mp4.partial` under `.partial/` and
   the recorder atomically renames it to a collision-free `<recording_id>.mp4`
   only after both inputs close and the child exits successfully. The adjacent

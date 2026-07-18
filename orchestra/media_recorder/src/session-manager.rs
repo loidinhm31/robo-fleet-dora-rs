@@ -80,7 +80,7 @@ impl BoundedInputs {
     }
     fn video(&self, frame: VideoFrame) -> bool {
         let mut queue = self.inner.lock().expect("queue lock");
-        let dropped = if queue.items.len() >= self.capacity {
+        let dropped_video = if queue.items.len() >= self.capacity {
             if let Some(index) = queue
                 .items
                 .iter()
@@ -88,6 +88,15 @@ impl BoundedInputs {
             {
                 queue.items.remove(index);
                 true
+            } else if let Some(index) = queue
+                .items
+                .iter()
+                .position(|item| matches!(item, Input::Audio(_)))
+            {
+                // Preserve video timeline progress when audio has filled the
+                // shared queue. The total queue bound remains unchanged.
+                queue.items.remove(index);
+                false
             } else {
                 self.dropped_video
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -96,13 +105,13 @@ impl BoundedInputs {
         } else {
             false
         };
-        if dropped {
+        if dropped_video {
             self.dropped_video
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         queue.items.push_back(Input::Video(frame));
         self.wake.notify_one();
-        !dropped
+        !dropped_video
     }
     fn audio(&self, frame: AudioFrame) -> bool {
         let mut queue = self.inner.lock().expect("queue lock");
@@ -642,25 +651,116 @@ fn available_bytes(path: &PathBuf) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::BoundedInputs;
-    use crate::frame_timeline::VideoFrame;
-    use robo_rover_lib::VideoFrameMetadata;
+    use crate::frame_timeline::{AudioFrame, VideoFrame};
+    use robo_rover_lib::{AudioFrameMetadata, PcmSampleFormat, VideoFrameMetadata};
+    use uuid::Uuid;
+
+    fn video(frame_id: u64) -> VideoFrame {
+        VideoFrame {
+            metadata: VideoFrameMetadata {
+                frame_id,
+                capture_timestamp_ms: frame_id,
+                width: 1,
+                height: 1,
+            },
+            payload: vec![0xff, 0xd8, frame_id as u8, 0xff, 0xd9],
+        }
+    }
+
+    fn audio(frame_id: u64) -> AudioFrame {
+        AudioFrame {
+            metadata: AudioFrameMetadata {
+                stream_id: Uuid::nil(),
+                frame_id,
+                capture_timestamp_ms: frame_id,
+                sample_rate: 8_000,
+                channels: 1,
+                sample_count: 1,
+                format: PcmSampleFormat::S16Le,
+            },
+            payload: vec![0, 0],
+        }
+    }
 
     #[test]
     fn video_queue_drops_oldest_and_keeps_newest() {
         let queue = BoundedInputs::new(1);
-        let frame = |id| VideoFrame {
-            metadata: VideoFrameMetadata {
-                frame_id: id,
-                capture_timestamp_ms: id,
-                width: 1,
-                height: 1,
-            },
-            payload: vec![0xff, 0xd8, id as u8, 0xff, 0xd9],
-        };
-        assert!(queue.video(frame(1)));
-        assert!(!queue.video(frame(2)));
+        assert!(queue.video(video(1)));
+        assert!(!queue.video(video(2)));
+        assert_eq!(queue.dropped_video(), 1);
         match queue.pop(std::time::Duration::ZERO).unwrap() {
             super::Input::Video(frame) => assert_eq!(frame.metadata.frame_id, 2),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn full_audio_queue_evicts_oldest_audio_for_video() {
+        let queue = BoundedInputs::new(3);
+        assert!(queue.audio(audio(1)));
+        assert!(queue.audio(audio(2)));
+        assert!(queue.audio(audio(3)));
+
+        assert!(queue.video(video(4)));
+        assert_eq!(queue.dropped_video(), 0);
+
+        match queue.pop(std::time::Duration::ZERO).unwrap() {
+            super::Input::Audio(frame) => assert_eq!(frame.metadata.frame_id, 2),
+            _ => panic!(),
+        }
+        match queue.pop(std::time::Duration::ZERO).unwrap() {
+            super::Input::Audio(frame) => assert_eq!(frame.metadata.frame_id, 3),
+            _ => panic!(),
+        }
+        match queue.pop(std::time::Duration::ZERO).unwrap() {
+            super::Input::Video(frame) => assert_eq!(frame.metadata.frame_id, 4),
+            _ => panic!(),
+        }
+        assert!(queue.pop(std::time::Duration::ZERO).is_none());
+    }
+
+    #[test]
+    fn full_mixed_queue_replaces_oldest_video_and_keeps_capacity() {
+        let queue = BoundedInputs::new(3);
+        assert!(queue.audio(audio(1)));
+        assert!(queue.video(video(2)));
+        assert!(queue.audio(audio(3)));
+
+        assert!(!queue.video(video(4)));
+        assert_eq!(queue.dropped_video(), 1);
+
+        match queue.pop(std::time::Duration::ZERO).unwrap() {
+            super::Input::Audio(frame) => assert_eq!(frame.metadata.frame_id, 1),
+            _ => panic!(),
+        }
+        match queue.pop(std::time::Duration::ZERO).unwrap() {
+            super::Input::Audio(frame) => assert_eq!(frame.metadata.frame_id, 3),
+            _ => panic!(),
+        }
+        match queue.pop(std::time::Duration::ZERO).unwrap() {
+            super::Input::Video(frame) => assert_eq!(frame.metadata.frame_id, 4),
+            _ => panic!(),
+        }
+        assert!(queue.pop(std::time::Duration::ZERO).is_none());
+    }
+
+    #[test]
+    fn queue_preserves_fifo_order_without_saturation() {
+        let queue = BoundedInputs::new(3);
+        assert!(queue.audio(audio(1)));
+        assert!(queue.video(video(2)));
+        assert!(queue.audio(audio(3)));
+
+        match queue.pop(std::time::Duration::ZERO).unwrap() {
+            super::Input::Audio(frame) => assert_eq!(frame.metadata.frame_id, 1),
+            _ => panic!(),
+        }
+        match queue.pop(std::time::Duration::ZERO).unwrap() {
+            super::Input::Video(frame) => assert_eq!(frame.metadata.frame_id, 2),
+            _ => panic!(),
+        }
+        match queue.pop(std::time::Duration::ZERO).unwrap() {
+            super::Input::Audio(frame) => assert_eq!(frame.metadata.frame_id, 3),
             _ => panic!(),
         }
     }

@@ -29,7 +29,7 @@ Snapshot date: 2026-07-17
 - Rover `audio_converter` converts capture F32 to S16LE while preserving capture identity.
 - Rover Zenoh publishes versioned PCM v1 packets; orchestra validates them and only accepts bounded legacy F32LE during rollout.
 - Orchestra forwards S16LE directly to `web_bridge`, which emits binary audio attachments to browsers.
-- `orchestra/media_recorder` is the Phase 2 Dora node for validated rover JPEG and PCM ingestion. It reads `RECORDING_ROOT`, optional `FFMPEG_PATH`/`FFPROBE_PATH`, and `RECORDING_*` limits; ingests FIFO JPEG and PCM frames through bounded queues; writes `.partial/<recording_id>.mp4.partial` plus adjacent manifests; and atomically promotes finalized MP4/manifest pairs only after FFmpeg and ffprobe validation succeed.
+- `orchestra/media_recorder` is the Phase 2 Dora node for validated rover JPEG and PCM ingestion. It reads `RECORDING_ROOT`, optional `FFMPEG_PATH`/`FFPROBE_PATH`, and `RECORDING_*` limits; uses one bounded FIFO queue where a new video frame replaces the oldest queued video, or the oldest queued audio if no video is queued; writes `.partial/<recording_id>.mp4.partial` plus adjacent manifests; and atomically promotes finalized MP4/manifest pairs only after FFmpeg and ffprobe validation succeed.
 - Phase 3 now wires `media-recorder` into `orchestra/orchestra-dataflow.yml`,
   exposes authenticated/rate-limited `recording_session_command`,
   `recording_clip_list`, and `recording_playback_ticket` Socket.IO events, and
