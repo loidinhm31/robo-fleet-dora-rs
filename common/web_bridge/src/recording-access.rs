@@ -164,8 +164,7 @@ impl RecordingAccess {
 
 fn safe_root(value: &str, container_mode: bool) -> Option<PathBuf> {
     let root = PathBuf::from(value).canonicalize().ok()?;
-    (allowed_root(&root, container_mode) && root.is_dir())
-    .then_some(root)
+    (allowed_root(&root, container_mode) && root.is_dir()).then_some(root)
 }
 
 fn allowed_root(root: &Path, container_mode: bool) -> bool {

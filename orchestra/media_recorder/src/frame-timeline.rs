@@ -64,30 +64,32 @@ impl FrameTimeline {
             return Err("audio capture timestamp regressed".into());
         }
         let timestamp_ms = metadata.capture_timestamp_ms.saturating_sub(origin);
-        let gap_ms = timestamp_ms.saturating_sub(self.audio_end_ms);
+        let audio_gap = timestamp_ms.saturating_sub(self.audio_end_ms) > 2;
+        let silence_bytes =
+            self.silence_until(timestamp_ms, metadata.sample_rate, metadata.channels);
+        self.counters.audio_gaps += u64::from(audio_gap);
+        let frame_ms = u64::from(metadata.sample_count) * 1000 / u64::from(metadata.sample_rate);
+        self.audio_end_ms = timestamp_ms.saturating_add(frame_ms);
+        self.last_audio_ms = Some(metadata.capture_timestamp_ms);
+        Ok(silence_bytes)
+    }
+
+    pub fn silence_until(&mut self, target_ms: u64, sample_rate: u32, channels: u16) -> u64 {
+        let gap_ms = target_ms.saturating_sub(self.audio_end_ms);
         let silence_samples = gap_ms
-            .saturating_mul(u64::from(metadata.sample_rate))
-            .saturating_mul(u64::from(metadata.channels))
+            .saturating_mul(u64::from(sample_rate))
+            .saturating_mul(u64::from(channels))
             / 1000;
-        self.counters.audio_gaps += u64::from(gap_ms > 2);
         self.counters.silence_samples = self
             .counters
             .silence_samples
             .saturating_add(silence_samples);
-        let frame_ms = u64::from(metadata.sample_count) * 1000 / u64::from(metadata.sample_rate);
-        self.audio_end_ms = timestamp_ms.saturating_add(frame_ms);
-        self.last_audio_ms = Some(metadata.capture_timestamp_ms);
-        Ok(silence_samples.saturating_mul(2))
+        self.audio_end_ms = self.audio_end_ms.max(target_ms);
+        silence_samples.saturating_mul(2)
     }
 
     pub fn finish_silence(&mut self, end_pts_ms: u64, sample_rate: u32, channels: u16) -> u64 {
-        let gap_ms = end_pts_ms.saturating_sub(self.audio_end_ms);
-        let samples = gap_ms
-            .saturating_mul(u64::from(sample_rate))
-            .saturating_mul(u64::from(channels))
-            / 1000;
-        self.counters.silence_samples = self.counters.silence_samples.saturating_add(samples);
-        samples.saturating_mul(2)
+        self.silence_until(end_pts_ms, sample_rate, channels)
     }
 
     pub fn duration_ms(&self) -> u64 {
