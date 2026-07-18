@@ -33,7 +33,7 @@ Add one Orchestra `media-recorder` Dora node. It consumes per-rover JPEG and mic
 | 1 | Shared contracts and media demand | Done (2026-07-17 11:47 +07) | 100% | 7h | [phase-01](./phase-01-shared-contracts-and-media-demand.md) |
 | 2 | FFmpeg recorder and storage core | Done (2026-07-17 17:00 +07) | 100% | 12h | [phase-02](./phase-02-media-recorder-ffmpeg-and-storage.md) |
 | 3 | Backend control, catalog, playback | Done (2026-07-17) | 100% | 10h | [phase-03](./phase-03-backend-control-catalog-and-playback.md) |
-| 4 | Orchestra container deployment | Pending | 0% | 5h | [phase-04](./phase-04-orchestra-container-deployment.md) |
+| 4 | Orchestra container deployment | Done (2026-07-18) | 100% | 5h | [phase-04](./phase-04-orchestra-container-deployment.md) |
 | 5 | Recording control and playback UI | Pending | 0% | 7h | [phase-05](./phase-05-recording-control-and-playback-ui.md) |
 | 6 | End-to-end verification and rollout | Pending | 0% | 5h | [phase-06](./phase-06-end-to-end-verification-and-rollout.md) |
 
@@ -65,6 +65,7 @@ Add one Orchestra `media-recorder` Dora node. It consumes per-rover JPEG and mic
 ### Action Items
 
 - [ ] Before implementation, revise Phase 02/04 concurrency-default wording and tests from a small fixed cap to the active fleet size while retaining an explicit deployment override and fail-closed resource guards.
+- [x] Phase 04 deployment tracking updated to done; live host/container verification is the only remaining follow-up if environment-specific regressions appear.
 
 ## Unresolved questions
 

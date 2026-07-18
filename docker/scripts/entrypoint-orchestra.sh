@@ -3,6 +3,55 @@ set -e
 
 . /app/scripts/sherpa-stt-profile-files.sh
 
+RECORDING_ROOT="${RECORDING_ROOT:-/recordings}"
+RECORDING_MIN_FREE_BYTES="${RECORDING_MIN_FREE_BYTES:-1073741824}"
+HOST_RECORDING_PATH="${HOST_RECORDING_PATH:-}"
+export RECORDING_ROOT RECORDING_MIN_FREE_BYTES
+
+fail_recording_readiness() {
+    echo "ERROR: orchestra recording readiness failed: $1" >&2
+    exit 1
+}
+
+case "$RECORDING_MIN_FREE_BYTES" in
+    ''|*[!0-9]*) fail_recording_readiness "RECORDING_MIN_FREE_BYTES must be an integer" ;;
+esac
+
+[ "$RECORDING_ROOT" = "/recordings" ] || fail_recording_readiness "RECORDING_ROOT must be /recordings in the container"
+case "$HOST_RECORDING_PATH" in
+    /home/*) ;;
+    *) fail_recording_readiness "HOST_RECORDING_PATH must be an absolute directory below /home" ;;
+esac
+[ "$HOST_RECORDING_PATH" != "/home" ] || fail_recording_readiness "HOST_RECORDING_PATH must not be /home"
+case "$HOST_RECORDING_PATH" in
+    *..*) fail_recording_readiness "HOST_RECORDING_PATH must not contain '..'" ;;
+esac
+[ ! -e /recordings/.image-layer-recording-root-marker ] || fail_recording_readiness "HOST_RECORDING_PATH is not mounted"
+[ -d "$RECORDING_ROOT" ] || fail_recording_readiness "recording directory is missing"
+[ -w "$RECORDING_ROOT" ] || fail_recording_readiness "recording directory is not writable"
+
+available_kb="$(df -Pk "$RECORDING_ROOT" | awk 'NR==2 {print $4}')"
+[ -n "$available_kb" ] && [ "$available_kb" -ge "$((RECORDING_MIN_FREE_BYTES / 1024))" ] || \
+    fail_recording_readiness "recording directory has insufficient free space"
+
+ffmpeg -hide_banner -encoders 2>&1 | grep -Eq '[[:space:]]libx264[[:space:]]' || \
+    fail_recording_readiness "FFmpeg libx264 encoder is unavailable"
+ffmpeg -hide_banner -encoders 2>&1 | grep -Eq '[[:space:]]aac[[:space:]]' || \
+    fail_recording_readiness "FFmpeg AAC encoder is unavailable"
+ffmpeg -hide_banner -muxers 2>&1 | grep -Eq '[[:space:]]E[[:space:]]mp4[[:space:]]' || \
+    fail_recording_readiness "FFmpeg MP4 muxer is unavailable"
+ffprobe -version >/dev/null 2>&1 || fail_recording_readiness "ffprobe is unavailable"
+
+recording_probe="$RECORDING_ROOT/.orchestra-readiness.$$"
+recording_probe_renamed="$recording_probe.renamed"
+trap 'rm -f "$recording_probe" "$recording_probe_renamed"' EXIT
+printf 'ready' > "$recording_probe" || fail_recording_readiness "recording root create failed"
+sync -f "$recording_probe" || fail_recording_readiness "recording root fsync failed"
+mv "$recording_probe" "$recording_probe_renamed" || fail_recording_readiness "recording root rename failed"
+[ "$(cat "$recording_probe_renamed")" = "ready" ] || fail_recording_readiness "recording root read failed"
+rm -f "$recording_probe_renamed"
+trap - EXIT
+
 echo "==================================================================="
 echo "  Robo-Fleet Orchestra Container Starting"
 echo "==================================================================="

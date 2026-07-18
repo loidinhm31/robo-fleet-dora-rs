@@ -10,6 +10,7 @@ members = [
     # Orchestra (Workstation) - Fleet control hub
     "orchestra/central_speech_recognizer",
     "orchestra/command_parser",
+    "orchestra/media_recorder",
     "orchestra/zenoh_bridge",
 ]
 
@@ -25,5 +26,8 @@ eyre = "0.6.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.0", features = ["v4"] }
+crossbeam-channel = "0.5"
+libc = "0.2"
+os_pipe = "1.2"
 zenoh = "1.0"
 zenoh-config = "1.0"

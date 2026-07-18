@@ -28,6 +28,7 @@ COPY robo_rover_lib/Cargo.toml robo_rover_lib/
 COPY common/web_bridge/Cargo.toml common/web_bridge/
 COPY orchestra/central_speech_recognizer/Cargo.toml orchestra/central_speech_recognizer/
 COPY orchestra/command_parser/Cargo.toml orchestra/command_parser/
+COPY orchestra/media_recorder/Cargo.toml orchestra/media_recorder/
 COPY orchestra/zenoh_bridge/Cargo.toml orchestra/zenoh_bridge/
 
 # Copy actual source code
@@ -40,6 +41,7 @@ RUN cargo build --release \
     -p web_bridge \
     -p central_speech_recognizer \
     -p command_parser \
+    -p media_recorder \
     -p orchestra_zenoh_bridge
 
 # =============================================================================
@@ -47,15 +49,30 @@ RUN cargo build --release \
 # =============================================================================
 FROM debian:bookworm-slim AS runtime
 
+# Keep the runtime package version explicit. Override this build argument only
+# when the Debian bookworm security repository publishes a newer vetted build.
+ARG FFMPEG_DEBIAN_VERSION=7:5.1.9-0+deb12u1
+
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    "ffmpeg=${FFMPEG_DEBIAN_VERSION}" \
     libssl3 \
     libasound2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user
-RUN useradd -m -s /bin/bash dora
+# Assert that the exact codecs and muxer used by the recorder are available in
+# the image instead of discovering a broken encoder after deployment.
+RUN set -eux; \
+    ffmpeg -hide_banner -encoders 2>&1 | grep -Eq '[[:space:]]libx264[[:space:]]'; \
+    ffmpeg -hide_banner -encoders 2>&1 | grep -Eq '[[:space:]]aac[[:space:]]'; \
+    ffmpeg -hide_banner -muxers 2>&1 | grep -Eq '[[:space:]]E[[:space:]]mp4[[:space:]]'; \
+    ffprobe -version >/dev/null
+
+# Keep the image UID/GID stable so the documented host ownership survives a
+# container replacement. The recording bind mount must be owned by 1000:1000.
+RUN groupadd --gid 1000 dora && \
+    useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash dora
 
 WORKDIR /app
 
@@ -63,6 +80,7 @@ WORKDIR /app
 COPY --from=builder /build/target/release/web_bridge ./bin/
 COPY --from=builder /build/target/release/central_speech_recognizer ./bin/
 COPY --from=builder /build/target/release/command_parser ./bin/
+COPY --from=builder /build/target/release/media_recorder ./bin/
 COPY --from=builder /build/target/release/orchestra_zenoh_bridge ./bin/
 COPY --from=builder /usr/local/cargo/bin/dora ./bin/
 
@@ -72,8 +90,11 @@ COPY orchestra/zenoh_bridge/zenoh_config.json5 ./config/zenoh_config.json5
 COPY models/scripts/model-manifest.sh ./scripts/model-manifest.sh
 COPY docker/scripts/sherpa-stt-profile-files.sh ./scripts/sherpa-stt-profile-files.sh
 
-# Create directories for models and runtime data
+# Create directories for models and runtime data. The marker makes an absent
+# recording bind mount fail closed instead of silently writing to the image.
 RUN mkdir -p /models/sherpa-onnx/asr && \
+    mkdir -p /recordings && \
+    touch /recordings/.image-layer-recording-root-marker && \
     chown -R dora:dora /app
 
 # Add entrypoint script
@@ -86,7 +107,6 @@ ENV PATH="/app/bin:${PATH}"
 # Expose ports
 EXPOSE 3030 7447
 
-# Switch to non-root user (commented out because dora might need permissions)
-# USER dora
+USER dora
 
 ENTRYPOINT ["/entrypoint.sh"]

@@ -2,6 +2,9 @@ services:
   orchestra:
     image: localhost/robo-orchestra:latest
     platform: linux/amd64
+    # Podman rootless keep-id preserves the host user's restrictive directory
+    # ownership while the image still runs as non-root dora (UID 1000).
+    userns_mode: keep-id
     depends_on:
       mongodb:
         condition: service_healthy
@@ -11,6 +14,7 @@ services:
     cpus: 2.0
     mem_limit: 3g
     environment:
+      RECORDING_ROOT: /recordings
       MONGODB_URI: "${WORKSTATION_MONGODB_URI:-mongodb://127.0.0.1:27017}"
       MONGODB_DATABASE: "${WORKSTATION_MONGODB_DATABASE:-robo_fleet_edge_voice_e2e}"
       ALLOW_DEFAULT_CREDENTIALS: "${WORKSTATION_ALLOW_DEFAULT_CREDENTIALS:-true}"
