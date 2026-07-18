@@ -1,6 +1,7 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -26,12 +27,16 @@ impl FfmpegSpec {
             "-nostdin".into(),
             "-loglevel".into(),
             "warning".into(),
+            "-thread_queue_size".into(),
+            "512".into(),
             "-f".into(),
             "mjpeg".into(),
             "-framerate".into(),
             self.fps.to_string(),
             "-i".into(),
             format!("pipe:{video_fd}"),
+            "-thread_queue_size".into(),
+            "512".into(),
             "-f".into(),
             "s16le".into(),
             "-ar".into(),
@@ -66,8 +71,8 @@ impl FfmpegSpec {
 
 pub struct FfmpegSession {
     child: Child,
-    video: Option<Box<dyn Write + Send>>,
-    audio: Option<Box<dyn Write + Send>>,
+    video: Option<os_pipe::PipeWriter>,
+    audio: Option<os_pipe::PipeWriter>,
     stderr: Arc<Mutex<Vec<u8>>>,
 }
 
@@ -107,6 +112,8 @@ impl FfmpegSession {
                     Ok(())
                 });
             }
+            set_nonblocking(&video_writer).map_err(|e| format!("video pipe: {e}"))?;
+            set_nonblocking(&audio_writer).map_err(|e| format!("audio pipe: {e}"))?;
             let mut child = command.spawn().map_err(|e| format!("spawn ffmpeg: {e}"))?;
             drop(video_reader);
             drop(audio_reader);
@@ -131,35 +138,59 @@ impl FfmpegSession {
             }
             Ok(Self {
                 child,
-                video: Some(Box::new(video_writer)),
-                audio: Some(Box::new(audio_writer)),
+                video: Some(video_writer),
+                audio: Some(audio_writer),
                 stderr,
             })
         }
     }
 
     pub fn write_video(&mut self, payload: &[u8]) -> Result<(), String> {
-        self.video
+        self.write_video_until(payload, None)
+    }
+
+    pub fn write_video_until(
+        &mut self,
+        payload: &[u8],
+        stop: Option<&AtomicBool>,
+    ) -> Result<(), String> {
+        let writer = self
+            .video
             .as_mut()
-            .ok_or_else(|| "video pipe is closed".to_string())?
-            .write_all(payload)
-            .map_err(|e| format!("write video pipe: {e}"))
+            .ok_or_else(|| "video pipe is closed".to_string())?;
+        write_pipe(writer, payload, stop, "video")
     }
 
     pub fn write_audio(&mut self, payload: &[u8]) -> Result<(), String> {
-        self.audio
+        self.write_audio_until(payload, None)
+    }
+
+    pub fn write_audio_until(
+        &mut self,
+        payload: &[u8],
+        stop: Option<&AtomicBool>,
+    ) -> Result<(), String> {
+        let writer = self
+            .audio
             .as_mut()
-            .ok_or_else(|| "audio pipe is closed".to_string())?
-            .write_all(payload)
-            .map_err(|e| format!("write audio pipe: {e}"))
+            .ok_or_else(|| "audio pipe is closed".to_string())?;
+        write_pipe(writer, payload, stop, "audio")
     }
 
     pub fn write_audio_silence(&mut self, bytes: u64) -> Result<(), String> {
+        self.write_audio_silence_until(bytes, None)
+    }
+
+    pub fn write_audio_silence_until(
+        &mut self,
+        bytes: u64,
+        stop: Option<&AtomicBool>,
+    ) -> Result<(), String> {
         let mut remaining = bytes;
         let zeros = [0u8; 8192];
         while remaining > 0 {
             let size = remaining.min(zeros.len() as u64) as usize;
-            self.write_audio(&zeros[..size])?;
+            self.write_audio_until(&zeros[..size], stop)?;
             remaining -= size as u64;
         }
         Ok(())
@@ -203,6 +234,67 @@ impl FfmpegSession {
             .trim()
             .to_string()
     }
+}
+
+#[cfg(unix)]
+fn set_nonblocking(writer: &os_pipe::PipeWriter) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let fd = writer.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_nonblocking(_writer: &os_pipe::PipeWriter) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn write_pipe(
+    writer: &mut os_pipe::PipeWriter,
+    payload: &[u8],
+    stop: Option<&AtomicBool>,
+    label: &str,
+) -> Result<(), String> {
+    let mut offset = 0usize;
+    while offset < payload.len() {
+        match writer.write(&payload[offset..]) {
+            Ok(0) => return Err(format!("{label} pipe closed")),
+            Ok(written) => offset += written,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if stop.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+                    return Err(format!("{label} pipe write interrupted by stop"));
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::fd::AsRawFd;
+                    let mut poll_fd = libc::pollfd {
+                        fd: writer.as_raw_fd(),
+                        events: libc::POLLOUT,
+                        revents: 0,
+                    };
+                    let result = unsafe { libc::poll(&mut poll_fd, 1, 50) };
+                    if result < 0 {
+                        let error = std::io::Error::last_os_error();
+                        if error.kind() == std::io::ErrorKind::Interrupted {
+                            continue;
+                        }
+                        return Err(format!("write {label} pipe: {error}"));
+                    }
+                }
+                #[cfg(not(unix))]
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(format!("write {label} pipe: {error}")),
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]

@@ -262,15 +262,15 @@ impl SessionManager {
     }
 
     pub fn push_video(&self, entity_id: &str, frame: VideoFrame) -> bool {
-        self.sessions
-            .get(entity_id)
-            .is_some_and(|session| session.inputs.video(frame))
+        self.sessions.get(entity_id).is_some_and(|session| {
+            !session.stop.load(std::sync::atomic::Ordering::Acquire) && session.inputs.video(frame)
+        })
     }
 
     pub fn push_audio(&self, entity_id: &str, frame: AudioFrame) -> bool {
-        self.sessions
-            .get(entity_id)
-            .is_some_and(|session| session.inputs.audio(frame))
+        self.sessions.get(entity_id).is_some_and(|session| {
+            !session.stop.load(std::sync::atomic::Ordering::Acquire) && session.inputs.audio(frame)
+        })
     }
 
     pub fn reap(&mut self) -> Vec<SessionStatus> {
@@ -421,8 +421,12 @@ fn run_worker(
                             pending_failed = true;
                             break;
                         };
-                        if process.write_audio_silence(silence).is_err()
-                            || process.write_audio(&pending.payload).is_err()
+                        if process
+                            .write_audio_silence_until(silence, Some(&stop))
+                            .is_err()
+                            || process
+                                .write_audio_until(&pending.payload, Some(&stop))
+                                .is_err()
                         {
                             pending_failed = true;
                             break;
@@ -437,22 +441,45 @@ fn run_worker(
                 }
                 if let Some(process) = ffmpeg.as_mut() {
                     let interval = (1000 / u64::from(config.video_fps)).max(1);
+                    if audio_format.is_none() {
+                        let silence_bytes = timeline.silence_until(
+                            pts.saturating_add(interval),
+                            config.audio_sample_rate,
+                            config.audio_channels,
+                        );
+                        if process
+                            .write_audio_silence_until(silence_bytes, Some(&stop))
+                            .is_err()
+                        {
+                            if stop.load(std::sync::atomic::Ordering::Acquire) {
+                                break;
+                            }
+                            failure = Some(RecordingReasonCode::EncoderFailed);
+                            break;
+                        }
+                    }
                     if let (Some(previous), Some(last_pts)) = (&previous_video, last_written_pts) {
                         let repeats =
                             pts.saturating_sub(last_pts.saturating_add(interval)) / interval;
                         let mut repeat_failed = false;
                         for _ in 0..repeats {
-                            if process.write_video(previous).is_err() {
+                            if process.write_video_until(previous, Some(&stop)).is_err() {
                                 repeat_failed = true;
                                 break;
                             }
                         }
                         if repeat_failed {
+                            if stop.load(std::sync::atomic::Ordering::Acquire) {
+                                break;
+                            }
                             failure = Some(RecordingReasonCode::EncoderFailed);
                             break;
                         }
                     }
-                    if let Err(error) = process.write_video(&frame.payload) {
+                    if let Err(error) = process.write_video_until(&frame.payload, Some(&stop)) {
+                        if stop.load(std::sync::atomic::Ordering::Acquire) {
+                            break;
+                        }
                         tracing::warn!(recording_id = %status.recording_id, %error, "video pipe write failed");
                         failure = Some(RecordingReasonCode::EncoderFailed);
                         break;
@@ -491,9 +518,16 @@ fn run_worker(
                     Err(_) => continue,
                 };
                 if let Some(process) = ffmpeg.as_mut() {
-                    if process.write_audio_silence(silence_bytes).is_err()
-                        || process.write_audio(&frame.payload).is_err()
+                    if process
+                        .write_audio_silence_until(silence_bytes, Some(&stop))
+                        .is_err()
+                        || process
+                            .write_audio_until(&frame.payload, Some(&stop))
+                            .is_err()
                     {
+                        if stop.load(std::sync::atomic::Ordering::Acquire) {
+                            break;
+                        }
                         failure = Some(RecordingReasonCode::EncoderFailed);
                         break;
                     }
@@ -527,7 +561,7 @@ fn run_worker(
                 .unwrap_or(config.audio_channels),
         );
         if failure.is_none() {
-            let _ = process.write_audio_silence(silence_bytes);
+            let _ = process.write_audio_silence_until(silence_bytes, Some(&stop));
         }
         let outcome = process.wait(Duration::from_millis(config.finalization_timeout_ms));
         if outcome.as_ref().map(|o| !o.success).unwrap_or(true) {

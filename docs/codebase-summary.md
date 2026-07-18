@@ -40,6 +40,10 @@ Snapshot date: 2026-07-17
   with one-range `GET`/`HEAD` support after component-wise no-follow path
   authorization and file/manifest identity checks. Phase 4 still owns container
   deployment wiring around recorder output.
+- Phase 5 adds the shared `MediaRecordingPage` with authenticated relative-path
+  session controls, concurrent per-rover status cards, finalized clip browsing,
+  short-lived ticket playback, reconnect/auth cleanup, and deterministic Vitest
+  plus fake-Socket.IO Playwright coverage for desktop and mobile layouts.
 - `central_speech_recognizer` now follows the Phase 01 STT contract: `SpeechTranscription` carries `source_kind`, `profile`, `target_entity_id`, `entity_id`, `stream_id`, `utterance_id`, `language`, `timestamp`, `duration_ms`, and optional `confidence`; `SttStatus` carries `state`, `profile`, `language`, `timestamp`, `error`.
 - Authenticated browsers control STT streams with `voice_command_control` start/stop events and send ordered Float32 frames with `voice_command_audio`; the web bridge owns stream identity, snapshots the selected rover at start, and forwards bounded start/audio/stop messages to central STT.
 - `central_speech_recognizer` has completed the Sherpa Phase 02 runtime cutover: it provisions fixed English/Vietnamese offline profile catalogs under `models/.cache/sherpa-onnx/asr`, validates required files, and loads Silero VAD plus the selected offline recognizer at startup.

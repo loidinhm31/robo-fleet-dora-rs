@@ -13,7 +13,7 @@ use std::process::Command;
 use tempfile::tempdir;
 use uuid::Uuid;
 
-fn jpeg_fixture() -> Vec<u8> {
+fn jpeg_fixture_at(size: &str) -> Vec<u8> {
     let output = Command::new("ffmpeg")
         .args([
             "-v",
@@ -21,7 +21,7 @@ fn jpeg_fixture() -> Vec<u8> {
             "-f",
             "lavfi",
             "-i",
-            "color=c=black:s=32x24",
+            &format!("testsrc2=s={size}"),
             "-frames:v",
             "1",
             "-f",
@@ -36,6 +36,10 @@ fn jpeg_fixture() -> Vec<u8> {
         .expect("ffmpeg fixture");
     assert!(output.status.success(), "fixture ffmpeg failed");
     output.stdout
+}
+
+fn jpeg_fixture() -> Vec<u8> {
+    jpeg_fixture_at("32x24")
 }
 
 #[test]
@@ -211,6 +215,22 @@ fn sessions_are_independent_and_duplicate_entity_start_is_rejected() {
     }
     manager.stop(&first.recording_id).unwrap();
     manager.stop(&second.recording_id).unwrap();
+    // The media bridge continues producing frames after a stop command. Those
+    // frames must not keep a stopped session's queue non-empty indefinitely.
+    for frame_id in 2..32 {
+        assert!(!manager.push_video(
+            "rover-a",
+            VideoFrame {
+                metadata: VideoFrameMetadata {
+                    frame_id,
+                    capture_timestamp_ms: 1_000 + frame_id,
+                    width: 32,
+                    height: 24,
+                },
+                payload: jpeg.clone(),
+            },
+        ));
+    }
     let mut completed = Vec::new();
     for _ in 0..100 {
         completed.extend(manager.reap());
@@ -229,4 +249,63 @@ fn sessions_are_independent_and_duplicate_entity_start_is_rejected() {
     let (clips, issues) = manager.catalog().scan();
     assert_eq!(clips.len(), 2);
     assert!(issues.is_empty(), "unexpected catalog issues: {issues:?}");
+}
+
+#[test]
+fn live_sized_video_without_microphone_finalizes_after_stop() {
+    let root = tempdir().unwrap();
+    let mut manager = SessionManager::new(RecorderConfig {
+        recording_root: root.path().to_path_buf(),
+        ffmpeg_path: PathBuf::from("/usr/bin/ffmpeg"),
+        ffprobe_path: PathBuf::from("/usr/bin/ffprobe"),
+        max_concurrent: 1,
+        max_duration_ms: 10_000,
+        max_output_bytes: 32 * 1024 * 1024,
+        startup_timeout_ms: 2_000,
+        finalization_timeout_ms: 5_000,
+        min_free_bytes: 0,
+        queue_capacity: 8,
+        audio_sample_rate: 16_000,
+        audio_channels: 1,
+        video_fps: 30,
+    })
+    .unwrap();
+    let session = manager
+        .start(StartRequest {
+            request_id: Uuid::new_v4().to_string(),
+            entity_id: "rover-a".into(),
+            relative_directory: "captures".into(),
+        })
+        .unwrap();
+    let jpeg = jpeg_fixture_at("640x480");
+    assert!(jpeg.len() > 8 * 1024, "fixture must exceed a pipe buffer");
+    for frame_id in 1..=4 {
+        assert!(manager.push_video(
+            "rover-a",
+            VideoFrame {
+                metadata: VideoFrameMetadata {
+                    frame_id,
+                    capture_timestamp_ms: 1_000 + u64::from(frame_id - 1) * 33,
+                    width: 640,
+                    height: 480,
+                },
+                payload: jpeg.clone(),
+            },
+        ));
+    }
+    manager.stop(&session.recording_id).unwrap();
+    let mut completed = Vec::new();
+    for _ in 0..250 {
+        completed.extend(manager.reap());
+        if !completed.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(completed.len(), 1, "statuses: {completed:?}");
+    assert_eq!(
+        completed[0].state,
+        robo_rover_lib::RecordingSessionState::Completed,
+        "statuses: {completed:?}"
+    );
 }
