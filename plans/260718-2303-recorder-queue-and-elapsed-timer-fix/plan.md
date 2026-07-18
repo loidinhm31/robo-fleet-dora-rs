@@ -23,7 +23,7 @@ elapsed display that stays live between deduplicated status events.
 | # | Phase | Status | Effort | Link |
 |---|---|---|---|---|
 | 1 | Preserve video admission in bounded recorder queue | Done | 2h | [phase 01](./phase-01-preserve-video-admission.md) |
-| 2 | Render monotonic active elapsed time in shared UI | Pending | 2h | [phase 02](./phase-02-render-live-recording-elapsed-time.md) |
+| 2 | Render monotonic active elapsed time in shared UI | Done | 2h | [phase 02](./phase-02-render-live-recording-elapsed-time.md) |
 | 3 | Verify sustained A/V recording and UI lifecycle | Pending | 2h | [phase 03](./phase-03-verify-recording-regressions.md) |
 
 ## Fixed design decisions
@@ -43,6 +43,12 @@ elapsed display that stays live between deduplicated status events.
 - [Queue research](./research/researcher-01-recorder-queue.md)
 - [Elapsed-time research](./research/researcher-02-elapsed-time.md)
 - `ARCHITECTURE.md` manual recording invariants
+
+## Validation
+
+- Phase 02 validated with focused timer tests 5/5, full `@robo-fleet/ui`
+  tests 141/141, `check-types` passed, `lint` passed, and code review 8/10
+  approved.
 
 ## Unresolved questions
 
