@@ -26,7 +26,31 @@ This will download:
 For native x86 runs outside Docker, `make models` also installs the pinned
 repo-local ONNX Runtime under `models/.runtime`.
 
-### 2. Build Images
+### 2. Prepare Persistent Recording Storage
+
+Orchestra requires an existing, dedicated host directory below `/home`. The
+Compose file refuses to start if `HOST_RECORDING_PATH` is missing and mounts
+only that directory at `/recordings`; it never mounts `/home` or the workspace.
+The image user is UID/GID `1000:1000`, so make the ownership explicit before
+starting rootful Docker or the workstation Podman override:
+
+```bash
+export HOST_RECORDING_PATH=/home/$USER/robo-fleet-recordings
+install -d -m 700 -o "$(id -u)" -g "$(id -g)" "$HOST_RECORDING_PATH"
+./docker/scripts/validate-recording-path.sh
+```
+
+Run that preflight before every Orchestra container start. It fails fast if the
+path is missing, outside the allowed host area, or not writable by the container
+user.
+
+On Fedora/Podman, the workstation override adds `userns_mode: keep-id` so the
+container UID maps to the invoking host user; the `:Z` bind-mount label is
+applied by Compose. If a custom SELinux policy still denies access, inspect
+`podman logs robo-orchestra` and relabel only this directory with
+`chcon -Rt container_file_t "$HOST_RECORDING_PATH"`.
+
+### 3. Build Images
 
 **For Orchestra (Workstation):**
 ```bash
@@ -45,11 +69,13 @@ make build-rover-cross
 Phase 10 runtime verification used the `linux/amd64` workstation override, not
 an ARM64 runtime.
 
-### 3. Run Containers
+### 4. Run Containers
 
 **Full amd64 workstation stack (phase 10 verified):**
 ```bash
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
+export HOST_RECORDING_PATH=/home/$USER/robo-fleet-recordings
+./docker/scripts/validate-recording-path.sh
 docker compose \
   -f docker/docker-compose.yml \
   -f docker/docker-compose.workstation.yml \
@@ -71,14 +97,14 @@ Auth is MongoDB-based. Set `ALLOW_DEFAULT_CREDENTIALS=true` in your `.env` for f
 make up-rover
 ```
 
-### 4. View Logs
+### 5. View Logs
 
 ```bash
 make logs-orchestra
 make logs-rover
 ```
 
-### 5. Stop Containers
+### 6. Stop Containers
 
 ```bash
 make down
@@ -93,7 +119,7 @@ The Docker setup uses docker-compose profiles to support two deployment scenario
 1. **Orchestra Profile** (`orchestra`)
    - Runs on workstation (x86_64)
    - Heavy ML processing, web interface, fleet management
-   - Nodes: web-bridge, central-speech-recognizer, command-parser, zenoh-bridge
+   - Nodes: web-bridge, central-speech-recognizer, command-parser, media-recorder, zenoh-bridge
 
 2. **Rover-Kiwi Profile** (`rover-kiwi`)
    - Runs on rover hardware in production; phase 10 validated it on workstation `linux/amd64`
@@ -115,6 +141,8 @@ native dataflows on the default Zenoh TCP port.
 **Orchestra:**
 - `models/.cache/sherpa-onnx` → `/models/sherpa-onnx` (shared Sherpa cache for central STT bundles)
 - `orchestra/zenoh_bridge/zenoh_config.json5` → `/app/config/zenoh_config.json5`
+- `$HOST_RECORDING_PATH` → `/recordings` (required, writable, SELinux relabeled)
+- `userns_mode: keep-id` in `docker-compose.workstation.yml` for rootless Podman
 
 **Rover:**
 - `models/.cache/yolo` → `/models/yolo` (YOLO model)
@@ -156,6 +184,16 @@ preserves the old cache until the staging cache has passed validation.
 | `STT_PROFILE` | `en-vad-offline` | Startup-only central STT profile |
 | `STT_MODEL_ROOT` | `/models/sherpa-onnx/asr` | Sherpa ASR bundle root |
 | `ORCHESTRA_ZENOH_LISTEN_ENDPOINT` | `tcp/127.0.0.1:7448` in workstation override | Loopback endpoint used for local amd64 Docker verification |
+| `HOST_RECORDING_PATH` | *(required)* | Existing dedicated host directory below `/home`; mounted at `/recordings` |
+| `RECORDING_MAX_CONCURRENT` | `64` | Upper bound for concurrent rover sessions; lower it for constrained hosts |
+| `RECORDING_MAX_DURATION_SECONDS` | `3600` | Per-session duration guard |
+| `RECORDING_MAX_OUTPUT_BYTES` | `4294967296` | Per-session output-size guard |
+| `RECORDING_MIN_FREE_BYTES` | `1073741824` | Minimum free space required before recording/startup |
+| `RECORDING_QUEUE_CAPACITY` | `8` | Bounded per-session input queue |
+| `RECORDING_STARTUP_TIMEOUT_SECONDS` | `30` | Recorder startup readiness timeout |
+| `RECORDING_FINALIZATION_TIMEOUT_SECONDS` | `30` | FFmpeg/clip finalization timeout on stop/shutdown |
+| `RECORDING_VIDEO_QUEUE_CAPACITY` | `16` | Bounded video-frame queue for recorder intake |
+| `RECORDING_AUDIO_QUEUE_CAPACITY` | `32` | Bounded audio-frame queue for recorder intake |
 
 ### Rover-Kiwi
 
@@ -238,6 +276,35 @@ Check if the container is running:
 ```bash
 docker ps | grep robo-orchestra
 make logs-orchestra
+```
+
+**Issue: Orchestra reports recording readiness failure**
+
+Typical messages include `HOST_RECORDING_PATH is not mounted`, `recording
+directory is not writable`, or an unavailable FFmpeg encoder. Check the
+deployment directory and image user ownership:
+
+```bash
+test -d "$HOST_RECORDING_PATH"
+stat -c '%u:%g %a %n' "$HOST_RECORDING_PATH"
+docker inspect robo-orchestra --format '{{json .State.Health}}'
+docker logs robo-orchestra
+```
+
+The container must remain non-root and the host directory must be writable by
+the mapped `dora` user. Rootless Podman uses `keep-id` in the workstation
+override; rootful Docker uses the image UID/GID `1000:1000`. Do not solve this
+by mounting `/home` broadly, using `:U` (which changes host ownership), or
+running the recorder as root.
+
+Recording files are finalized on the host, so they survive `docker compose
+down`, image rebuilds, and container replacement. Stop the stack, preserve the
+directory, correct ownership/labels, then start it again:
+
+```bash
+docker compose -f docker/docker-compose.yml --profile orchestra down
+install -d -m 700 -o "$(id -u)" -g "$(id -g)" "$HOST_RECORDING_PATH"
+docker compose -f docker/docker-compose.yml --profile orchestra up -d --build
 ```
 
 ### Rover

@@ -41,9 +41,10 @@ pub struct AuthorizedFile {
 
 impl RecordingAccess {
     pub fn from_env() -> Self {
+        let container_mode = std::env::var("RECORDING_CONTAINER_MODE").as_deref() == Ok("true");
         let root = std::env::var("RECORDING_ROOT")
             .ok()
-            .and_then(|value| safe_root(&value));
+            .and_then(|value| safe_root(&value, container_mode));
         if root.is_none() {
             tracing::warn!("recording playback disabled: RECORDING_ROOT is missing or unsafe");
         }
@@ -161,9 +162,15 @@ impl RecordingAccess {
     }
 }
 
-fn safe_root(value: &str) -> Option<PathBuf> {
+fn safe_root(value: &str, container_mode: bool) -> Option<PathBuf> {
     let root = PathBuf::from(value).canonicalize().ok()?;
-    (root != Path::new("/home") && root.starts_with("/home") && root.is_dir()).then_some(root)
+    (allowed_root(&root, container_mode) && root.is_dir())
+    .then_some(root)
+}
+
+fn allowed_root(root: &Path, container_mode: bool) -> bool {
+    (container_mode && root == Path::new("/recordings"))
+        || (!container_mode && root != Path::new("/home") && root.starts_with("/home"))
 }
 
 fn safe_final_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
@@ -293,5 +300,12 @@ mod tests {
         assert!(safe_final_file(root.path(), "../clip.mp4").is_err());
         assert!(safe_final_file(root.path(), "/clip.mp4").is_err());
         assert!(safe_final_file(root.path(), "clip\\mp4").is_err());
+    }
+
+    #[test]
+    fn recording_root_policy_keeps_container_path_container_only() {
+        assert!(allowed_root(Path::new("/recordings"), true));
+        assert!(!allowed_root(Path::new("/recordings"), false));
+        assert!(allowed_root(Path::new("/home/operator/recordings"), false));
     }
 }

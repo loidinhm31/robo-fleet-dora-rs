@@ -7,7 +7,7 @@
 .PHONY: help models models-reset check-models build-orchestra build-rover build-all up-orchestra up-rover \
         up-rover-direct up-mongodb down-mongodb logs-mongodb up-workstation down logs-orchestra \
         logs-rover shell-orchestra shell-rover status clean build-rover-cross format format-check \
-        format-file validate-compose validate-workstation-compose validate-edge-voice-x86
+	        format-file validate-recording-path validate-compose validate-workstation-compose validate-edge-voice-x86
 
 # Default target
 .DEFAULT_GOAL := help
@@ -80,6 +80,8 @@ help:
 	@echo "                          run: getent group audio | cut -d: -f3)"
 	@echo "  STT_PROFILE          - en-vad-offline (default) or vi-vad-offline"
 	@echo "  STT_MODEL_ROOT       - Sherpa ASR model root"
+	@echo "  HOST_RECORDING_PATH  - Existing dedicated /home directory (required for orchestra)"
+	@echo "  RECORDING_*          - Bounded media recorder safety limits"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make up-mongodb && make build-orchestra && make up-orchestra"
@@ -102,7 +104,7 @@ models-reset:
 # =============================================================================
 # Build Images
 # =============================================================================
-build-orchestra:
+build-orchestra: validate-recording-path
 	@echo "Building orchestra image (x86_64)..."
 	$(COMPOSE) --profile orchestra build
 
@@ -123,7 +125,7 @@ build-all: build-orchestra build-rover
 # =============================================================================
 # Run Containers
 # =============================================================================
-up-orchestra:
+up-orchestra: validate-recording-path
 	@echo "Starting orchestra container..."
 	$(COMPOSE) --profile orchestra up -d
 	@echo ""
@@ -155,7 +157,7 @@ up-rover-direct:  ## Start rover in direct-connect mode (web UI on rover, no Zen
 	@echo "Web UI: http://<rover-ip>:3030"
 	@echo "View logs with: make logs-rover"
 
-up-workstation:
+up-workstation: validate-recording-path
 	@echo "Starting workstation stack (MongoDB + orchestra + rover-kiwi)..."
 	$(WORKSTATION_COMPOSE) --profile mongodb --profile orchestra --profile rover-kiwi up -d
 	@echo ""
@@ -244,12 +246,15 @@ format-file:
 	@test -n "$(FILE)" || (echo "Usage: make format-file FILE=path/to/file.rs" && exit 2)
 	rustfmt --edition 2021 "$(FILE)"
 
-validate-compose:
+validate-recording-path:
+	@./docker/scripts/validate-recording-path.sh
+
+validate-compose: validate-recording-path
 	@echo "Validating docker-compose.yml..."
 	$(COMPOSE) --profile mongodb --profile orchestra --profile rover-kiwi config > /dev/null
 	@echo "✓ docker-compose.yml is valid"
 
-validate-workstation-compose:
+validate-workstation-compose: validate-recording-path
 	@echo "Validating docker-compose.yml + docker-compose.workstation.yml..."
 	$(WORKSTATION_COMPOSE) --profile mongodb --profile orchestra --profile rover-kiwi config > /dev/null
 	@echo "✓ workstation compose is valid"
