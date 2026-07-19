@@ -30,6 +30,26 @@ pub enum RecordingReasonCode {
     ResourceLimit,
     NotFound,
     Internal,
+    ActiveRecording,
+    PartialRecording,
+    DeleteFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordingDeleteRequest {
+    pub protocol_version: u8,
+    pub request_id: String,
+    pub recording_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordingDeleteResult {
+    pub protocol_version: u8,
+    pub request_id: String,
+    pub accepted: bool,
+    pub recording_id: Option<String>,
+    pub reason_code: Option<RecordingReasonCode>,
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,6 +223,38 @@ impl RecordingSessionCommandResult {
             .is_some_and(|detail| detail.len() > 256)
         {
             return Err("recording result detail exceeds 256 characters".into());
+        }
+        Ok(())
+    }
+}
+
+impl RecordingDeleteRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_version(self.protocol_version)?;
+        validate_uuid("request_id", &self.request_id)?;
+        validate_uuid("recording_id", &self.recording_id)
+    }
+}
+
+impl RecordingDeleteResult {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_version(self.protocol_version)?;
+        validate_uuid("request_id", &self.request_id)?;
+        if let Some(recording_id) = &self.recording_id {
+            validate_uuid("recording_id", recording_id)?;
+        }
+        if self.accepted != self.reason_code.is_none() {
+            return Err("delete result has inconsistent reason_code".into());
+        }
+        if self.accepted != self.recording_id.is_some() {
+            return Err("delete result has inconsistent recording_id".into());
+        }
+        if self
+            .detail
+            .as_ref()
+            .is_some_and(|detail| detail.len() > 256)
+        {
+            return Err("delete result detail exceeds 256 characters".into());
         }
         Ok(())
     }

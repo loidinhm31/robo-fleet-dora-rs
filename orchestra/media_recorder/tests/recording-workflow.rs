@@ -71,7 +71,7 @@ fn mp4_duration_ms(path: &std::path::Path) -> u64 {
 }
 
 #[test]
-fn synthetic_jpeg_pcm_is_atomically_published_and_probeable() {
+fn synthetic_jpeg_pcm_is_atomically_published_probeable_and_deletable() {
     let root = tempdir().unwrap();
     let resolver = PathResolver::new(root.path()).unwrap();
     let directory = resolver.directory("rover-a/session").unwrap();
@@ -129,6 +129,14 @@ fn synthetic_jpeg_pcm_is_atomically_published_and_probeable() {
         .join("rover-a")
         .to_string_lossy()
         .contains(".jpg"));
+
+    catalog.delete(&recording_id).unwrap();
+    assert!(!directory.join(format!("{recording_id}.mp4")).exists());
+    assert!(!directory
+        .join(format!("{recording_id}.manifest.json"))
+        .exists());
+    assert!(catalog.lookup(&recording_id).is_err());
+    assert!(catalog.delete(&recording_id).is_err());
 }
 
 #[test]

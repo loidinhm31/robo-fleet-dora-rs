@@ -34,7 +34,7 @@ pub struct FfmpegSpec {
 
 impl FfmpegSpec {
     pub fn args(&self, video_fd: i32, audio_fd: i32) -> Vec<String> {
-        vec![
+        let mut args = vec![
             "-hide_banner".into(),
             "-nostdin".into(),
             "-loglevel".into(),
@@ -84,8 +84,37 @@ impl FfmpegSpec {
             "mp4".into(),
             "-y".into(),
             self.output.to_string_lossy().into_owned(),
-        ]
+        ];
+        let timestamp_file = self.output.with_file_name(format!(
+            "{}.timestamp.txt",
+            self.output
+                .file_name()
+                .map(|name| name.to_string_lossy())
+                .unwrap_or_default()
+        ));
+        if timestamp_file.is_file() {
+            let font = std::env::var("RECORDING_TIMESTAMP_FONT").unwrap_or_else(|_| "Sans".into());
+            let font_option = if std::path::Path::new(&font).is_file() {
+                format!("fontfile='{}'", escape_filter_value(&font))
+            } else {
+                format!("font='{}'", escape_filter_value(&font))
+            };
+            let timestamp_path = escape_filter_value(&timestamp_file.to_string_lossy());
+            let filter = format!(
+                "drawtext={font_option}:textfile='{timestamp_path}':reload=0:x=12:y=12:fontsize=20:fontcolor=white:box=1:boxcolor=black@0.65"
+            );
+            let output_pos = args.len().saturating_sub(1);
+            args.splice(output_pos..output_pos, ["-vf".into(), filter]);
+        }
+        args
     }
+}
+
+fn escape_filter_value(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace(':', "\\:")
+        .replace('\'', "\\'")
 }
 
 pub struct FfmpegSession {

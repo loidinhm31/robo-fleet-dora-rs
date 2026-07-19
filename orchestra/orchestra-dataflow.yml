@@ -165,11 +165,15 @@ nodes:
       recording_playback_ticket:
         source: web-bridge/recording_playback_ticket
         queue_size: 8
+      recording_delete:
+        source: web-bridge/recording_delete
+        queue_size: 8
     outputs:
       - recording_session_command_result
       - recording_session_status
       - recording_clip_list_result
       - recording_playback_clip_result
+      - recording_delete_result
     env:
       RUST_LOG: info
       RECORDING_ROOT: "${RECORDING_ROOT:-/home/robo-fleet-recordings}"
@@ -227,6 +231,9 @@ nodes:
       recording_playback_clip_result:
         source: media-recorder/recording_playback_clip_result
         queue_size: 8
+      recording_delete_result:
+        source: media-recorder/recording_delete_result
+        queue_size: 8
       transcription:
         source: central-speech-recognizer/transcription
         queue_size: 8
@@ -254,6 +261,7 @@ nodes:
       - recording_session_command
       - recording_clip_query
       - recording_playback_ticket
+      - recording_delete
     env:
       RUST_LOG: info
 

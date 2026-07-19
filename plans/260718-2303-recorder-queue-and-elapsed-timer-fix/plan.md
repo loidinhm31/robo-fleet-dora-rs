@@ -24,7 +24,7 @@ elapsed display that stays live between deduplicated status events.
 |---|---|---|---|---|
 | 1 | Preserve video admission in bounded recorder queue | Done | 2h | [phase 01](./phase-01-preserve-video-admission.md) |
 | 2 | Render monotonic active elapsed time in shared UI | Done | 2h | [phase 02](./phase-02-render-live-recording-elapsed-time.md) |
-| 3 | Verify sustained A/V recording and UI lifecycle | Pending | 2h | [phase 03](./phase-03-verify-recording-regressions.md) |
+| 3 | Verify sustained A/V recording and UI lifecycle | Blocked — live encoder path | 2h | [phase 03](./phase-03-verify-recording-regressions.md) |
 
 ## Fixed design decisions
 
@@ -52,5 +52,6 @@ elapsed display that stays live between deduplicated status events.
 
 ## Unresolved questions
 
-- None blocking. A later observability enhancement may add explicit audio-drop
-  counters if post-fix load testing needs finer diagnosis.
+- Why does the healthy workstation stack finalize a 6.5-second session at
+  roughly 628 ms with high recorder video drops after the independent-pump
+  scheduling repair?

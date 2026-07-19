@@ -270,6 +270,19 @@ impl SessionManager {
         Ok(())
     }
 
+    pub fn is_active(&self, recording_id: &str) -> bool {
+        self.sessions
+            .values()
+            .any(|session| session.id == recording_id)
+    }
+
+    pub fn delete(&self, recording_id: &str) -> Result<(), String> {
+        if self.is_active(recording_id) {
+            return Err("recording is still active".into());
+        }
+        self.catalog.delete(recording_id)
+    }
+
     pub fn push_video(&self, entity_id: &str, frame: VideoFrame) -> bool {
         self.sessions.get(entity_id).is_some_and(|session| {
             !session.stop.load(std::sync::atomic::Ordering::Acquire) && session.inputs.video(frame)
@@ -387,6 +400,27 @@ fn run_worker(
                 let started_ffmpeg = ffmpeg.is_none();
                 if started_ffmpeg {
                     let (width, height) = (frame.metadata.width, frame.metadata.height);
+                    let session_start_ms = pending_audio
+                        .iter()
+                        .map(|pending| pending.metadata.capture_timestamp_ms)
+                        .chain(std::iter::once(frame.metadata.capture_timestamp_ms))
+                        .min()
+                        .unwrap_or(frame.metadata.capture_timestamp_ms);
+                    status.started_at_ms = Some(session_start_ms);
+                    if recording_timestamp_enabled() {
+                        let timestamp_file = partial.with_file_name(format!(
+                            "{}.timestamp.txt",
+                            partial
+                                .file_name()
+                                .map(|name| name.to_string_lossy())
+                                .unwrap_or_default()
+                        ));
+                        let timestamp = recording_timestamp_expression(session_start_ms);
+                        if std::fs::write(&timestamp_file, timestamp).is_err() {
+                            failure = Some(RecordingReasonCode::StorageUnavailable);
+                            break;
+                        }
+                    }
                     dimensions = Some((width, height));
                     let spec = FfmpegSpec {
                         executable: config.ffmpeg_path.clone(),
@@ -409,14 +443,6 @@ fn run_worker(
                         }
                     };
                     status.state = RecordingSessionState::Recording;
-                    status.started_at_ms = Some(
-                        pending_audio
-                            .iter()
-                            .map(|pending| pending.metadata.capture_timestamp_ms)
-                            .chain(std::iter::once(frame.metadata.capture_timestamp_ms))
-                            .min()
-                            .unwrap_or(frame.metadata.capture_timestamp_ms),
-                    );
                     if let Ok(mut shared) = status_ref.lock() {
                         *shared = status.clone();
                     }
@@ -586,6 +612,14 @@ fn run_worker(
             failure = Some(RecordingReasonCode::EncoderFailed);
         }
     }
+    let timestamp_file = partial.with_file_name(format!(
+        "{}.timestamp.txt",
+        partial
+            .file_name()
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_default()
+    ));
+    let _ = std::fs::remove_file(timestamp_file);
     if failure.is_none() {
         let relative_path = directory
             .strip_prefix(resolver.root())
@@ -637,6 +671,20 @@ fn run_worker(
     let _ = done.send(status);
 }
 
+fn recording_timestamp_enabled() -> bool {
+    std::env::var("RECORDING_TIMESTAMP_ENABLED")
+        .map(|value| value != "false")
+        .unwrap_or(true)
+}
+
+fn recording_timestamp_expression(session_start_ms: u64) -> String {
+    format!(
+        "%{{pts:gmtime:{}.{:03}:%Y-%m-%d %H\\:%M\\:%S UTC}}",
+        session_start_ms / 1_000,
+        session_start_ms % 1_000,
+    )
+}
+
 fn available_bytes(path: &PathBuf) -> u64 {
     #[cfg(unix)]
     {
@@ -656,7 +704,7 @@ fn available_bytes(path: &PathBuf) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::BoundedInputs;
+    use super::{recording_timestamp_expression, BoundedInputs};
     use crate::frame_timeline::{AudioFrame, VideoFrame};
     use robo_rover_lib::{AudioFrameMetadata, PcmSampleFormat, VideoFrameMetadata};
     use uuid::Uuid;
@@ -769,5 +817,13 @@ mod tests {
             super::Input::Audio(frame) => assert_eq!(frame.metadata.frame_id, 3),
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn timestamp_expression_advances_from_the_utc_capture_origin() {
+        assert_eq!(
+            recording_timestamp_expression(1_720_000_000_123),
+            "%{pts:gmtime:1720000000.123:%Y-%m-%d %H\\:%M\\:%S UTC}"
+        );
     }
 }

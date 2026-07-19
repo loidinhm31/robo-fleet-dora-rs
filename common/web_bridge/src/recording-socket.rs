@@ -1,6 +1,6 @@
 use robo_rover_lib::{
-    RecordingClipQuery, RecordingPlaybackTicketRequest, RecordingSessionCommand,
-    RecordingSessionStatus,
+    RecordingClipQuery, RecordingDeleteRequest, RecordingPlaybackTicketRequest,
+    RecordingSessionCommand, RecordingSessionStatus,
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -15,6 +15,7 @@ pub enum RequestKind {
     Command,
     ClipList,
     PlaybackTicket,
+    Delete,
 }
 
 #[derive(Debug, Clone)]
@@ -29,6 +30,7 @@ pub struct RecordingState {
     pub commands: Arc<Mutex<VecDeque<RecordingSessionCommand>>>,
     pub clip_queries: Arc<Mutex<VecDeque<RecordingClipQuery>>>,
     pub playback_queries: Arc<Mutex<VecDeque<RecordingPlaybackTicketRequest>>>,
+    pub delete_queries: Arc<Mutex<VecDeque<RecordingDeleteRequest>>>,
     pub pending: Arc<Mutex<HashMap<String, PendingRequest>>>,
     pub statuses: Arc<Mutex<HashMap<String, RecordingSessionStatus>>>,
     pub active_entities: Arc<Mutex<HashMap<String, String>>>,
@@ -71,6 +73,7 @@ impl RecordingState {
             commands: Arc::new(Mutex::new(VecDeque::new())),
             clip_queries: Arc::new(Mutex::new(VecDeque::new())),
             playback_queries: Arc::new(Mutex::new(VecDeque::new())),
+            delete_queries: Arc::new(Mutex::new(VecDeque::new())),
             pending: Arc::new(Mutex::new(HashMap::new())),
             statuses: Arc::new(Mutex::new(HashMap::new())),
             active_entities: Arc::new(Mutex::new(HashMap::new())),
