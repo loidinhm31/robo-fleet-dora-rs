@@ -1,13 +1,25 @@
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 const STDERR_CAP: usize = 64 * 1024;
 const FFPROBE_TIMEOUT: Duration = Duration::from_secs(15);
+// A session can retain up to the recorder's default eight pre-video audio
+// frames. Keep that initial burst schedulable so the video pump can provide
+// FFmpeg's first probe frame instead of letting the audio pump block the sole
+// session worker. The queues remain bounded and are private to each child.
+const PIPE_QUEUE_CAPACITY: usize = 8;
+const PIPE_SEND_TIMEOUT: Duration = Duration::from_millis(50);
+// A coalesced tail retains elapsed video time without retaining every JPEG.
+// Cap its logical work too: a persistently stalled encoder must fail within
+// finalization limits instead of turning an explicit stop into an unbounded
+// catch-up encode.
+const MAX_COALESCED_VIDEO_COPIES: u32 = 512;
 
 #[derive(Debug, Clone)]
 pub struct FfmpegSpec {
@@ -27,6 +39,13 @@ impl FfmpegSpec {
             "-nostdin".into(),
             "-loglevel".into(),
             "warning".into(),
+            // Both pipe formats are fixed. Avoid FFmpeg's default multi-second
+            // stream-analysis window, which can fill bounded live pipes before
+            // either dedicated writer is consumed.
+            "-analyzeduration".into(),
+            "0".into(),
+            "-probesize".into(),
+            "32".into(),
             "-thread_queue_size".into(),
             "512".into(),
             "-f".into(),
@@ -71,8 +90,8 @@ impl FfmpegSpec {
 
 pub struct FfmpegSession {
     child: Child,
-    video: Option<os_pipe::PipeWriter>,
-    audio: Option<os_pipe::PipeWriter>,
+    video: PipePump,
+    audio: PipePump,
     stderr: Arc<Mutex<Vec<u8>>>,
 }
 
@@ -138,8 +157,8 @@ impl FfmpegSession {
             }
             Ok(Self {
                 child,
-                video: Some(video_writer),
-                audio: Some(audio_writer),
+                video: PipePump::spawn(video_writer, "video", true),
+                audio: PipePump::spawn(audio_writer, "audio", false),
                 stderr,
             })
         }
@@ -154,11 +173,7 @@ impl FfmpegSession {
         payload: &[u8],
         stop: Option<&AtomicBool>,
     ) -> Result<(), String> {
-        let writer = self
-            .video
-            .as_mut()
-            .ok_or_else(|| "video pipe is closed".to_string())?;
-        write_pipe(writer, payload, stop, "video")
+        self.video.send(payload.to_vec(), stop)
     }
 
     pub fn write_audio(&mut self, payload: &[u8]) -> Result<(), String> {
@@ -170,11 +185,7 @@ impl FfmpegSession {
         payload: &[u8],
         stop: Option<&AtomicBool>,
     ) -> Result<(), String> {
-        let writer = self
-            .audio
-            .as_mut()
-            .ok_or_else(|| "audio pipe is closed".to_string())?;
-        write_pipe(writer, payload, stop, "audio")
+        self.audio.send(payload.to_vec(), stop)
     }
 
     pub fn write_audio_silence(&mut self, bytes: u64) -> Result<(), String> {
@@ -196,14 +207,26 @@ impl FfmpegSession {
         Ok(())
     }
 
-    pub fn close_inputs(&mut self) {
-        self.video.take();
-        self.audio.take();
-    }
-
     pub fn wait(mut self, timeout: Duration) -> Result<ProcessOutcome, String> {
-        self.close_inputs();
         let deadline = Instant::now() + timeout;
+        self.close_input_senders();
+        while !self.inputs_finished() {
+            if Instant::now() >= deadline {
+                self.cancel_inputs();
+                let _ = self.child.kill();
+                let status = self.child.wait().map_err(|e| format!("reap ffmpeg: {e}"))?;
+                let writer_error = self.join_inputs().err();
+                return Ok(ProcessOutcome {
+                    success: false,
+                    stderr: format!(
+                        "ffmpeg timeout; {status}; {}",
+                        self.stderr_with(writer_error.as_deref())
+                    ),
+                });
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let writer_error = self.join_inputs().err();
         loop {
             match self
                 .child
@@ -212,8 +235,8 @@ impl FfmpegSession {
             {
                 Some(status) => {
                     return Ok(ProcessOutcome {
-                        success: status.success(),
-                        stderr: self.stderr_text(),
+                        success: status.success() && writer_error.is_none(),
+                        stderr: self.stderr_with(writer_error.as_deref()),
                     })
                 }
                 None if Instant::now() >= deadline => {
@@ -221,7 +244,10 @@ impl FfmpegSession {
                     let status = self.child.wait().map_err(|e| format!("reap ffmpeg: {e}"))?;
                     return Ok(ProcessOutcome {
                         success: false,
-                        stderr: format!("ffmpeg timeout; {status}; {}", self.stderr_text()),
+                        stderr: format!(
+                            "ffmpeg timeout; {status}; {}",
+                            self.stderr_with(writer_error.as_deref())
+                        ),
                     });
                 }
                 None => thread::sleep(Duration::from_millis(20)),
@@ -233,6 +259,205 @@ impl FfmpegSession {
         String::from_utf8_lossy(&self.stderr.lock().expect("stderr lock"))
             .trim()
             .to_string()
+    }
+
+    fn stderr_with(&self, writer_error: Option<&str>) -> String {
+        let stderr = self.stderr_text();
+        match writer_error {
+            Some(error) if stderr.is_empty() => error.to_string(),
+            Some(error) => format!("{stderr}; {error}"),
+            None => stderr,
+        }
+    }
+
+    fn close_input_senders(&mut self) {
+        self.video.close_sender();
+        self.audio.close_sender();
+    }
+
+    fn inputs_finished(&self) -> bool {
+        self.video.is_finished() && self.audio.is_finished()
+    }
+
+    fn cancel_inputs(&self) {
+        self.video.cancel();
+        self.audio.cancel();
+    }
+
+    fn join_inputs(&mut self) -> Result<(), String> {
+        self.video.join()?;
+        self.audio.join()
+    }
+}
+
+struct PipePump {
+    cancel: Arc<AtomicBool>,
+    queue: Arc<PipeQueue>,
+    failure: Arc<Mutex<Option<String>>>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl PipePump {
+    fn spawn(writer: os_pipe::PipeWriter, label: &'static str, coalesce: bool) -> Self {
+        let queue = Arc::new(PipeQueue::new(coalesce));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let failure = Arc::new(Mutex::new(None));
+        let worker_queue = Arc::clone(&queue);
+        let worker_cancel = Arc::clone(&cancel);
+        let worker_failure = Arc::clone(&failure);
+        let worker = thread::spawn(move || {
+            pump_pipe(writer, worker_queue, worker_cancel, worker_failure, label)
+        });
+        Self {
+            cancel,
+            queue,
+            failure,
+            worker: Some(worker),
+        }
+    }
+
+    fn send(&self, payload: Vec<u8>, stop: Option<&AtomicBool>) -> Result<(), String> {
+        self.check_failure()?;
+        self.queue.enqueue(payload, stop)
+    }
+
+    fn close_sender(&mut self) {
+        self.queue.close();
+    }
+
+    fn is_finished(&self) -> bool {
+        self.worker
+            .as_ref()
+            .is_none_or(thread::JoinHandle::is_finished)
+    }
+
+    fn cancel(&self) {
+        self.cancel.store(true, Ordering::Release);
+    }
+
+    fn join(&mut self) -> Result<(), String> {
+        if let Some(worker) = self.worker.take() {
+            worker
+                .join()
+                .map_err(|_| "FFmpeg input writer panicked".to_string())?;
+        }
+        self.check_failure()
+    }
+
+    fn check_failure(&self) -> Result<(), String> {
+        self.failure
+            .lock()
+            .map_err(|_| "FFmpeg input writer failure lock poisoned".to_string())?
+            .clone()
+            .map_or(Ok(()), Err)
+    }
+}
+
+struct PipeQueue {
+    state: Mutex<PipeQueueState>,
+    ready: Condvar,
+    coalesce: bool,
+}
+
+#[derive(Default)]
+struct PipeQueueState {
+    entries: VecDeque<PipeEntry>,
+    closed: bool,
+}
+
+struct PipeEntry {
+    payload: Vec<u8>,
+    copies: u32,
+}
+
+impl PipeQueue {
+    fn new(coalesce: bool) -> Self {
+        Self {
+            state: Mutex::new(PipeQueueState::default()),
+            ready: Condvar::new(),
+            coalesce,
+        }
+    }
+
+    fn enqueue(&self, payload: Vec<u8>, stop: Option<&AtomicBool>) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "FFmpeg input queue lock poisoned".to_string())?;
+        loop {
+            if state.closed {
+                return Err("FFmpeg input pipe is closed".into());
+            }
+            if state.entries.len() < PIPE_QUEUE_CAPACITY {
+                state.entries.push_back(PipeEntry { payload, copies: 1 });
+                self.ready.notify_one();
+                return Ok(());
+            }
+            if self.coalesce {
+                let tail = state
+                    .entries
+                    .back_mut()
+                    .expect("full pipe queue has a tail");
+                if tail.copies >= MAX_COALESCED_VIDEO_COPIES {
+                    return Err("FFmpeg video handoff backlog limit reached".into());
+                }
+                tail.payload = payload;
+                tail.copies += 1;
+                self.ready.notify_one();
+                return Ok(());
+            }
+            let (next, _) = self
+                .ready
+                .wait_timeout(state, PIPE_SEND_TIMEOUT)
+                .map_err(|_| "FFmpeg input queue lock poisoned".to_string())?;
+            state = next;
+            if stop.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+                return Err("FFmpeg input write interrupted by stop".into());
+            }
+        }
+    }
+
+    fn next(&self) -> Option<PipeEntry> {
+        let mut state = self.state.lock().ok()?;
+        loop {
+            if let Some(entry) = state.entries.pop_front() {
+                self.ready.notify_all();
+                return Some(entry);
+            }
+            if state.closed {
+                return None;
+            }
+            state = self.ready.wait(state).ok()?;
+        }
+    }
+
+    fn close(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.closed = true;
+            self.ready.notify_all();
+        }
+    }
+}
+
+fn pump_pipe(
+    mut writer: os_pipe::PipeWriter,
+    queue: Arc<PipeQueue>,
+    cancel: Arc<AtomicBool>,
+    failure: Arc<Mutex<Option<String>>>,
+    label: &str,
+) {
+    while let Some(entry) = queue.next() {
+        for _ in 0..entry.copies {
+            if cancel.load(Ordering::Acquire) {
+                return;
+            }
+            if let Err(error) = write_pipe(&mut writer, &entry.payload, Some(&cancel), label) {
+                if let Ok(mut recorded) = failure.lock() {
+                    *recorded = Some(error);
+                }
+                return;
+            }
+        }
     }
 }
 
@@ -248,11 +473,6 @@ fn set_nonblocking(writer: &os_pipe::PipeWriter) -> std::io::Result<()> {
     if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
         return Err(std::io::Error::last_os_error());
     }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn set_nonblocking(_writer: &os_pipe::PipeWriter) -> std::io::Result<()> {
     Ok(())
 }
 
