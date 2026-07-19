@@ -384,8 +384,8 @@ fn run_worker(
                     Ok(pts) => pts,
                     Err(_) => continue,
                 };
-                last_video_pts = pts;
-                if ffmpeg.is_none() {
+                let started_ffmpeg = ffmpeg.is_none();
+                if started_ffmpeg {
                     let (width, height) = (frame.metadata.width, frame.metadata.height);
                     dimensions = Some((width, height));
                     let spec = FfmpegSpec {
@@ -420,34 +420,10 @@ fn run_worker(
                     if let Ok(mut shared) = status_ref.lock() {
                         *shared = status.clone();
                     }
-                    let mut pending_failed = false;
-                    for pending in pending_audio.drain(..) {
-                        let silence = match timeline.audio_prefix_silence(pending.metadata) {
-                            Ok(silence) => silence,
-                            Err(_) => continue,
-                        };
-                        let Some(process) = ffmpeg.as_mut() else {
-                            pending_failed = true;
-                            break;
-                        };
-                        if process
-                            .write_audio_silence_until(silence, Some(&stop))
-                            .is_err()
-                            || process
-                                .write_audio_until(&pending.payload, Some(&stop))
-                                .is_err()
-                        {
-                            pending_failed = true;
-                            break;
-                        }
-                    }
-                    if pending_failed {
-                        failure = Some(RecordingReasonCode::EncoderFailed);
-                        break;
-                    }
                 } else if dimensions != Some((frame.metadata.width, frame.metadata.height)) {
                     continue;
                 }
+                last_video_pts = pts;
                 if let Some(process) = ffmpeg.as_mut() {
                     let interval = (1000 / u64::from(config.video_fps)).max(1);
                     if audio_format.is_none() {
@@ -495,6 +471,36 @@ fn run_worker(
                     }
                     previous_video = Some(frame.payload);
                     last_written_pts = Some(pts);
+                }
+                // Start the MJPEG input before replaying pre-video PCM. A full
+                // audio handoff must not prevent FFmpeg from receiving the
+                // video packet it needs to initialize the second input.
+                if started_ffmpeg {
+                    let mut pending_failed = false;
+                    for pending in pending_audio.drain(..) {
+                        let silence = match timeline.audio_prefix_silence(pending.metadata) {
+                            Ok(silence) => silence,
+                            Err(_) => continue,
+                        };
+                        let Some(process) = ffmpeg.as_mut() else {
+                            pending_failed = true;
+                            break;
+                        };
+                        if process
+                            .write_audio_silence_until(silence, Some(&stop))
+                            .is_err()
+                            || process
+                                .write_audio_until(&pending.payload, Some(&stop))
+                                .is_err()
+                        {
+                            pending_failed = true;
+                            break;
+                        }
+                    }
+                    if pending_failed {
+                        failure = Some(RecordingReasonCode::EncoderFailed);
+                        break;
+                    }
                 }
             }
             Input::Audio(frame) => {
