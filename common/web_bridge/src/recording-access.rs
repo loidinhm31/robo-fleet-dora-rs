@@ -19,6 +19,7 @@ pub struct RecordingAccess {
 
 #[derive(Clone, Debug)]
 struct TicketEntry {
+    recording_id: String,
     relative_path: String,
     manifest_path: String,
     length: u64,
@@ -91,6 +92,7 @@ impl RecordingAccess {
         let expires_at = Instant::now() + TICKET_TTL;
         let expires_at_ms = now_ms().saturating_add(TICKET_TTL.as_millis() as u64);
         let entry = TicketEntry {
+            recording_id: clip.recording_id.clone(),
             relative_path: clip.relative_path.clone(),
             manifest_path: manifest,
             length: identity.length,
@@ -122,6 +124,12 @@ impl RecordingAccess {
             url,
             expires_at_ms,
         })
+    }
+
+    pub fn revoke(&self, recording_id: &str) {
+        if let Ok(mut tickets) = self.tickets.lock() {
+            tickets.retain(|_, entry| entry.recording_id != recording_id);
+        }
     }
 
     pub fn authorize(&self, token: &str) -> Result<AuthorizedFile, String> {

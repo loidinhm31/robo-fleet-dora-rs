@@ -740,6 +740,8 @@ Recording invariants:
   arbitrary absolute host path.
 - `FFMPEG_PATH` and `FFPROBE_PATH` are optional overrides; if unset, the
   recorder resolves `ffmpeg` and `ffprobe` from `PATH`.
+  `RECORDING_TIMESTAMP_ENABLED` is a deployment-owned boolean that defaults to
+  enabled and may disable the saved-file timestamp without changing capture.
 - `RECORDING_MAX_CONCURRENT`, `RECORDING_MAX_DURATION_SECONDS`,
   `RECORDING_MAX_OUTPUT_BYTES`, `RECORDING_STARTUP_TIMEOUT_SECONDS`,
   `RECORDING_FINALIZATION_TIMEOUT_SECONDS`, `RECORDING_MIN_FREE_BYTES`,
@@ -776,7 +778,10 @@ Recording invariants:
 - H.264 video plus AAC audio in MP4 is the browser playback contract. Capture
   timestamps establish each session timeline; regressions, resets, dropped
   video, inserted silence, and encoder failures remain observable in status and
-  clip metadata.
+  clip metadata. When configured, the recorder's existing FFmpeg encode burns
+  `YYYY-MM-DD HH:MM:SS UTC` into each saved MP4 video frame, advancing from the
+  pinned UTC capture-time origin. The live JPEG feed and detection overlays
+  remain byte-for-byte outside that filter path.
 - Recorder media queues are bounded and cannot backpressure the live web,
   tracking, speech, or control paths. Duration, concurrent-session, free-space,
   and output-size limits fail closed for new starts without stopping other
@@ -785,10 +790,28 @@ Recording invariants:
   signed-in session checks, request correlation, short-lived playback
   tickets, and HTTP byte-range delivery. Browser-visible records use opaque clip
   IDs and relative display paths; absolute host paths never leave the server.
+- Finalized clip deletion is a recorder-owned permanent operation exposed as a
+  versioned Dora and Socket.IO request/result. `web-bridge` authenticates and
+  rate-limits the request, but never deletes files. Immediately before unlink,
+  the recorder revalidates the opaque recording ID, allowlisted relative path,
+  regular-file/no-symlink status, manifest-to-MP4 identity, and containment
+  beneath `RECORDING_ROOT`. Active recordings, partial files, malformed pairs,
+  and missing clips are rejected; successful deletion removes the finalized
+  MP4 and adjacent manifest, fsyncs the parent directory, and causes
+  `web-bridge` to revoke every playback ticket for that recording ID. Unix
+  deletion walks from the recording-root descriptor with no-follow directory
+  opens and uses descriptor-relative rename/unlink operations. A catalog scan
+  completes any recorder-owned hidden delete transaction left by interruption.
 - The recording UI lives in the separately versioned
   `/mnt/data/ws/sharing/glean-oak/embed-app/robo-control-app` checkout. Shared UI
-  components serve both web and Tauri shells. The browser never records the
-  live JPEG stream or assembles media files locally.
+  components serve both web and Tauri shells. One recording store is hoisted
+  above the Control/Recordings view switch, so CameraViewer start/stop controls,
+  its elapsed `REC` indicator, and the Recordings-tab active-count badge share
+  authoritative state across tab changes. Browser viewing and recorder
+  sessions remain separate consumers in the aggregate per-rover demand
+  registry; neither opens another camera nor releases the other's camera/JPEG
+  hold. The browser never uses `MediaRecorder`, records the live JPEG stream,
+  assembles media files locally, or opens `/dev/video*`.
 - Phase 3 completes the backend control/query/playback wiring: authenticated and
   rate-limited Socket.IO handlers route commands and catalog lookups through
   Dora by request ID, replay cached session status on reconnect, and maintain

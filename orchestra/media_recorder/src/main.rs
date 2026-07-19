@@ -6,9 +6,10 @@ use dora_node_api::{
 use eyre::Result;
 use robo_rover_lib::{
     init_tracing, AudioFrameMetadata, PcmSampleFormat, RecordingClipQuery,
-    RecordingClipQueryResult, RecordingPlaybackTicketRequest, RecordingReasonCode,
-    RecordingSessionAction, RecordingSessionCommand, RecordingSessionCommandResult,
-    VideoFrameMetadata, RECORDING_PROTOCOL_VERSION,
+    RecordingClipQueryResult, RecordingDeleteRequest, RecordingDeleteResult,
+    RecordingPlaybackTicketRequest, RecordingReasonCode, RecordingSessionAction,
+    RecordingSessionCommand, RecordingSessionCommandResult, VideoFrameMetadata,
+    RECORDING_PROTOCOL_VERSION,
 };
 use std::convert::TryFrom;
 use std::time::Duration;
@@ -27,6 +28,7 @@ fn main() -> Result<()> {
     let status_output = DataId::from("recording_session_status".to_owned());
     let clip_list_output = DataId::from("recording_clip_list_result".to_owned());
     let playback_lookup_output = DataId::from("recording_playback_clip_result".to_owned());
+    let delete_output = DataId::from("recording_delete_result".to_owned());
     tracing::info!("media recorder ready");
     while let Some(event) = events.recv_timeout(Duration::from_millis(100)) {
         for status in manager.reap() {
@@ -50,6 +52,7 @@ fn main() -> Result<()> {
                 "recording_playback_ticket" => {
                     handle_playback_lookup(&mut node, &playback_lookup_output, &manager, &*data)?
                 }
+                "recording_delete" => handle_delete(&mut node, &delete_output, &manager, &*data)?,
                 "video_frame" => {
                     if let Ok((entity, frame)) = parse_video(&metadata.parameters, &*data) {
                         let _ = manager.push_video(&entity, frame);
@@ -69,6 +72,59 @@ fn main() -> Result<()> {
     for status in manager.shutdown() {
         send_json(&mut node, &status_output, &status.wire())?;
     }
+    Ok(())
+}
+
+fn handle_delete(
+    node: &mut DoraNode,
+    output: &DataId,
+    manager: &SessionManager,
+    data: &dyn Array,
+) -> Result<()> {
+    let bytes = match single_binary(data) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            tracing::warn!(%error, "invalid recording delete payload");
+            return Ok(());
+        }
+    };
+    let request: RecordingDeleteRequest = match serde_json::from_slice(bytes) {
+        Ok(request) => request,
+        Err(error) => {
+            tracing::warn!(%error, "invalid recording delete request");
+            return Ok(());
+        }
+    };
+    let result = match request
+        .validate()
+        .and_then(|_| manager.delete(&request.recording_id))
+    {
+        Ok(()) => RecordingDeleteResult {
+            protocol_version: RECORDING_PROTOCOL_VERSION,
+            request_id: request.request_id,
+            accepted: true,
+            recording_id: Some(request.recording_id),
+            reason_code: None,
+            detail: None,
+        },
+        Err(error) => RecordingDeleteResult {
+            protocol_version: RECORDING_PROTOCOL_VERSION,
+            request_id: request.request_id,
+            accepted: false,
+            recording_id: None,
+            reason_code: Some(if error.contains("active") {
+                RecordingReasonCode::ActiveRecording
+            } else if error.contains("partial") || error.contains("incomplete") {
+                RecordingReasonCode::PartialRecording
+            } else if error.contains("not found") {
+                RecordingReasonCode::NotFound
+            } else {
+                RecordingReasonCode::DeleteFailed
+            }),
+            detail: Some(error.chars().take(256).collect()),
+        },
+    };
+    send_json(node, output, &result)?;
     Ok(())
 }
 

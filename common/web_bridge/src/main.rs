@@ -6,9 +6,10 @@ use dora_node_api::{
 use eyre::Result;
 use robo_rover_lib::types::{
     ActiveRoversStatus, DetectionFrame, FleetSelectCommand, FleetStatus, FleetSubscriptionCommand,
-    RecordingClipQuery, RecordingPlaybackTicketRequest, RecordingSessionAction,
-    RecordingSessionCommand, RecordingSessionState, SpeechTranscription, SttStatus, SystemMetrics,
-    TrackingCommand, TrackingTelemetry,
+    RecordingClipQuery, RecordingDeleteRequest, RecordingDeleteResult,
+    RecordingPlaybackTicketRequest, RecordingSessionAction, RecordingSessionCommand,
+    RecordingSessionState, SpeechTranscription, SttStatus, SystemMetrics, TrackingCommand,
+    TrackingTelemetry,
 };
 use robo_rover_lib::{
     capture_age_ms, init_tracing, record_capture_age, ArmCommand, ArmCommandWithMetadata,
@@ -1057,6 +1058,45 @@ fn setup_socketio(
 
         let shared_state_clone = shared_state.clone();
         let socket_id_clone = socket_id.clone();
+        socket.on(
+            "recording_delete",
+            move |socket: SocketRef, Data::<Value>(data)| {
+                if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
+                    socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                    socket.disconnect().ok();
+                    return;
+                }
+                if !shared_state_clone.command_rate_limiter.check_command(&socket_id_clone) {
+                    log_rate_limit_exceeded(&socket_id_clone, "recording_delete");
+                    return;
+                }
+                touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
+                let request = match serde_json::from_value::<RecordingDeleteRequest>(data) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        log_validation_error(&socket_id_clone, &format!("recording delete: {error}"));
+                        return;
+                    }
+                };
+                if let Err(error) = request.validate() {
+                    emit_recording_event(&socket, "recording_delete_result", rejected_recording_delete(&request.request_id, RecordingReasonCode::InvalidRequest, &error));
+                    return;
+                }
+                let request_id = request.request_id.clone();
+                if let Err(reason) = shared_state_clone.recording.admit(&request_id, &socket_id_clone, RequestKind::Delete) {
+                    emit_recording_event(&socket, "recording_delete_result", rejected_recording_delete(&request_id, RecordingReasonCode::ResourceLimit, reason));
+                    return;
+                }
+                let queued = shared_state_clone.recording.delete_queries.lock().map(|mut queue| queue.push_back(request)).is_ok();
+                if !queued {
+                    shared_state_clone.recording.take(&request_id);
+                    emit_recording_event(&socket, "recording_delete_result", rejected_recording_delete(&request_id, RecordingReasonCode::Internal, "recording delete queue unavailable"));
+                }
+            },
+        );
+
+        let shared_state_clone = shared_state.clone();
+        let socket_id_clone = socket_id.clone();
         socket.on("arm_command", move |socket: SocketRef, Data::<Value>(data)| {
             if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
                 socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
@@ -1915,6 +1955,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let recording_session_command_output = DataId::from("recording_session_command".to_owned());
     let recording_clip_query_output = DataId::from("recording_clip_query".to_owned());
     let recording_playback_ticket_output = DataId::from("recording_playback_ticket".to_owned());
+    let recording_delete_output = DataId::from("recording_delete".to_owned());
 
     let node_handle = Arc::new(Mutex::new(node));
     let shared_state = SharedState::new();
@@ -2203,6 +2244,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .map(|bytes| (recording_playback_ticket_output.clone(), bytes))
                         })
                 });
+            let next = next.or_else(|| {
+                state_clone_recording
+                    .recording
+                    .delete_queries
+                    .lock()
+                    .ok()
+                    .and_then(|mut queue| {
+                        queue
+                            .pop_front()
+                            .and_then(|request| serde_json::to_vec(&request).ok())
+                            .map(|bytes| (recording_delete_output.clone(), bytes))
+                    })
+            });
             if let Some((output, bytes)) = next {
                 let arrow_data = BinaryArray::from_vec(vec![bytes.as_slice()]);
                 if let Ok(mut node_guard) = node_clone_recording.lock() {
@@ -3582,6 +3636,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
+                    "recording_delete_result" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() > 0 {
+                                let result = match serde_json::from_slice::<RecordingDeleteResult>(
+                                    binary_array.value(0),
+                                ) {
+                                    Ok(result) => result,
+                                    Err(error) => {
+                                        tracing::warn!(%error, "rejected malformed recording delete result");
+                                        continue;
+                                    }
+                                };
+                                if let Err(error) = result.validate() {
+                                    tracing::warn!(%error, "rejected invalid recording delete result");
+                                    continue;
+                                }
+                                if let Some(pending) =
+                                    state_for_video.recording.take(&result.request_id)
+                                {
+                                    if result.accepted {
+                                        if let Some(recording_id) = result.recording_id.as_deref() {
+                                            state_for_video.recording_access.revoke(recording_id);
+                                        }
+                                    }
+                                    if let Some(io) =
+                                        io_for_video.lock().ok().and_then(|io| io.clone())
+                                    {
+                                        emit_recording_to_owner(
+                                            &io,
+                                            &state_for_video,
+                                            &pending.socket_id,
+                                            "recording_delete_result",
+                                            serde_json::to_value(result).unwrap_or(Value::Null),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                     "performance_metrics" => {
                         // Handle performance metrics from performance_monitor
                         // Only forward if monitoring is enabled
@@ -4210,6 +4303,21 @@ fn rejected_recording_playback_ticket(
     })
 }
 
+fn rejected_recording_delete(
+    request_id: &str,
+    reason_code: RecordingReasonCode,
+    detail: &str,
+) -> RecordingDeleteResult {
+    RecordingDeleteResult {
+        protocol_version: robo_rover_lib::RECORDING_PROTOCOL_VERSION,
+        request_id: request_id.to_owned(),
+        accepted: false,
+        recording_id: None,
+        reason_code: Some(reason_code),
+        detail: Some(detail.chars().take(256).collect()),
+    }
+}
+
 fn emit_recording_timeout(
     io: &SocketIo,
     state: &SharedState,
@@ -4239,6 +4347,15 @@ fn emit_recording_timeout(
         RequestKind::PlaybackTicket => (
             "recording_playback_ticket_result",
             rejected_recording_playback_ticket(request_id, RecordingReasonCode::Timeout, detail),
+        ),
+        RequestKind::Delete => (
+            "recording_delete_result",
+            serde_json::to_value(rejected_recording_delete(
+                request_id,
+                RecordingReasonCode::Timeout,
+                detail,
+            ))
+            .unwrap_or(Value::Null),
         ),
     };
     emit_recording_to_owner(io, state, &pending.socket_id, event, payload);

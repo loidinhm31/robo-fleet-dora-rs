@@ -38,6 +38,23 @@ impl RecorderConfig {
         let ffprobe_path =
             executable(env::var("FFPROBE_PATH").unwrap_or_else(|_| "ffprobe".into()))?;
         validate_tools(&ffmpeg_path, &ffprobe_path)?;
+        let timestamp_enabled = env::var("RECORDING_TIMESTAMP_ENABLED")
+            .map(|value| value != "false")
+            .unwrap_or(true);
+        let timestamp_font = env::var("RECORDING_TIMESTAMP_FONT").unwrap_or_else(|_| "Sans".into());
+        if timestamp_enabled {
+            if timestamp_font.contains(std::path::MAIN_SEPARATOR)
+                && !Path::new(&timestamp_font).is_file()
+            {
+                return Err("recording timestamp font is unavailable".into());
+            }
+            if !has_tool_entry(
+                &run_tool(&ffmpeg_path, &["-hide_banner", "-filters"])?,
+                "drawtext",
+            ) {
+                return Err("FFmpeg drawtext filter is unavailable".into());
+            }
+        }
         validate_root_access(&root)?;
         Ok(Self {
             recording_root: root,
