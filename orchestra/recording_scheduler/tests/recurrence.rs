@@ -39,6 +39,55 @@ fn daily_and_weekly_candidates_are_ordered_and_unique() {
 }
 
 #[test]
+fn recurrence_crosses_leap_day_and_year_boundary_without_extra_occurrences() {
+    let leap_daily = schedule(
+        "00000000-0000-0000-0000-000000000007",
+        daily("2028-02-28", "09:30"),
+    );
+    let leap_starts = candidates(
+        &leap_daily,
+        epoch(2028, 2, 28, 0, 0),
+        epoch(2028, 3, 1, 23, 0),
+    )
+    .unwrap();
+    assert_eq!(
+        leap_starts
+            .iter()
+            .map(|start| start.start_ms)
+            .collect::<Vec<_>>(),
+        vec![
+            epoch(2028, 2, 28, 9, 30),
+            epoch(2028, 2, 29, 9, 30),
+            epoch(2028, 3, 1, 9, 30),
+        ],
+        "daily UTC recurrence must materialize each leap-day boundary exactly once"
+    );
+
+    let year_weekly = schedule(
+        "00000000-0000-0000-0000-000000000008",
+        weekly("2026-12-30", "09:30"),
+    );
+    let year_starts = candidates(
+        &year_weekly,
+        epoch(2026, 12, 30, 0, 0),
+        epoch(2027, 1, 7, 23, 0),
+    )
+    .unwrap();
+    assert_eq!(
+        year_starts
+            .iter()
+            .map(|start| start.start_ms)
+            .collect::<Vec<_>>(),
+        vec![
+            epoch(2026, 12, 30, 9, 30),
+            epoch(2027, 1, 4, 9, 30),
+            epoch(2027, 1, 6, 9, 30),
+        ],
+        "Monday/Wednesday UTC recurrence must retain its exact year-boundary dates"
+    );
+}
+
+#[test]
 fn dst_gap_shifts_forward_and_fold_uses_earlier_instant() {
     let gap = resolve_local(
         New_York,

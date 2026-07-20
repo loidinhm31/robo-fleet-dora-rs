@@ -58,6 +58,11 @@ Snapshot date: 2026-07-17
   make durable optimistic changes, and a conflict installs the server's current
   schedule before the user reapplies an edit. Manual recording remains usable
   when scheduler readiness is degraded.
+- Phase 6 verified one-time and overlapping scheduled recordings, final-owner
+  stop, and scheduler-disable/manual-recording rollback on the rootless
+  Podman/Docker-compatible `linux/amd64` workstation stack. This is not ARM64
+  image execution or Raspberry Pi camera/audio acceptance; physical ARM
+  acceptance remains pending.
 - `central_speech_recognizer` now follows the Phase 01 STT contract: `SpeechTranscription` carries `source_kind`, `profile`, `target_entity_id`, `entity_id`, `stream_id`, `utterance_id`, `language`, `timestamp`, `duration_ms`, and optional `confidence`; `SttStatus` carries `state`, `profile`, `language`, `timestamp`, `error`.
 - Authenticated browsers control STT streams with `voice_command_control` start/stop events and send ordered Float32 frames with `voice_command_audio`; the web bridge owns stream identity, snapshots the selected rover at start, and forwards bounded start/audio/stop messages to central STT.
 - `central_speech_recognizer` has completed the Sherpa Phase 02 runtime cutover: it provisions fixed English/Vietnamese offline profile catalogs under `models/.cache/sherpa-onnx/asr`, validates required files, and loads Silero VAD plus the selected offline recognizer at startup.
