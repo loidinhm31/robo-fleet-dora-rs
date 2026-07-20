@@ -855,6 +855,23 @@ Recording invariants:
   registry; neither opens another camera nor releases the other's camera/JPEG
   hold. The browser never uses `MediaRecorder`, records the live JPEG stream,
   assembles media files locally, or opens `/dev/video*`.
+- Phase 5 adds a third shared `SCHEDULER` view. It is scoped to the currently
+  selected rover and uses the authenticated `recording_schedule_query` and
+  `recording_schedule_command` Socket.IO contracts for schedule CRUD. Create,
+  update, enable/disable, and delete carry request IDs; mutations also carry
+  the schedule's expected revision where applicable. The client displays
+  pending state but does not optimistically persist a schedule: command
+  results and follow-up snapshots are authoritative. A compare-and-set
+  conflict replaces the stale record with the returned current revision and
+  prompts the user to reapply their edit.
+- The scheduler publishes occurrence lifecycle updates and readiness to the
+  web bridge. The bridge validates them and broadcasts
+  `recording_occurrence_status` and `recording_scheduler_status` only to
+  authenticated clients. The selected-rover store discards other-rover
+  occurrences, applies occurrence updates monotonically by `updated_at_ms`,
+  and clears pending/local state before an authoritative resync on reconnect,
+  authentication loss, or rover selection change. Degraded scheduler status
+  disables scheduler admission while leaving manual recording available.
 - Phase 3 completes the backend control/query/playback wiring: authenticated and
   rate-limited Socket.IO handlers route commands and catalog lookups through
   Dora by request ID, replay cached session status on reconnect, and maintain

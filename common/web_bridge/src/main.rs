@@ -6,7 +6,7 @@ use dora_node_api::{
 use eyre::Result;
 use robo_rover_lib::types::{
     ActiveRoversStatus, DetectionFrame, FleetSelectCommand, FleetStatus, FleetSubscriptionCommand,
-    RecordingClipQuery, RecordingDeleteRequest, RecordingDeleteResult,
+    RecordingClipQuery, RecordingDeleteRequest, RecordingDeleteResult, RecordingOccurrence,
     RecordingPlaybackTicketRequest, RecordingScheduleCommandResult, RecordingScheduleSnapshot,
     RecordingSchedulerReadiness, RecordingSchedulerStatus, RecordingSessionAction,
     RecordingSessionCommand, RecordingSessionState, SpeechTranscription, SttStatus, SystemMetrics,
@@ -3806,6 +3806,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             &pending.socket_id,
                                             "recording_schedule_snapshot",
                                             serde_json::to_value(snapshot).unwrap_or(Value::Null),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "recording_occurrence_status" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                let Ok(occurrence) = serde_json::from_slice::<RecordingOccurrence>(
+                                    binary_array.value(0),
+                                ) else {
+                                    continue;
+                                };
+                                if occurrence.validate().is_err() {
+                                    continue;
+                                }
+                                if let Some(io) = io_for_video.lock().ok().and_then(|io| io.clone()) {
+                                    if let Some(namespace) = io.of("/") {
+                                        emit_authenticated(
+                                            namespace,
+                                            &state_for_video.session_registry,
+                                            "recording_occurrence_status",
+                                            serde_json::to_value(occurrence).unwrap_or(Value::Null),
                                         );
                                     }
                                 }
