@@ -214,25 +214,35 @@ impl<C: Clock> SchedulerRuntime<C> {
         self.occurrences
             .values_mut()
             .filter_map(|occurrence| {
-                ((occurrence.state == RecordingOccurrenceState::Planned
+                let due = (occurrence.state == RecordingOccurrenceState::Planned
                     && occurrence.planned_start_ms <= now_ms)
                     || (occurrence.state == RecordingOccurrenceState::StartPending
                         && occurrence
                             .next_retry_at_ms
-                            .is_some_and(|retry| retry <= now_ms)))
-                .then(|| {
-                    let next = if now_ms >= occurrence.planned_end_ms {
-                        RecordingOccurrenceState::Missed
-                    } else {
-                        RecordingOccurrenceState::Due
-                    };
-                    transition(occurrence, next, now_ms, None)
-                })
-                .filter(|changed| *changed)
-                .and_then(|_| {
-                    (occurrence.state == RecordingOccurrenceState::Due)
-                        .then(|| occurrence.occurrence_id.clone())
-                })
+                            .is_some_and(|retry| retry <= now_ms));
+                if !due {
+                    return None;
+                }
+                let missed = now_ms >= occurrence.planned_end_ms;
+                let next = if missed {
+                    RecordingOccurrenceState::Missed
+                } else {
+                    RecordingOccurrenceState::Due
+                };
+                if !transition(occurrence, next, now_ms, None) {
+                    return None;
+                }
+                if missed {
+                    tracing::warn!(
+                        event = "recording_scheduler_missed",
+                        occurrence_id = %occurrence.occurrence_id,
+                        planned_end_ms = occurrence.planned_end_ms,
+                        "scheduled recording missed its entire planned window"
+                    );
+                    None
+                } else {
+                    Some(occurrence.occurrence_id.clone())
+                }
             })
             .collect()
     }

@@ -146,6 +146,49 @@ nodes:
 
   # Orchestra-side recorder. Media inputs are direct fan-out from the bridge so
   # recorder backpressure cannot block browser delivery or speech processing.
+  # The scheduler has no recorder or rover output. It owns durable intent only;
+  # web-bridge remains the sole recorder-session and media-demand authority.
+  - id: recording-scheduler
+    build: cargo build --release -p recording_scheduler
+    path: ../target/release/recording_scheduler
+    inputs:
+      # CRUD/query admission is bounded by web-bridge (64 by default); queued
+      # requests expire there, then clients receive a bounded unavailable result.
+      recording_schedule_command:
+        source: web-bridge/recording_schedule_command
+        queue_size: 32
+      recording_schedule_query:
+        source: web-bridge/recording_schedule_query
+        queue_size: 32
+      # Durable recorder feedback is spooled by web-bridge; queue overflow is
+      # repaired by the scheduler's reconciliation snapshot.
+      recording_scheduler_recorder_feedback:
+        source: web-bridge/recording_scheduler_recorder_feedback
+        queue_size: 64
+      recording_reconciliation_snapshot:
+        source: web-bridge/recording_reconciliation_snapshot
+        # Snapshots are idempotent; the scheduler requests another one every
+        # reconciliation interval, repairing a full bounded transport queue.
+        queue_size: 8
+    outputs:
+      - recording_schedule_command_result
+      - recording_schedule_snapshot
+      - scheduled_recording_intent
+      - recording_reconciliation_request
+      - recording_scheduler_manual_suppression_ack
+      - recording_scheduler_status
+    env:
+      RUST_LOG: info
+      MONGODB_URI: "${MONGODB_URI:-mongodb://localhost:27017}"
+      MONGODB_DATABASE: "${MONGODB_DATABASE:-db}"
+      RECORDING_SCHEDULER_HORIZON_DAYS: "${RECORDING_SCHEDULER_HORIZON_DAYS:-35}"
+      RECORDING_SCHEDULER_MAX_FUTURE_DAYS: "${RECORDING_SCHEDULER_MAX_FUTURE_DAYS:-365}"
+      RECORDING_SCHEDULER_MAX_SCHEDULES_PER_ENTITY: "${RECORDING_SCHEDULER_MAX_SCHEDULES_PER_ENTITY:-100}"
+      RECORDING_SCHEDULER_RECONCILE_SECONDS: "${RECORDING_SCHEDULER_RECONCILE_SECONDS:-30}"
+      RECORDING_SCHEDULER_READY_LEASE_SECONDS: "${RECORDING_SCHEDULER_READY_LEASE_SECONDS:-90}"
+      # Retry cadence (1/2/4/8/16/30 seconds) and terminal 90-day TTL are
+      # protocol constants, not environment-tunable safety controls.
+
   - id: media-recorder
     build: cargo build --release -p media_recorder
     path: ../target/release/media_recorder
@@ -168,12 +211,16 @@ nodes:
       recording_delete:
         source: web-bridge/recording_delete
         queue_size: 8
+      recording_reconciliation_request:
+        source: web-bridge/recording_reconciliation_request
+        queue_size: 8
     outputs:
       - recording_session_command_result
       - recording_session_status
       - recording_clip_list_result
       - recording_playback_clip_result
       - recording_delete_result
+      - recording_reconciliation_snapshot
     env:
       RUST_LOG: info
       RECORDING_ROOT: "${RECORDING_ROOT:-/home/robo-fleet-recordings}"
@@ -234,6 +281,27 @@ nodes:
       recording_delete_result:
         source: media-recorder/recording_delete_result
         queue_size: 8
+      recording_schedule_command_result:
+        source: recording-scheduler/recording_schedule_command_result
+        queue_size: 32
+      recording_schedule_snapshot:
+        source: recording-scheduler/recording_schedule_snapshot
+        queue_size: 32
+      scheduled_recording_intent:
+        source: recording-scheduler/scheduled_recording_intent
+        queue_size: 64
+      recording_reconciliation_request:
+        source: recording-scheduler/recording_reconciliation_request
+        queue_size: 8
+      recording_scheduler_manual_suppression_ack:
+        source: recording-scheduler/recording_scheduler_manual_suppression_ack
+        queue_size: 16
+      recording_scheduler_status:
+        source: recording-scheduler/recording_scheduler_status
+        queue_size: 8
+      recording_reconciliation_snapshot:
+        source: media-recorder/recording_reconciliation_snapshot
+        queue_size: 8
       transcription:
         source: central-speech-recognizer/transcription
         queue_size: 8
@@ -262,6 +330,11 @@ nodes:
       - recording_clip_query
       - recording_playback_ticket
       - recording_delete
+      - recording_schedule_command
+      - recording_schedule_query
+      - recording_scheduler_recorder_feedback
+      - recording_reconciliation_request
+      - recording_reconciliation_snapshot
     env:
       RUST_LOG: info
 
@@ -291,6 +364,14 @@ nodes:
       WEB_STT_QUEUE_CAPACITY: "64"          # 8x central decode queue; newest audio drops
       WEB_STT_STREAM_IDLE_SECONDS: "30"
       WEB_STT_CLOSING_SECONDS: "30"
+      # Disabled rejects schedule API requests without affecting manual
+      # recording or rover controls. Enable only after scheduler readiness.
+      RECORDING_SCHEDULER_ENABLED: "${RECORDING_SCHEDULER_ENABLED:-false}"
+      RECORDING_SCHEDULE_QUEUE_CAPACITY: "${RECORDING_SCHEDULE_QUEUE_CAPACITY:-64}"
+      RECORDING_SCHEDULE_REQUEST_TIMEOUT_SECONDS: "${RECORDING_SCHEDULE_REQUEST_TIMEOUT_SECONDS:-15}"
+      # A missing scheduler status expires closed. The scheduler validates this
+      # is at least twice its reconciliation interval before it starts.
+      RECORDING_SCHEDULER_READY_LEASE_SECONDS: "${RECORDING_SCHEDULER_READY_LEASE_SECONDS:-90}"
 
       # Input Validation
       MAX_TTS_TEXT_LENGTH: "1000"

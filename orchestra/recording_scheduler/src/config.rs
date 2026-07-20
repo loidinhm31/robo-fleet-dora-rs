@@ -6,6 +6,7 @@ pub const DEFAULT_HORIZON_DAYS: i64 = 35;
 pub const DEFAULT_MAX_FUTURE_DAYS: i64 = 365;
 pub const DEFAULT_MAX_SCHEDULES_PER_ENTITY: usize = 100;
 pub const DEFAULT_RECONCILE_SECONDS: u64 = 30;
+pub const DEFAULT_READY_LEASE_SECONDS: u64 = 90;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SchedulerConfig {
@@ -15,6 +16,7 @@ pub struct SchedulerConfig {
     pub max_future_days: i64,
     pub max_schedules_per_entity: usize,
     pub reconcile_seconds: u64,
+    pub ready_lease_seconds: u64,
 }
 
 impl SchedulerConfig {
@@ -35,13 +37,19 @@ impl SchedulerConfig {
                 "RECORDING_SCHEDULER_RECONCILE_SECONDS",
                 DEFAULT_RECONCILE_SECONDS,
             )?,
+            ready_lease_seconds: parse(
+                "RECORDING_SCHEDULER_READY_LEASE_SECONDS",
+                DEFAULT_READY_LEASE_SECONDS,
+            )?,
         };
         if !(7..=366).contains(&config.horizon_days)
             || !(7..=366).contains(&config.max_future_days)
             || config.max_schedules_per_entity == 0
             || config.reconcile_seconds == 0
+            || !(10..=300).contains(&config.ready_lease_seconds)
+            || config.ready_lease_seconds < config.reconcile_seconds.saturating_mul(2)
         {
-            return Err("scheduler limits are out of range".into());
+            return Err("scheduler limits are out of range or readiness lease is too short".into());
         }
         Ok(config)
     }

@@ -146,7 +146,7 @@ The Docker setup uses docker-compose profiles to support two deployment scenario
 1. **Orchestra Profile** (`orchestra`)
    - Runs on workstation (x86_64)
    - Heavy ML processing, web interface, fleet management
-   - Nodes: web-bridge, central-speech-recognizer, command-parser, media-recorder, zenoh-bridge
+   - Nodes: web-bridge, central-speech-recognizer, command-parser, media-recorder, recording-scheduler, zenoh-bridge
 
 2. **Rover-Kiwi Profile** (`rover-kiwi`)
    - Runs on rover hardware in production; phase 10 validated it on workstation `linux/amd64`
@@ -221,6 +221,52 @@ preserves the old cache until the staging cache has passed validation.
 | `RECORDING_FINALIZATION_TIMEOUT_SECONDS` | `30` | FFmpeg/clip finalization timeout on stop/shutdown |
 | `RECORDING_VIDEO_QUEUE_CAPACITY` | `16` | Bounded video-frame queue for recorder intake |
 | `RECORDING_AUDIO_QUEUE_CAPACITY` | `32` | Bounded audio-frame queue for recorder intake |
+| `RECORDING_SCHEDULER_ENABLED` | `false` | Set exactly to `true` to enable schedule API admission and scheduler process health. Manual recording remains available when false. |
+| `RECORDING_SCHEDULER_HORIZON_DAYS` | `35` | Durable occurrence materialization horizon (7–366). |
+| `RECORDING_SCHEDULER_MAX_FUTURE_DAYS` | `365` | Latest permitted one-time schedule date (7–366). |
+| `RECORDING_SCHEDULER_MAX_SCHEDULES_PER_ENTITY` | `100` | Per-rover enabled-schedule limit. |
+| `RECORDING_SCHEDULER_RECONCILE_SECONDS` | `30` | Recorder snapshot/reconciliation interval. |
+| `RECORDING_SCHEDULE_QUEUE_CAPACITY` | `64` | Bounded web-to-scheduler command/query admission. |
+| `RECORDING_SCHEDULE_REQUEST_TIMEOUT_SECONDS` | `15` | Request deadline before web admission expires. |
+| `RECORDING_SCHEDULER_READY_LEASE_SECONDS` | `90` | Web admission lease; expires closed without a periodic Ready status (10–300, at least twice the reconciliation interval). |
+
+### Scheduler rollout, health, and rollback
+
+Scheduling shares `MONGODB_URI` and `MONGODB_DATABASE` with Orchestra. It creates
+its indexes before emitting work, requests a recorder snapshot, then replays only
+durable intent. Retry timing is deliberately fixed at 1, 2, 4, 8, 16, and then
+30 seconds; terminal occurrence records expire after 90 days.
+
+Start with the Schedule API disabled, verify the normal manual recording flow,
+then enable it in the same Compose invocation:
+
+```bash
+RECORDING_SCHEDULER_ENABLED=true make up-orchestra
+docker inspect --format '{{.State.Health.Status}}' robo-orchestra
+docker top robo-orchestra
+```
+
+When enabled, container health also requires the `recording_scheduler` process.
+The scheduler publishes `initializing`, `ready`, or `degraded` state to the web
+bridge. The bridge rejects new schedule commands and queries until ready, and
+again while Mongo/index/reconciliation recovery is degraded; manual rover
+control and manual recording remain independently available. A missing Ready
+update also expires after the readiness lease, so a scheduler crash fails
+schedule admission closed instead of accepting work that cannot be processed.
+
+Use `docker logs robo-orchestra` for structured scheduler lifecycle records:
+readiness, reconciliation timeouts/recovery, command conflicts, feedback
+retries and failed transitions, missed occurrences, due starts, stops, and
+periodic/shutdown metric snapshots (occurrences, groups, and active groups).
+Web admission queue depth is logged for each accepted command or query. These
+records deliberately omit Mongo URI details and credentials.
+
+To roll back, first set `RECORDING_SCHEDULER_ENABLED=false` to reject new
+schedule requests without disabling manual recording. Let any active scheduled
+group reach its planned stop boundary (or use the authenticated manual stop),
+then stop/remove the scheduler node if required. Preserve the Mongo volume for
+the 90-day terminal-occurrence retention window; take a Mongo backup before
+index migration or destructive operational maintenance.
 
 ### Rover-Kiwi
 
