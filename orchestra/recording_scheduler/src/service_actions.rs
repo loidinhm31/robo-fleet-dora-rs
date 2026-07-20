@@ -36,7 +36,10 @@ impl<C: Clock> ScheduleService<C> {
             RecordingScheduleAction::Delete {
                 schedule_id,
                 expected_revision,
-            } => self.delete(schedule_id, expected_revision, now_ms).await,
+            } => {
+                self.delete(schedule_id, expected_revision, actor, now_ms)
+                    .await
+            }
         }
     }
     async fn create(
@@ -131,21 +134,26 @@ impl<C: Clock> ScheduleService<C> {
         &self,
         schedule_id: String,
         expected: u64,
+        actor: String,
         now_ms: i64,
     ) -> Result<Option<RecordingSchedule>, ServiceError> {
-        self.current(&schedule_id, expected).await?;
-        self.repository
-            .cancel_future(&schedule_id, expected, now_ms)
-            .await
-            .map_err(unavailable)?;
+        let mut schedule = self.current(&schedule_id, expected).await?;
+        schedule.revision += 1;
+        schedule.definition.enabled = false;
+        schedule.updated_at_ms = now_ms;
+        schedule.updated_by = actor;
         if !self
             .repository
-            .delete_schedule_cas(&schedule_id, expected)
+            .tombstone_schedule_cas(&schedule, expected, now_ms)
             .await
             .map_err(unavailable)?
         {
             return Err(self.conflict(&schedule_id).await?);
         }
+        self.repository
+            .cancel_future(&schedule_id, schedule.revision, now_ms)
+            .await
+            .map_err(unavailable)?;
         Ok(None)
     }
     async fn current(
@@ -175,6 +183,10 @@ impl<C: Clock> ScheduleService<C> {
             .await
             .map_err(unavailable)?
         {
+            self.repository
+                .cancel_future(&schedule.schedule_id, expected, schedule.updated_at_ms)
+                .await
+                .map_err(unavailable)?;
             Ok(Some(schedule))
         } else {
             Err(self.conflict(&schedule.schedule_id).await?)

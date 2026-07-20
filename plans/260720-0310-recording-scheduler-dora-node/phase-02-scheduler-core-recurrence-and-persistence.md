@@ -12,8 +12,8 @@
 - Date: 2026-07-20
 - Description: Build durable scheduler node, recurrence engine, occurrence/group state, Mongo repository, and fake-clock tests.
 - Priority: P1
-- Implementation status: Done — user-approved finalization with carry-forward risks
-- Review status: Approved for phase closeout; residual risks are tracked below
+- Implementation status: Done — Phase 02 hardening complete
+- Review status: Approved after hardening; follow-up warnings are tracked below
 - Effort: 14h
 
 ## Key Insights
@@ -78,15 +78,15 @@
 
 ## Todo list
 
-- [ ] Fake clock has no real sleeps.
-- [ ] DST gap/fold/month/year/leap tested.
-- [ ] Duplicate materialization and stale CAS tested.
-- [ ] Group `0 -> 1`, intermediate, `1 -> 0` durable.
-- [ ] No action before reconciliation.
-- [ ] Terminal-only 90-day TTL verified; nonterminal rows have no `expire_at`.
-- [ ] Exact retry cadence continues without attempt cap until window end.
-- [ ] Failed/partial/recovered clips stay associated with one occurrence.
-- [ ] Empty/no-enabled schedule is responsive.
+- [x] Fake clock has no real sleeps.
+- [x] DST gap/fold/month/year/leap tested.
+- [x] Duplicate materialization and stale CAS tested.
+- [x] Group `0 -> 1`, intermediate, `1 -> 0` durable.
+- [x] No action before reconciliation.
+- [x] Terminal-only 90-day TTL verified; nonterminal rows have no `expire_at`.
+- [x] Exact retry cadence continues without attempt cap until window end.
+- [x] Failed/partial/recovered clips stay associated with one occurrence.
+- [x] Empty/no-enabled schedule is responsive.
 
 ## Success Criteria
 
@@ -121,11 +121,8 @@
 
 ## Finalization record
 
-- **2026-07-20 15:34 +07 (UTC+0700):** User approved Phase 02 finalization after implementation and local Docker Mongo verification. The following review findings are explicitly carried into the next implementation/review phases:
-  - Crash-boundary recovery must make occurrence state, group ownership, and outbox intent recovery atomic/idempotent.
-  - Bridging overlap unions must coalesce ownership and retain one stable, deterministically selected directory.
-  - Pending-intent replay must have a single durable outbox source of truth after reconciliation.
-  - Schedule update/delete must preserve a safe mutation lifecycle without reviving canceled work.
+- **2026-07-20 17:00 +07 (UTC+0700):** Phase 02 hardening is complete and review-approved. Targeted fault-boundary, bridge-overlap, durable-outbox replay, and update/delete-race tests passed, alongside `cargo test -p recording_scheduler`, live standalone Mongo verification at `mongodb://127.0.0.1:27017`, and Clippy.
+- **Review follow-up warnings:** Phase 03 must validate reconciliation ordering against recorder snapshots and preserve the scheduler's deterministic group-directory selection. Phase 04/operations must define production Mongo persistence topology, credential ownership, backup, and restore procedures.
 
 ## Unresolved questions
 

@@ -3,10 +3,10 @@ use std::collections::BTreeMap;
 use robo_rover_lib::{
     occurrence_id, scheduled_intent_id, RecordingAttemptState, RecordingClipAttempt,
     RecordingCoordinatorFeedback, RecordingOccurrence, RecordingOccurrenceState, RecordingSchedule,
-    ScheduledRecordingIntentAction,
+    ScheduledRecordingIntent, ScheduledRecordingIntentAction,
 };
 
-use crate::mongo_repository::Stored;
+use crate::mongo_repository::{OutboxRecord, Stored};
 use crate::{
     clock::Clock,
     domain::{is_transient_reason, RecordingGroup},
@@ -21,6 +21,7 @@ pub struct SchedulerRuntime<C> {
     pub groups: BTreeMap<String, RecordingGroup>,
     pub occurrence_revisions: BTreeMap<String, u64>,
     pub group_revisions: BTreeMap<String, u64>,
+    pub removed_group_revisions: BTreeMap<String, u64>,
     pub(crate) reconciliation_complete: bool,
 }
 
@@ -28,6 +29,12 @@ pub struct SchedulerRuntime<C> {
 pub struct GroupTransition {
     pub intent_id: Option<String>,
     pub generation: u64,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct OutboxRecovery {
+    pub replay: Vec<ScheduledRecordingIntent>,
+    pub acknowledge: Vec<String>,
 }
 
 impl<C: Clock> SchedulerRuntime<C> {
@@ -38,6 +45,7 @@ impl<C: Clock> SchedulerRuntime<C> {
             groups: BTreeMap::new(),
             occurrence_revisions: BTreeMap::new(),
             group_revisions: BTreeMap::new(),
+            removed_group_revisions: BTreeMap::new(),
             reconciliation_complete: false,
         }
     }
@@ -81,9 +89,7 @@ impl<C: Clock> SchedulerRuntime<C> {
                 .groups
                 .insert(stored.value.group_id.clone(), stored.value);
         }
-        if runtime.groups.is_empty() {
-            runtime.rebuild_groups()?;
-        }
+        runtime.rebuild_groups()?;
         Ok(runtime)
     }
 
@@ -95,6 +101,47 @@ impl<C: Clock> SchedulerRuntime<C> {
         self.groups
             .values()
             .any(|group| group.handled_feedback_generations.contains_key(intent_id))
+    }
+
+    /// The outbox is authoritative at process boundaries. A record either
+    /// proves the transition is already terminal/applied or restores its
+    /// snapshots before the coordinator can see a replay.
+    pub fn recover_outbox(&mut self, records: &[OutboxRecord]) -> OutboxRecovery {
+        let mut recovery = OutboxRecovery::default();
+        for record in records {
+            let handled = self.groups.values().any(|group| {
+                group
+                    .handled_feedback_generations
+                    .contains_key(&record.intent.intent_id)
+            });
+            let terminal = self
+                .occurrences
+                .get(&record.intent.occurrence_id)
+                .is_some_and(|occurrence| occurrence.state.is_terminal());
+            let applied = record.intent.action == ScheduledRecordingIntentAction::Acquire
+                && self
+                    .occurrences
+                    .get(&record.intent.occurrence_id)
+                    .is_some_and(|item| item.state == RecordingOccurrenceState::Active);
+            if handled || terminal || applied {
+                recovery.acknowledge.push(record.intent.intent_id.clone());
+                continue;
+            }
+            self.occurrence_revisions
+                .entry(record.occurrence.occurrence_id.clone())
+                .or_insert(0);
+            self.group_revisions
+                .entry(record.group.group_id.clone())
+                .or_insert(0);
+            self.occurrences.insert(
+                record.occurrence.occurrence_id.clone(),
+                record.occurrence.clone(),
+            );
+            self.groups
+                .insert(record.group.group_id.clone(), record.group.clone());
+            recovery.replay.push(record.intent.clone());
+        }
+        recovery
     }
 
     pub fn hydrate_group_directories(&mut self, schedules: &[RecordingSchedule]) {

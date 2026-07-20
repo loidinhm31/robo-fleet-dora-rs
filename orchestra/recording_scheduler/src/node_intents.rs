@@ -1,4 +1,3 @@
-use eyre::Result;
 use robo_rover_lib::{
     RecordingOccurrence, ScheduledRecordingIntent, ScheduledRecordingIntentAction,
 };
@@ -23,34 +22,4 @@ pub(crate) fn build_intent(
         relative_directory: group.relative_directory.clone(),
         action,
     }
-}
-
-pub(crate) fn pending_intents(
-    scheduler: &crate::runtime::SchedulerRuntime<crate::clock::SystemClock>,
-) -> Result<Vec<ScheduledRecordingIntent>> {
-    Ok(scheduler
-        .groups
-        .values()
-        .filter_map(|group| {
-            let intent_id = group.pending_intent_id.clone()?;
-            let action = group.pending_action?;
-            scheduler
-                .occurrences
-                .values()
-                .find(|occurrence| {
-                    occurrence.group_id.as_deref() == Some(&group.group_id)
-                        && matches!(
-                            (action, occurrence.state),
-                            (
-                                ScheduledRecordingIntentAction::Acquire,
-                                robo_rover_lib::RecordingOccurrenceState::StartPending
-                            ) | (
-                                ScheduledRecordingIntentAction::Release,
-                                robo_rover_lib::RecordingOccurrenceState::StopPending
-                            )
-                        )
-                })
-                .map(|occurrence| build_intent(occurrence, group, intent_id, action))
-        })
-        .collect())
 }

@@ -16,7 +16,8 @@ use crate::{
     clock::{Clock, SystemClock},
     config::SchedulerConfig,
     mongo_repository::MongoRepository,
-    node_intents::{build_intent, pending_intents},
+    mongo_repository::OutboxRecord,
+    node_intents::build_intent,
     node_persistence::{adopt, persist},
     runtime::SchedulerRuntime,
     service::ScheduleService,
@@ -101,7 +102,13 @@ pub fn run() -> Result<()> {
                         }
                         persist(&tokio, &repository, &mut scheduler)?;
                         if first_snapshot {
-                            replay_pending(&tokio, &repository, &mut node, &intent, &scheduler)?;
+                            replay_pending(
+                                &tokio,
+                                &repository,
+                                &mut node,
+                                &intent,
+                                &mut scheduler,
+                            )?;
                         }
                         tracing::info!("recording scheduler reconciliation applied");
                     }
@@ -141,6 +148,9 @@ fn load_scheduler(
     tokio: &tokio::runtime::Runtime,
     repository: &MongoRepository,
 ) -> Result<SchedulerRuntime<SystemClock>> {
+    tokio
+        .block_on(repository.recover_superseded_future(SystemClock.now_ms()))
+        .map_err(eyre::Report::msg)?;
     let occurrences = tokio
         .block_on(repository.load_nonterminal_stored())
         .map_err(eyre::Report::msg)?;
@@ -198,10 +208,14 @@ fn emit_due(
             intent_id,
             ScheduledRecordingIntentAction::Acquire,
         );
-        persist(tokio, repository, scheduler)?;
         tokio
-            .block_on(repository.persist_intent(&value))
+            .block_on(repository.persist_transition(&OutboxRecord {
+                intent: value.clone(),
+                occurrence: occurrence.clone(),
+                group: group.clone(),
+            }))
             .map_err(eyre::Report::msg)?;
+        persist(tokio, repository, scheduler)?;
         send(node, output, &value)?;
     }
     Ok(())
@@ -230,10 +244,14 @@ fn emit_stops(
             intent_id,
             ScheduledRecordingIntentAction::Release,
         );
-        persist(tokio, repository, scheduler)?;
         tokio
-            .block_on(repository.persist_intent(&value))
+            .block_on(repository.persist_transition(&OutboxRecord {
+                intent: value.clone(),
+                occurrence: occurrence.clone(),
+                group: group.clone(),
+            }))
             .map_err(eyre::Report::msg)?;
+        persist(tokio, repository, scheduler)?;
         send(node, output, &value)?;
     }
     Ok(())
@@ -244,12 +262,19 @@ fn replay_pending(
     repository: &MongoRepository,
     node: &mut DoraNode,
     output: &DataId,
-    scheduler: &SchedulerRuntime<SystemClock>,
+    scheduler: &mut SchedulerRuntime<SystemClock>,
 ) -> Result<()> {
-    for intent in pending_intents(scheduler)? {
+    let records = tokio
+        .block_on(repository.pending_outbox())
+        .map_err(eyre::Report::msg)?;
+    let recovery = scheduler.recover_outbox(&records);
+    persist(tokio, repository, scheduler)?;
+    for intent_id in recovery.acknowledge {
         tokio
-            .block_on(repository.persist_intent(&intent))
+            .block_on(repository.acknowledge_intent(&intent_id))
             .map_err(eyre::Report::msg)?;
+    }
+    for intent in recovery.replay {
         send(node, output, &intent)?;
     }
     Ok(())
