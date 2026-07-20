@@ -68,6 +68,7 @@ robo-rover-dora/
 │   ├── central_speech_recognizer/  # Central Sherpa VAD/offline STT runtime
 │   ├── command_parser/             # NLU pattern matching
 │   ├── kokoro_tts/                 # Legacy orchestra TTS package retained in-tree
+│   ├── recording_scheduler/        # Durable recording schedule control plane
 │   ├── zenoh_bridge/               # Orchestra Zenoh bridge (orchestra-only)
 │   └── orchestra-dataflow.yml      # Orchestra Dora dataflow
 │
@@ -700,14 +701,16 @@ sanitized detail of at most 256 characters. Unknown enum values, non-finite
 floats, out-of-range config, malformed UUIDs, absolute model paths, and invalid
 state/source combinations are rejected before publication.
 
-### Manual Fleet Media Recording and Playback
+### Manual and Scheduled Fleet Media Recording
 
 Manual recording is an Orchestra-side concern. The completed Phase 2
 `orchestra/media_recorder` crate is a dedicated Dora node that consumes the
 JPEG and rover-microphone PCM outputs already validated by `orchestra-bridge`;
 it does not add Zenoh topics or change rover capture. The recorder may run one
 session per rover concurrently, up to a configured fleet-wide limit. Each start
-command pins its `entity_id` until finalization.
+command pins its `entity_id` until finalization. The planned
+`orchestra/recording_scheduler` node adds durable wall-clock scheduling without
+becoming a second media-control or FFmpeg authority.
 
 ```mermaid
 flowchart LR
@@ -715,14 +718,20 @@ flowchart LR
     RoverBridge["Rover Zenoh bridge"]
     OrchestraBridge["Orchestra Zenoh bridge<br/>validate and fan out"]
     Recorder["media-recorder<br/>per-rover FFmpeg session"]
+    Scheduler["recording-scheduler<br/>recurrence and durable occurrence state"]
+    Mongo["MongoDB<br/>schedules, occurrences, reconciliation state"]
     Store["Allowlisted recording root<br/>partial then ready MP4"]
-    WebBridge["web-bridge<br/>auth, commands, tickets, HTTP Range"]
-    UI["Web and Tauri UI<br/>path, record, list, play"]
+    WebBridge["web-bridge<br/>auth, ownership coordinator, tickets, HTTP Range"]
+    UI["Web and Tauri UI<br/>schedule, record, list, play"]
 
     Rover --> RoverBridge
     RoverBridge -->|"JPEG v1 and S16LE PCM v1"| OrchestraBridge
     OrchestraBridge -->|"Dora JPEG and microphone PCM"| Recorder
     UI -->|"authenticated Socket.IO control/query"| WebBridge
+    WebBridge -->|"authenticated schedule CRUD/query"| Scheduler
+    Scheduler -->|"coalesced scheduled-session intent"| WebBridge
+    WebBridge -->|"recorder result/status feedback"| Scheduler
+    Scheduler <-->|"CAS state and durable intent"| Mongo
     WebBridge -->|"Dora command/query"| Recorder
     Recorder -->|"status and clip metadata"| WebBridge
     WebBridge -->|"targeted aggregate camera, JPEG, and mic demand"| OrchestraBridge
@@ -734,6 +743,40 @@ flowchart LR
 
 Recording invariants:
 
+- `recording_scheduler` is the single writer for schedule, materialized
+  occurrence, retry, suppression, and reconciliation state. It never emits
+  rover camera/audio commands and never starts FFmpeg directly.
+- `web_bridge` remains the sole per-rover media-demand and recording-session
+  coordinator. Scheduled, manual, and browser consumers acquire distinct
+  ownership; only aggregate `0 -> 1` and `1 -> 0` media transitions leave it.
+- Overlapping active occurrences for one rover form one recording group. The
+  first owner starts one session, intermediate owner changes do not restart it,
+  and only the last owner ends it. The earliest occurrence, then occurrence ID,
+  deterministically chooses the group's resolved output directory.
+- Recurrence preserves local wall-clock intent in an IANA timezone while every
+  occurrence stores Unix-millisecond bounds. DST folds choose the earlier
+  instant; gaps shift to the first valid local instant; elapsed duration remains
+  unchanged. Deterministic occurrence/request IDs make replay idempotent.
+- Schedule updates use revision compare-and-set. Any authenticated user may
+  view, create, update, enable, disable, or delete schedules in v1; scheduler
+  RBAC is deferred. The audit actor comes from server-validated session claims,
+  never browser-supplied fields.
+- Startup and reconnect reconcile durable desired owners with recorder status
+  before issuing starts. A matching active recorder session is adopted; a blind
+  duplicate start is forbidden. Transient failures retry after 1, 2, 4, 8, and
+  16 seconds, then every 30 seconds until the planned window ends. Retry alerts
+  are explicitly outside v1 scope.
+- Terminal occurrence/audit documents expire after 90 days; active and other
+  nonterminal documents never receive a TTL. One logical occurrence may retain
+  multiple failed, partial, and recovered clip-attempt references after a crash.
+- A manual stop suppresses the current scheduled group until the next schedule
+  boundary while leaving schedules enabled. Scheduled release never stops a
+  manual session or browser demand. A manual start while a scheduled group is
+  active suppresses that group, finalizes its clip, then starts the requested
+  manual session; it never silently adopts the scheduled clip.
+- A missing scheduler process makes Orchestra unhealthy. An alive scheduler
+  blocked on Mongo or reconciliation reports scheduling as degraded while
+  manual rover control and manual recording remain healthy and available.
 - `RECORDING_ROOT` is required and configured by the Orchestra deployment. It
   must resolve to a dedicated existing directory below `/home`, not `/home`
   itself. Browser input is a normalized relative subdirectory and never an

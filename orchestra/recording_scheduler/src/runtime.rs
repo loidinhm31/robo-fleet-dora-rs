@@ -250,6 +250,117 @@ impl<C: Clock> SchedulerRuntime<C> {
         else {
             return false;
         };
+        // Manual recording commands suppress the *current deterministic group*,
+        // not merely the bridge's in-memory copy. Persist the terminal owner
+        // transition before acknowledging the feedback so a scheduler restart
+        // cannot replay the old scheduled demand.
+        if feedback.manual_suppression {
+            let action = match state {
+                RecordingOccurrenceState::StartPending => ScheduledRecordingIntentAction::Acquire,
+                RecordingOccurrenceState::StopPending => ScheduledRecordingIntentAction::Release,
+                RecordingOccurrenceState::Active => {
+                    // The start outbox was already acknowledged. Terminal recorder
+                    // evidence is still authoritative for this live generation.
+                    ScheduledRecordingIntentAction::Acquire
+                }
+                _ => return false,
+            };
+            let Some(group) = self.groups.get_mut(&group_id) else {
+                return false;
+            };
+            if group.generation != feedback.generation {
+                return false;
+            }
+            if state != RecordingOccurrenceState::Active {
+                if scheduled_intent_id(&feedback.occurrence_id, feedback.generation, action)
+                    .ok()
+                    .as_deref()
+                    != Some(&feedback.intent_id)
+                    || group.pending_intent_id.as_deref() != Some(&feedback.intent_id)
+                    || group.pending_action != Some(action)
+                    || !group.accept_feedback(&feedback.intent_id, feedback.generation)
+                {
+                    return false;
+                }
+                group.finish_intent();
+            }
+            group.recording_id = None;
+            let now_ms = self.clock.now_ms();
+            // The bridge receives only the group first-owner intent, whereas the
+            // scheduler owns every overlap member. Suppress all owners atomically
+            // so an unobserved later occurrence cannot replay this group.
+            let owner_ids = group.owner_ids.iter().cloned().collect::<Vec<_>>();
+            for owner_id in &owner_ids {
+                group.remove_owner(owner_id);
+            }
+            let mut changed = false;
+            for owner_id in owner_ids {
+                let Some(occurrence) = self.occurrences.get_mut(&owner_id) else {
+                    continue;
+                };
+                if occurrence.state.is_terminal() {
+                    continue;
+                }
+                occurrence.suppressed_by_manual = true;
+                if let Some(attempt) = occurrence.attempts.last_mut() {
+                    attempt.state = RecordingAttemptState::Partial;
+                    attempt.ended_at_ms = Some(now_ms);
+                }
+                let next = if occurrence.state == RecordingOccurrenceState::StopPending {
+                    RecordingOccurrenceState::Completed
+                } else {
+                    RecordingOccurrenceState::Suppressed
+                };
+                changed |= transition(occurrence, next, now_ms, None);
+            }
+            return changed;
+        }
+        // A recorder can fail after its accepted start feedback has already made
+        // the occurrence Active. This is not an old start reply: it is terminal
+        // recorder evidence for the same live group and must be retained as a
+        // partial clip attempt instead of being silently dropped.
+        if state == RecordingOccurrenceState::Active
+            && feedback.recorder_state == Some(robo_rover_lib::RecordingSessionState::Failed)
+            && feedback.group_id.as_deref() == Some(&group_id)
+        {
+            let Some(recording_id) = feedback.recording_id.as_deref() else {
+                return false;
+            };
+            let Some(group) = self.groups.get_mut(&group_id) else {
+                return false;
+            };
+            if group.generation != feedback.generation {
+                return false;
+            }
+            let Some(occurrence) = self.occurrences.get_mut(&feedback.occurrence_id) else {
+                return false;
+            };
+            let now_ms = self.clock.now_ms();
+            if let Some(attempt) = occurrence
+                .attempts
+                .iter_mut()
+                .rev()
+                .find(|attempt| attempt.recording_id == recording_id)
+            {
+                attempt.state = RecordingAttemptState::Partial;
+                attempt.ended_at_ms = Some(now_ms);
+            } else {
+                occurrence.attempts.push(RecordingClipAttempt {
+                    recording_id: recording_id.to_owned(),
+                    state: RecordingAttemptState::Failed,
+                    started_at_ms: now_ms,
+                    ended_at_ms: Some(now_ms),
+                });
+            }
+            group.recording_id = None;
+            group.finish_intent();
+            return transition(
+                occurrence,
+                RecordingOccurrenceState::Failed,
+                now_ms,
+                feedback.reason_code,
+            );
+        }
         if !matches!(
             state,
             RecordingOccurrenceState::StartPending | RecordingOccurrenceState::StopPending

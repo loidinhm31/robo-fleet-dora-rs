@@ -42,7 +42,7 @@ fn legal(current: RecordingOccurrenceState, next: RecordingOccurrenceState) -> b
     use RecordingOccurrenceState::*;
     matches!(
         (current, next),
-        (Planned, Due | Cancelled | Missed)
+        (Planned, Due | Suppressed | Cancelled | Missed)
             | (Due, StartPending | Active | Suppressed | Missed | Failed)
             | (StartPending, Active | Due | Failed | Missed | Suppressed)
             | (Active, StopPending | Completed | Suppressed | Failed)

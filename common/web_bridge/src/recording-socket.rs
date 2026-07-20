@@ -25,9 +25,29 @@ pub struct PendingRequest {
     pub deadline: Instant,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduledCommandGuard {
+    pub group_id: String,
+    pub generation: u64,
+    pub consumer_id: String,
+    pub planned_end_ms: i64,
+}
+
+impl ScheduledCommandGuard {
+    pub fn is_expired_at(&self, now_ms: i64) -> bool {
+        now_ms >= self.planned_end_ms
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct QueuedRecordingCommand {
+    pub command: RecordingSessionCommand,
+    pub scheduled_guard: Option<ScheduledCommandGuard>,
+}
+
 #[derive(Clone)]
 pub struct RecordingState {
-    pub commands: Arc<Mutex<VecDeque<RecordingSessionCommand>>>,
+    pub commands: Arc<Mutex<VecDeque<QueuedRecordingCommand>>>,
     pub clip_queries: Arc<Mutex<VecDeque<RecordingClipQuery>>>,
     pub playback_queries: Arc<Mutex<VecDeque<RecordingPlaybackTicketRequest>>>,
     pub delete_queries: Arc<Mutex<VecDeque<RecordingDeleteRequest>>>,
@@ -54,6 +74,36 @@ mod tests {
         let pending = state.take("request-a").unwrap();
         assert_eq!(pending.socket_id, "socket-a");
         assert_eq!(pending.kind, RequestKind::ClipList);
+    }
+
+    #[test]
+    fn scheduled_command_retains_generation_guard_until_dispatch() {
+        let state = RecordingState::from_env();
+        let command = RecordingSessionCommand {
+            protocol_version: 1,
+            request_id: "start-request".into(),
+            action: robo_rover_lib::RecordingSessionAction::Start {
+                entity_id: "rover-a".into(),
+                relative_directory: "scheduled/a".into(),
+            },
+        };
+        state
+            .enqueue_scheduled_command(
+                command.clone(),
+                ScheduledCommandGuard {
+                    group_id: "group-a".into(),
+                    generation: 7,
+                    consumer_id: "scheduled:group-a:7".into(),
+                    planned_end_ms: 100,
+                },
+            )
+            .unwrap();
+        let queued = state.next_command().unwrap();
+        assert_eq!(queued.command, command);
+        let guard = queued.scheduled_guard.unwrap();
+        assert_eq!(guard.generation, 7);
+        assert!(!guard.is_expired_at(99));
+        assert!(guard.is_expired_at(100));
     }
 }
 
@@ -108,6 +158,46 @@ impl RecordingState {
 
     pub fn take(&self, request_id: &str) -> Option<PendingRequest> {
         self.pending.lock().ok()?.remove(request_id)
+    }
+
+    /// Commands from both the browser and the scheduler use one bounded recorder
+    /// queue so scheduled demand can be rolled back before an unbounded backlog forms.
+    pub fn enqueue_command(&self, command: RecordingSessionCommand) -> Result<(), &'static str> {
+        let mut queue = self
+            .commands
+            .lock()
+            .map_err(|_| "recording command queue unavailable")?;
+        if queue.len() >= self.capacity {
+            return Err("recording command queue is full");
+        }
+        queue.push_back(QueuedRecordingCommand {
+            command,
+            scheduled_guard: None,
+        });
+        Ok(())
+    }
+
+    pub fn enqueue_scheduled_command(
+        &self,
+        command: RecordingSessionCommand,
+        scheduled_guard: ScheduledCommandGuard,
+    ) -> Result<(), &'static str> {
+        let mut queue = self
+            .commands
+            .lock()
+            .map_err(|_| "recording command queue unavailable")?;
+        if queue.len() >= self.capacity {
+            return Err("recording command queue is full");
+        }
+        queue.push_back(QueuedRecordingCommand {
+            command,
+            scheduled_guard: Some(scheduled_guard),
+        });
+        Ok(())
+    }
+
+    pub fn next_command(&self) -> Option<QueuedRecordingCommand> {
+        self.commands.lock().ok()?.pop_front()
     }
 
     pub fn expire(&self) -> Vec<(String, PendingRequest)> {

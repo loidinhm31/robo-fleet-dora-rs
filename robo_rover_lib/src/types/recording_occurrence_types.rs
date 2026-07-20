@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{RecordingScheduleReasonCode, RecordingSessionState};
+use super::{validate_id, validate_uuid, RecordingScheduleReasonCode, RecordingSessionState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -119,6 +119,9 @@ pub struct RecordingCoordinatorFeedback {
     pub group_id: Option<String>,
     pub recording_id: Option<String>,
     pub recorder_state: Option<RecordingSessionState>,
+    /// Durable manual-stop suppression for the current scheduled group.
+    #[serde(default)]
+    pub manual_suppression: bool,
     pub reason_code: Option<RecordingScheduleReasonCode>,
     pub detail: Option<String>,
 }
@@ -141,6 +144,33 @@ pub struct RecordingReconciliationSession {
     pub start_request_id: String,
     pub recording_id: String,
     pub state: RecordingSessionState,
+}
+
+impl RecordingReconciliationRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_uuid("request_id", &self.request_id)?;
+        if let Some(entity_id) = &self.entity_id {
+            validate_id("entity_id", entity_id)?;
+        }
+        Ok(())
+    }
+}
+
+impl RecordingReconciliationSnapshot {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_uuid("request_id", &self.request_id)?;
+        self.sessions
+            .iter()
+            .try_for_each(RecordingReconciliationSession::validate)
+    }
+}
+
+impl RecordingReconciliationSession {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_id("entity_id", &self.entity_id)?;
+        validate_uuid("start_request_id", &self.start_request_id)?;
+        validate_uuid("recording_id", &self.recording_id)
+    }
 }
 
 pub fn occurrence_id(
