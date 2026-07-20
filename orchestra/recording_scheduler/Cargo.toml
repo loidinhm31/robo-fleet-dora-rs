@@ -1,0 +1,20 @@
+[package]
+name = "recording_scheduler"
+version = "0.1.0"
+edition = "2021"
+description = "Durable Orchestra recording scheduler"
+
+[dependencies]
+bson = "2"
+chrono = "0.4"
+chrono-tz = { workspace = true }
+dora-node-api = { workspace = true }
+eyre = { workspace = true }
+futures-util = "0.3"
+mongodb = "2"
+robo_rover_lib = { path = "../../robo_rover_lib" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { version = "1.24.2", features = ["rt", "time"] }
+tracing = { workspace = true }
+uuid = { workspace = true }

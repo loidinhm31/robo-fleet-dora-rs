@@ -50,6 +50,33 @@ applied by Compose. If a custom SELinux policy still denies access, inspect
 `podman logs robo-orchestra` and relabel only this directory with
 `chcon -Rt container_file_t "$HOST_RECORDING_PATH"`.
 
+### Local MongoDB for Scheduler Development
+
+The scheduler can use the local MongoDB Compose profile without starting the
+full Orchestra stack. On this Fedora workstation, `docker` may be Podman's
+Docker-compatible CLI; set its user runtime directory first. Compose still
+expands the Orchestra recording-path variable while starting only the MongoDB
+profile, so provide a dedicated absolute project storage path:
+
+```bash
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+export HOST_RECORDING_PATH=/home/$USER/robo-fleet-dora-rs-local-recordings
+install -d -m 700 -o "$(id -u)" -g "$(id -g)" "$HOST_RECORDING_PATH"
+docker compose -f docker/docker-compose.yml --profile mongodb up -d mongodb
+docker inspect --format '{{.State.Health.Status}}' robo-mongodb
+```
+
+The last command should print `healthy`. Point scheduler integration tests at
+`mongodb://127.0.0.1:27017`, for example:
+
+```bash
+SCHEDULER_TEST_MONGODB_URI=mongodb://127.0.0.1:27017 \
+  cargo test -p recording_scheduler --test mongo-integration
+```
+
+This Compose MongoDB service has no authentication configured. Do not add or
+assume an `admin` username/password for this local development endpoint.
+
 ### 3. Build Images
 
 **For Orchestra (Workstation):**
