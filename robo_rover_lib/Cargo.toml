@@ -15,6 +15,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 chrono = "0.4"
+chrono-tz = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # cpal is optional (Linux-only device enumeration helpers) and pulled in only on Linux
