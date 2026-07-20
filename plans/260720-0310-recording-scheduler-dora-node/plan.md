@@ -21,7 +21,7 @@ Add `orchestra/recording_scheduler` as durable schedule/occurrence authority. Ke
 |---|---|---|---:|---:|---|
 | 1 | Contracts and decision freeze | Done | 100% | 7h | [phase-01](./phase-01-contracts-and-decision-freeze.md) |
 | 2 | Scheduler core, recurrence, persistence | Done | 100% | 14h | [phase-02](./phase-02-scheduler-core-recurrence-and-persistence.md) |
-| 3 | Web coordinator and recorder reconciliation | Pending | 0% | 14h | [phase-03](./phase-03-web-bridge-coordinator-and-recorder-reconciliation.md) |
+| 3 | Web coordinator and recorder reconciliation | Done | 100% | 14h | [phase-03](./phase-03-web-bridge-coordinator-and-recorder-reconciliation.md) |
 | 4 | Dora, container, operations integration | Pending | 0% | 7h | [phase-04](./phase-04-dora-container-and-operational-integration.md) |
 | 5 | Scheduler UI and client state | Pending | 0% | 9h | [phase-05](./phase-05-scheduler-ui-and-client-state.md) |
 | 6 | End-to-end, fault, rollout verification | Pending | 0% | 7h | [phase-06](./phase-06-end-to-end-fault-and-rollout-verification.md) |
