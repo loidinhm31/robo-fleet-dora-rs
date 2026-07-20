@@ -8,8 +8,9 @@ use robo_rover_lib::types::{
     ActiveRoversStatus, DetectionFrame, FleetSelectCommand, FleetStatus, FleetSubscriptionCommand,
     RecordingClipQuery, RecordingDeleteRequest, RecordingDeleteResult,
     RecordingPlaybackTicketRequest, RecordingScheduleCommandResult, RecordingScheduleSnapshot,
-    RecordingSessionAction, RecordingSessionCommand, RecordingSessionState, SpeechTranscription,
-    SttStatus, SystemMetrics, TrackingCommand, TrackingTelemetry,
+    RecordingSchedulerReadiness, RecordingSchedulerStatus, RecordingSessionAction,
+    RecordingSessionCommand, RecordingSessionState, SpeechTranscription, SttStatus, SystemMetrics,
+    TrackingCommand, TrackingTelemetry,
 };
 use robo_rover_lib::{
     capture_age_ms, init_tracing, record_capture_age, ArmCommand, ArmCommandWithMetadata,
@@ -3805,6 +3806,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             &pending.socket_id,
                                             "recording_schedule_snapshot",
                                             serde_json::to_value(snapshot).unwrap_or(Value::Null),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "recording_scheduler_status" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                let Ok(status) = serde_json::from_slice::<RecordingSchedulerStatus>(
+                                    binary_array.value(0),
+                                ) else {
+                                    continue;
+                                };
+                                if status.protocol_version
+                                    != robo_rover_lib::RECORDING_SCHEDULE_PROTOCOL_VERSION
+                                {
+                                    continue;
+                                }
+                                let ready = status.readiness == RecordingSchedulerReadiness::Ready;
+                                state_for_video.schedule.set_ready(ready);
+                                tracing::info!(
+                                    scheduler_ready = ready,
+                                    readiness = ?status.readiness,
+                                    "recording scheduler status updated"
+                                );
+                                if let Some(io) = io_for_video.lock().ok().and_then(|io| io.clone()) {
+                                    if let Some(namespace) = io.of("/") {
+                                        emit_authenticated(
+                                            namespace,
+                                            &state_for_video.session_registry,
+                                            "recording_scheduler_status",
+                                            serde_json::to_value(status).unwrap_or(Value::Null),
                                         );
                                     }
                                 }

@@ -82,6 +82,8 @@ help:
 	@echo "  STT_MODEL_ROOT       - Sherpa ASR model root"
 	@echo "  HOST_RECORDING_PATH  - Existing dedicated /home directory (required for orchestra)"
 	@echo "  RECORDING_*          - Bounded media recorder safety limits"
+	@echo "  RECORDING_SCHEDULER_ENABLED - Enable schedule API/process health checks (default: false)"
+	@echo "  RECORDING_SCHEDULER_* - Scheduler horizon, limits, and reconciliation interval"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make up-mongodb && make build-orchestra && make up-orchestra"

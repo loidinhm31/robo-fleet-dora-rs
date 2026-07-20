@@ -3,6 +3,25 @@ use serde_json::Value;
 
 pub const RECORDING_SCHEDULE_PROTOCOL_VERSION: u8 = 1;
 
+/// Scheduler lifecycle is operational state, not user-controlled schedule data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordingSchedulerReadiness {
+    Initializing,
+    Ready,
+    Degraded,
+}
+
+/// Published by the scheduler so the web bridge can pause schedule admission
+/// while Mongo/indexing/reconciliation is unavailable. Manual recording does
+/// not consume this status and remains independently available.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordingSchedulerStatus {
+    pub protocol_version: u8,
+    pub readiness: RecordingSchedulerReadiness,
+    pub detail: Option<String>,
+}
+
 /// Public schedule settings. Audit and lifecycle fields are scheduler-owned.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -29,6 +29,7 @@ COPY common/web_bridge/Cargo.toml common/web_bridge/
 COPY orchestra/central_speech_recognizer/Cargo.toml orchestra/central_speech_recognizer/
 COPY orchestra/command_parser/Cargo.toml orchestra/command_parser/
 COPY orchestra/media_recorder/Cargo.toml orchestra/media_recorder/
+COPY orchestra/recording_scheduler/Cargo.toml orchestra/recording_scheduler/
 COPY orchestra/zenoh_bridge/Cargo.toml orchestra/zenoh_bridge/
 
 # Copy actual source code
@@ -42,6 +43,7 @@ RUN cargo build --release \
     -p central_speech_recognizer \
     -p command_parser \
     -p media_recorder \
+    -p recording_scheduler \
     -p orchestra_zenoh_bridge
 
 # =============================================================================
@@ -81,6 +83,7 @@ COPY --from=builder /build/target/release/web_bridge ./bin/
 COPY --from=builder /build/target/release/central_speech_recognizer ./bin/
 COPY --from=builder /build/target/release/command_parser ./bin/
 COPY --from=builder /build/target/release/media_recorder ./bin/
+COPY --from=builder /build/target/release/recording_scheduler ./bin/
 COPY --from=builder /build/target/release/orchestra_zenoh_bridge ./bin/
 COPY --from=builder /usr/local/cargo/bin/dora ./bin/
 

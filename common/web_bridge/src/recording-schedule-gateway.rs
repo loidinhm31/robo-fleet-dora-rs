@@ -22,6 +22,15 @@ fn register_command(socket: &SocketRef, socket_id: &str, state: SharedState) {
     socket.on(
         "recording_schedule_command",
         move |socket: SocketRef, Data::<Value>(data)| {
+            if let Some(detail) = state.schedule.unavailable_reason() {
+                reject(
+                    &socket,
+                    request_id_from_value(&data),
+                    RecordingScheduleReasonCode::Unavailable,
+                    detail,
+                );
+                return;
+            }
             let Some(actor) = state.session_registry.audit_actor(&socket_id) else {
                 socket
                     .emit("auth_error", serde_json::json!({"reason": "token_expired"}))
@@ -85,6 +94,13 @@ fn register_command(socket: &SocketRef, socket_id: &str, state: SharedState) {
                     RecordingScheduleReasonCode::Internal,
                     "schedule queue unavailable",
                 );
+            } else {
+                tracing::info!(
+                    event = "recording_schedule_queue_depth",
+                    operation = "command",
+                    queue_depth = state.schedule.queue_depth(),
+                    "recording schedule command admitted"
+                );
             }
         },
     );
@@ -95,6 +111,15 @@ fn register_query(socket: &SocketRef, socket_id: &str, state: SharedState) {
     socket.on(
         "recording_schedule_query",
         move |socket: SocketRef, Data::<Value>(data)| {
+            if let Some(detail) = state.schedule.unavailable_reason() {
+                reject(
+                    &socket,
+                    request_id_from_value(&data),
+                    RecordingScheduleReasonCode::Unavailable,
+                    detail,
+                );
+                return;
+            }
             if state.session_registry.audit_actor(&socket_id).is_none() {
                 socket
                     .emit("auth_error", serde_json::json!({"reason": "token_expired"}))
@@ -150,9 +175,24 @@ fn register_query(socket: &SocketRef, socket_id: &str, state: SharedState) {
                     RecordingScheduleReasonCode::Internal,
                     "schedule queue unavailable",
                 );
+            } else {
+                tracing::info!(
+                    event = "recording_schedule_queue_depth",
+                    operation = "query",
+                    queue_depth = state.schedule.queue_depth(),
+                    "recording schedule query admitted"
+                );
             }
         },
     );
+}
+
+fn request_id_from_value(value: &Value) -> &str {
+    value
+        .get("request_id")
+        .and_then(Value::as_str)
+        .filter(|request_id| request_id.len() <= 128)
+        .unwrap_or("")
 }
 
 fn reject(

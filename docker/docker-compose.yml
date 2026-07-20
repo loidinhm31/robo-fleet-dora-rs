@@ -86,12 +86,22 @@ services:
       RECORDING_AUDIO_SAMPLE_RATE: ${RECORDING_AUDIO_SAMPLE_RATE:-16000}
       RECORDING_AUDIO_CHANNELS: ${RECORDING_AUDIO_CHANNELS:-1}
       RECORDING_VIDEO_FPS: ${RECORDING_VIDEO_FPS:-30}
+      # Schedule CRUD is disabled by default for staged rollout. Existing
+      # manual recording is independent of this switch.
+      RECORDING_SCHEDULER_ENABLED: ${RECORDING_SCHEDULER_ENABLED:-false}
+      RECORDING_SCHEDULER_HORIZON_DAYS: ${RECORDING_SCHEDULER_HORIZON_DAYS:-35}
+      RECORDING_SCHEDULER_MAX_FUTURE_DAYS: ${RECORDING_SCHEDULER_MAX_FUTURE_DAYS:-365}
+      RECORDING_SCHEDULER_MAX_SCHEDULES_PER_ENTITY: ${RECORDING_SCHEDULER_MAX_SCHEDULES_PER_ENTITY:-100}
+      RECORDING_SCHEDULER_RECONCILE_SECONDS: ${RECORDING_SCHEDULER_RECONCILE_SECONDS:-30}
+      RECORDING_SCHEDULE_QUEUE_CAPACITY: ${RECORDING_SCHEDULE_QUEUE_CAPACITY:-64}
+      RECORDING_SCHEDULE_REQUEST_TIMEOUT_SECONDS: ${RECORDING_SCHEDULE_REQUEST_TIMEOUT_SECONDS:-15}
+      RECORDING_SCHEDULER_READY_LEASE_SECONDS: ${RECORDING_SCHEDULER_READY_LEASE_SECONDS:-90}
     restart: unless-stopped
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "test ! -e /recordings/.image-layer-recording-root-marker && test -d /recordings && test -w /recordings && test -x /usr/bin/ffmpeg && test -x /usr/bin/ffprobe && ffmpeg -hide_banner -encoders 2>/dev/null | grep -Eq '[[:space:]]libx264[[:space:]]' && ffmpeg -hide_banner -encoders 2>/dev/null | grep -Eq '[[:space:]]aac[[:space:]]' && ffmpeg -hide_banner -muxers 2>/dev/null | grep -Eq '[[:space:]]E[[:space:]]mp4[[:space:]]' && ffprobe -version >/dev/null 2>&1 && available_kb=$$(df -Pk /recordings | awk 'NR==2 {print $$4}') && test \"$$available_kb\" -ge \"$$((RECORDING_MIN_FREE_BYTES / 1024))\" && probe=$$(mktemp /recordings/.healthcheck.XXXXXX) && printf ready > \"$$probe\" && sync -f \"$$probe\" && mv \"$$probe\" \"$$probe.renamed\" && test \"$$(cat \"$$probe.renamed\")\" = ready && rm -f \"$$probe.renamed\" && grep -azq '/app/bin/central_speech_recognizer' /proc/*/cmdline && grep -azq '/app/bin/command_parser' /proc/*/cmdline && grep -azq '/app/bin/media_recorder' /proc/*/cmdline && grep -azq '/app/bin/orchestra_zenoh_bridge' /proc/*/cmdline && grep -azq '/app/bin/web_bridge' /proc/*/cmdline",
+          "test ! -e /recordings/.image-layer-recording-root-marker && test -d /recordings && test -w /recordings && test -x /usr/bin/ffmpeg && test -x /usr/bin/ffprobe && ffmpeg -hide_banner -encoders 2>/dev/null | grep -Eq '[[:space:]]libx264[[:space:]]' && ffmpeg -hide_banner -encoders 2>/dev/null | grep -Eq '[[:space:]]aac[[:space:]]' && ffmpeg -hide_banner -muxers 2>/dev/null | grep -Eq '[[:space:]]E[[:space:]]mp4[[:space:]]' && ffprobe -version >/dev/null 2>&1 && available_kb=$$(df -Pk /recordings | awk 'NR==2 {print $$4}') && test \"$$available_kb\" -ge \"$$((RECORDING_MIN_FREE_BYTES / 1024))\" && probe=$$(mktemp /recordings/.healthcheck.XXXXXX) && printf ready > \"$$probe\" && sync -f \"$$probe\" && mv \"$$probe\" \"$$probe.renamed\" && test \"$$(cat \"$$probe.renamed\")\" = ready && rm -f \"$$probe.renamed\" && grep -azq '/app/bin/central_speech_recognizer' /proc/*/cmdline && grep -azq '/app/bin/command_parser' /proc/*/cmdline && grep -azq '/app/bin/media_recorder' /proc/*/cmdline && grep -azq '/app/bin/orchestra_zenoh_bridge' /proc/*/cmdline && grep -azq '/app/bin/web_bridge' /proc/*/cmdline && { test \"$$RECORDING_SCHEDULER_ENABLED\" != true || grep -azq '/app/bin/recording_scheduler' /proc/*/cmdline; }",
         ]
       interval: 30s
       timeout: 10s
