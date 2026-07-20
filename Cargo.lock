@@ -5267,6 +5267,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "recording_scheduler"
+version = "0.1.0"
+dependencies = [
+ "bson",
+ "chrono",
+ "chrono-tz",
+ "dora-node-api",
+ "eyre",
+ "futures-util",
+ "mongodb",
+ "robo_rover_lib",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"

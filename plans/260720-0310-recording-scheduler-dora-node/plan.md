@@ -20,7 +20,7 @@ Add `orchestra/recording_scheduler` as durable schedule/occurrence authority. Ke
 | # | Phase | Status | Progress | Effort | Link |
 |---|---|---|---:|---:|---|
 | 1 | Contracts and decision freeze | Done | 100% | 7h | [phase-01](./phase-01-contracts-and-decision-freeze.md) |
-| 2 | Scheduler core, recurrence, persistence | Pending | 0% | 14h | [phase-02](./phase-02-scheduler-core-recurrence-and-persistence.md) |
+| 2 | Scheduler core, recurrence, persistence | Done | 100% | 14h | [phase-02](./phase-02-scheduler-core-recurrence-and-persistence.md) |
 | 3 | Web coordinator and recorder reconciliation | Pending | 0% | 14h | [phase-03](./phase-03-web-bridge-coordinator-and-recorder-reconciliation.md) |
 | 4 | Dora, container, operations integration | Pending | 0% | 7h | [phase-04](./phase-04-dora-container-and-operational-integration.md) |
 | 5 | Scheduler UI and client state | Pending | 0% | 9h | [phase-05](./phase-05-scheduler-ui-and-client-state.md) |
@@ -38,6 +38,7 @@ Add `orchestra/recording_scheduler` as durable schedule/occurrence authority. Ke
 ## Completion Log
 
 - **2026-07-20 13:40 +07 (UTC+0700):** Phase 1 approved and complete. Version-1 Rust and TypeScript contracts, validation, deterministic IDs, and canonical fixtures are in place; the review's fixture path/type validation follow-up is assigned to Phase 2/CI.
+- **2026-07-20 15:34 +07 (UTC+0700):** Phase 2 user-approved finalization. The scheduler crate, recurrence/state/persistence path, reconciliation barrier, and local Mongo verification are complete for this phase. Carry forward the review risks: crash-boundary state/group/outbox recovery; bridging-union and directory coalescing; outbox source-of-truth replay; and update/delete mutation lifecycle.
 
 ## Frozen Architecture
 

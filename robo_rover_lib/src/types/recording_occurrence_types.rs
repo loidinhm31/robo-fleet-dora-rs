@@ -87,6 +87,8 @@ pub struct RecordingOccurrenceError {
 /// Intent sent only to the web-bridge coordinator, never to a rover or FFmpeg node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduledRecordingIntent {
+    /// Deterministic per-action identity for stale-feedback rejection.
+    pub intent_id: String,
     pub occurrence_id: String,
     pub group_id: String,
     pub generation: u64,
@@ -107,6 +109,8 @@ pub enum ScheduledRecordingIntentAction {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordingCoordinatorFeedback {
+    /// Echoes the scheduler intent ID; browser payloads never carry this field.
+    pub intent_id: String,
     pub occurrence_id: String,
     pub generation: u64,
     pub accepted: bool,
@@ -155,6 +159,19 @@ pub fn occurrence_id(
 pub fn scheduled_start_request_id(occurrence_id: &str) -> Result<String, String> {
     let occurrence = Uuid::parse_str(occurrence_id).map_err(|_| "invalid occurrence_id")?;
     Ok(Uuid::new_v5(&occurrence, b"recording-start").to_string())
+}
+
+pub fn scheduled_intent_id(
+    occurrence_id: &str,
+    generation: u64,
+    action: ScheduledRecordingIntentAction,
+) -> Result<String, String> {
+    let occurrence = Uuid::parse_str(occurrence_id).map_err(|_| "invalid occurrence_id")?;
+    let action = match action {
+        ScheduledRecordingIntentAction::Acquire => "acquire",
+        ScheduledRecordingIntentAction::Release => "release",
+    };
+    Ok(Uuid::new_v5(&occurrence, format!("{generation}:{action}").as_bytes()).to_string())
 }
 
 /// Per-rover overlap groups are stable across scheduler restarts for one union-window start.
