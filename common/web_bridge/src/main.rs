@@ -7,18 +7,20 @@ use eyre::Result;
 use robo_rover_lib::types::{
     ActiveRoversStatus, DetectionFrame, FleetSelectCommand, FleetStatus, FleetSubscriptionCommand,
     RecordingClipQuery, RecordingDeleteRequest, RecordingDeleteResult,
-    RecordingPlaybackTicketRequest, RecordingSessionAction, RecordingSessionCommand,
-    RecordingSessionState, SpeechTranscription, SttStatus, SystemMetrics, TrackingCommand,
-    TrackingTelemetry,
+    RecordingPlaybackTicketRequest, RecordingScheduleCommandResult, RecordingScheduleSnapshot,
+    RecordingSessionAction, RecordingSessionCommand, RecordingSessionState, SpeechTranscription,
+    SttStatus, SystemMetrics, TrackingCommand, TrackingTelemetry,
 };
 use robo_rover_lib::{
     capture_age_ms, init_tracing, record_capture_age, ArmCommand, ArmCommandWithMetadata,
     AudioAction, AudioControl, AudioFrameMetadata, AudioFrameSequenceTracker, CameraAction,
     CameraControl, CommandMetadata, CommandPriority, FrameSequenceTracker, InputSource,
-    MetricWindow, PcmSampleFormat, RecordingClipQueryResult, RecordingReasonCode,
+    MetricWindow, PcmSampleFormat, RecordingClipQueryResult, RecordingCoordinatorFeedback,
+    RecordingReasonCode, RecordingReconciliationRequest, RecordingReconciliationSnapshot,
     RecordingSessionCommandResult, RecordingSessionStatus, RoverCommand, RoverCommandWithMetadata,
-    StreamControl, TargetedMediaControl, TtsAckState, TtsCommand, TtsCommandAck, TtsCommandResult,
-    TtsConfigState, TtsConfigUpdate, TtsLanguage, TtsRuntimeConfig, VoiceReasonCode, VoiceStatus,
+    ScheduledRecordingIntent, StreamControl, TargetedMediaControl, TtsAckState, TtsCommand,
+    TtsCommandAck, TtsCommandResult, TtsConfigState, TtsConfigUpdate, TtsLanguage,
+    TtsRuntimeConfig, VoiceReasonCode, VoiceStatus,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -53,10 +55,23 @@ use audio_counters::AudioDeliveryCounters;
 mod recording_access;
 #[path = "recording-playback.rs"]
 mod recording_playback;
+#[path = "recording-schedule-feedback-spool.rs"]
+mod recording_schedule_feedback_spool;
+#[path = "recording-schedule-gateway.rs"]
+mod recording_schedule_gateway;
+#[path = "recording-schedule-queues.rs"]
+mod recording_schedule_queues;
 #[path = "recording-socket.rs"]
 mod recording_socket;
+#[path = "scheduled-recording-coordinator.rs"]
+mod scheduled_recording_coordinator;
 use recording_access::RecordingAccess;
-use recording_socket::{PendingRequest, RecordingState, RequestKind};
+use recording_schedule_feedback_spool::RecordingScheduleFeedbackSpool;
+use recording_schedule_queues::RecordingScheduleState;
+use recording_socket::{
+    PendingRequest, RecordingState, RequestKind, ScheduledCommandGuard,
+};
+use scheduled_recording_coordinator::{CoordinatorEffect, ScheduledRecordingCoordinator};
 
 #[path = "media-demand-registry.rs"]
 mod media_demand_registry;
@@ -524,11 +539,14 @@ struct SharedState {
     /// client disconnects. See `audio_counters::AudioDeliveryCounters`.
     pub audio_counters: Arc<AudioDeliveryCounters>,
     pub recording: RecordingState,
+    pub schedule: RecordingScheduleState,
+    pub schedule_feedback_spool: RecordingScheduleFeedbackSpool,
+    pub scheduled_coordinator: Arc<Mutex<ScheduledRecordingCoordinator>>,
     pub recording_access: Arc<RecordingAccess>,
 }
 
 impl SharedState {
-    fn new() -> Self {
+    fn new(schedule_feedback_spool: RecordingScheduleFeedbackSpool) -> Self {
         // Read fleet configuration from environment variables
         let selected_entity =
             env::var("SELECTED_ENTITY_ID").unwrap_or_else(|_| "rover-kiwi".to_string());
@@ -586,6 +604,9 @@ impl SharedState {
             voice_admission: Arc::new(Mutex::new(VoiceAdmissionState::default())),
             audio_counters: Arc::new(AudioDeliveryCounters::new()),
             recording: RecordingState::from_env(),
+            schedule: RecordingScheduleState::from_env(),
+            schedule_feedback_spool,
+            scheduled_coordinator: Arc::new(Mutex::new(ScheduledRecordingCoordinator::default())),
             recording_access: Arc::new(RecordingAccess::from_env()),
         }
     }
@@ -780,6 +801,7 @@ fn setup_socketio(
         for status in shared_state.recording.status_snapshot() {
             emit_recording_event(&socket, "recording_session_status", status);
         }
+        recording_schedule_gateway::register(&socket, &socket_id, shared_state.clone());
 
         let shared_state_clone = shared_state.clone();
         let socket_id_clone = socket_id.clone();
@@ -832,7 +854,12 @@ fn setup_socketio(
                             );
                             return;
                         }
-                        if shared_state_clone.recording.active_entities.lock().ok().is_some_and(|active| {
+                        let scheduled_active = shared_state_clone
+                            .scheduled_coordinator
+                            .lock()
+                            .map(|coordinator| coordinator.has_scheduled_entity(entity_id))
+                            .unwrap_or(false);
+                        if !scheduled_active && shared_state_clone.recording.active_entities.lock().ok().is_some_and(|active| {
                             active.values().any(|active_entity| active_entity == entity_id)
                         }) {
                             emit_recording_event(
@@ -857,10 +884,19 @@ fn setup_socketio(
                             );
                             return;
                         }
+                        // Admission precedes suppression mutation. A full/manual-rejected
+                        // command therefore cannot alter the scheduled group's ownership.
+                        let deferred = shared_state_clone
+                            .scheduled_coordinator
+                            .lock()
+                            .ok()
+                            .and_then(|mut coordinator| coordinator.defer_manual_start(command.clone()));
+                        if let Some(effects) = deferred {
+                            apply_scheduled_effects(&shared_state_clone, effects);
+                            return;
+                        }
                         if enqueue_recording_demand(&shared_state_clone, entity_id, &consumer_id, true).is_err()
-                            || shared_state_clone.recording.commands.lock().map(|mut queue| {
-                                queue.push_back(command.clone());
-                            }).is_err()
+                            || shared_state_clone.recording.enqueue_command(command.clone()).is_err()
                         {
                             shared_state_clone.recording.take(&request_id);
                             let _ = enqueue_recording_demand(&shared_state_clone, entity_id, &consumer_id, false);
@@ -893,9 +929,16 @@ fn setup_socketio(
                             );
                             return;
                         }
-                        if shared_state_clone.recording.commands.lock().map(|mut queue| {
-                            queue.push_back(command.clone());
-                        }).is_err() {
+                        let scheduled_stop = shared_state_clone
+                            .scheduled_coordinator
+                            .lock()
+                            .ok()
+                            .and_then(|mut coordinator| coordinator.suppress_manual_stop(command.clone()));
+                        if let Some(effects) = scheduled_stop {
+                            apply_scheduled_effects(&shared_state_clone, effects);
+                            return;
+                        }
+                        if shared_state_clone.recording.enqueue_command(command.clone()).is_err() {
                             shared_state_clone.recording.take(&request_id);
                             emit_recording_event(
                                 &socket,
@@ -1900,6 +1943,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     security::ensure_indexes(&user_collection).await?;
     security::seed_admin_user(&user_collection).await?;
+    let schedule_feedback_spool = RecordingScheduleFeedbackSpool::from_database(db.clone());
+    schedule_feedback_spool.ensure_indexes().await?;
 
     // Default credential guard
     let allow_default =
@@ -1956,9 +2001,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let recording_clip_query_output = DataId::from("recording_clip_query".to_owned());
     let recording_playback_ticket_output = DataId::from("recording_playback_ticket".to_owned());
     let recording_delete_output = DataId::from("recording_delete".to_owned());
+    let recording_schedule_command_output = DataId::from("recording_schedule_command".to_owned());
+    let recording_schedule_query_output = DataId::from("recording_schedule_query".to_owned());
+    let scheduler_feedback_output =
+        DataId::from("recording_scheduler_recorder_feedback".to_owned());
+    let reconciliation_request_output = DataId::from("recording_reconciliation_request".to_owned());
+    let reconciliation_snapshot_output =
+        DataId::from("recording_reconciliation_snapshot".to_owned());
 
     let node_handle = Arc::new(Mutex::new(node));
-    let shared_state = SharedState::new();
+    let shared_state = SharedState::new(schedule_feedback_spool);
     let (io, layer) = setup_socketio(
         shared_state.clone(),
         node_handle.clone(),
@@ -2202,6 +2254,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node_clone_stt = node_clone_arm.clone();
     let node_clone_fleet_sub = node_clone_arm.clone();
     let node_clone_recording = node_clone_arm.clone();
+    let node_clone_schedule = node_clone_arm.clone();
     let state_clone_arm = shared_state.clone();
 
     let state_clone_recording = shared_state.clone();
@@ -2209,13 +2262,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             let next = state_clone_recording
                 .recording
-                .commands
-                .lock()
-                .ok()
-                .and_then(|mut queue| {
-                    queue
-                        .pop_front()
-                        .and_then(|command| serde_json::to_vec(&command).ok())
+                .next_command()
+                .and_then(|queued| {
+                    if let Some(guard) = queued.scheduled_guard.as_ref() {
+                        let current = state_clone_recording
+                            .scheduled_coordinator
+                            .lock()
+                            .map(|coordinator| {
+                                coordinator.has_current_scheduled_start(
+                                    &guard.group_id,
+                                    guard.generation,
+                                    &queued.command.request_id,
+                                )
+                            })
+                            .unwrap_or(false);
+                        if !current || guard.is_expired_at(unix_now_ms()) {
+                            let _ = enqueue_recording_demand(
+                                &state_clone_recording,
+                                "",
+                                &guard.consumer_id,
+                                false,
+                            );
+                            tracing::info!(
+                                group_id = guard.group_id,
+                                generation = guard.generation,
+                                "discarded stale scheduled recorder command"
+                            );
+                            return None;
+                        }
+                    }
+                    serde_json::to_vec(&queued.command)
+                        .ok()
                         .map(|bytes| (recording_session_command_output.clone(), bytes))
                 })
                 .or_else(|| {
@@ -2262,6 +2339,99 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Ok(mut node_guard) = node_clone_recording.lock() {
                     let _ = node_guard.send_output(output, Default::default(), arrow_data);
                 }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+
+    // Schedule requests retain their bounded in-process admission queue. Recorder
+    // feedback is first persisted in Mongo, so a recorder burst cannot starve
+    // CRUD/reconciliation work or grow an in-memory retry ledger.
+    let state_clone_schedule = shared_state.clone();
+    let _schedule_processor = tokio::spawn(async move {
+        // Keep a dequeued feedback item locally until Dora accepts it. This is
+        // bounded to one item and prevents a transient output failure from
+        // converting terminal recorder evidence into a dropped scheduler reply.
+        let mut pending_feedback = None;
+        let mut prefer_feedback = true;
+        loop {
+            for (request_id, pending) in state_clone_schedule.schedule.expire() {
+                tracing::warn!(
+                    request_id,
+                    socket_id = pending.socket_id,
+                    kind = ?pending.kind,
+                    "recording schedule request timed out"
+                );
+            }
+            let mut feedback = if let Some(feedback) = pending_feedback.take() {
+                Some(feedback)
+            } else {
+                match state_clone_schedule.schedule_feedback_spool.next().await {
+                    Ok(feedback) => feedback,
+                    Err(error) => {
+                        tracing::error!(%error, "recording scheduler feedback spool unavailable; pausing schedule delivery");
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                }
+            };
+            let request = state_clone_schedule
+                .schedule
+                .next_command()
+                .and_then(|value| serde_json::to_vec(&value).ok())
+                .map(|bytes| (recording_schedule_command_output.clone(), bytes, false))
+                .or_else(|| {
+                    state_clone_schedule
+                        .schedule
+                        .next_query()
+                        .and_then(|value| serde_json::to_vec(&value).ok())
+                        .map(|bytes| (recording_schedule_query_output.clone(), bytes, false))
+                });
+            let next = if let Some(value) = feedback.as_ref().filter(|_| prefer_feedback || request.is_none()) {
+                serde_json::to_vec(&value.feedback)
+                    .ok()
+                .map(|bytes| (scheduler_feedback_output.clone(), bytes, true))
+            } else {
+                if feedback.is_some() {
+                    pending_feedback = feedback.take();
+                }
+                request
+            };
+            if let Some((output, bytes, is_feedback)) = next {
+                let arrow_data = BinaryArray::from_vec(vec![bytes.as_slice()]);
+                let send_result = node_clone_schedule
+                    .lock()
+                    .map_err(|_| "Dora node unavailable".to_owned())
+                    .and_then(|mut node| {
+                        node.send_output(output, Default::default(), arrow_data)
+                            .map_err(|error| error.to_string())
+                    });
+                let sent = send_result.is_ok();
+                if let Err(error) = send_result {
+                    tracing::warn!(%error, "failed to forward recording schedule message");
+                    if is_feedback {
+                        pending_feedback = feedback;
+                    }
+                } else if is_feedback {
+                    let Some(feedback) = feedback.take() else {
+                        unreachable!("feedback output requires a spool entry")
+                    };
+                    if let Err(error) = state_clone_schedule
+                        .schedule_feedback_spool
+                        .acknowledge(&feedback.id)
+                        .await
+                    {
+                        tracing::warn!(%error, "scheduler feedback delivered but spool acknowledgement failed");
+                        pending_feedback = Some(feedback);
+                    }
+                }
+                if sent {
+                    prefer_feedback = !is_feedback;
+                }
+            } else if feedback.is_some() {
+                // Serialization of a typed protocol value should not fail. Retain
+                // it defensively rather than silently losing terminal feedback.
+                pending_feedback = feedback;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -3460,6 +3630,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     tracing::warn!(%error, "rejected invalid recording command result");
                                     continue;
                                 }
+                                let scheduled_effects = state_for_video
+                                    .scheduled_coordinator
+                                    .lock()
+                                    .map(|mut coordinator| coordinator.recorder_result(&result))
+                                    .unwrap_or_default();
+                                apply_scheduled_effects(&state_for_video, scheduled_effects);
                                 if !result.accepted {
                                     release_recording_demand(&state_for_video, &result.request_id);
                                 }
@@ -3526,6 +3702,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 let status_changed =
                                     state_for_video.recording.cache_status(status.clone());
+                                let scheduled_effects = state_for_video
+                                    .scheduled_coordinator
+                                    .lock()
+                                    .map(|mut coordinator| {
+                                        coordinator
+                                            .recorder_status(&status.recording_id, status.state)
+                                    })
+                                    .unwrap_or_default();
+                                apply_scheduled_effects(&state_for_video, scheduled_effects);
                                 if status_changed {
                                     if let Some(io) =
                                         io_for_video.lock().ok().and_then(|io| io.clone())
@@ -3540,6 +3725,166 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 }
+                            }
+                        }
+                    }
+                    "scheduled_recording_intent" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                match serde_json::from_slice::<ScheduledRecordingIntent>(
+                                    binary_array.value(0),
+                                ) {
+                                    Ok(intent) => {
+                                        let effects = state_for_video
+                                            .scheduled_coordinator
+                                            .lock()
+                                            .map(|mut coordinator| coordinator.apply(intent))
+                                            .unwrap_or_default();
+                                        apply_scheduled_effects(&state_for_video, effects);
+                                    }
+                                    Err(error) => {
+                                        tracing::warn!(%error, "rejected malformed scheduled recording intent")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "recording_schedule_command_result" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                let Ok(result) =
+                                    serde_json::from_slice::<RecordingScheduleCommandResult>(
+                                        binary_array.value(0),
+                                    )
+                                else {
+                                    continue;
+                                };
+                                if result.validate().is_err() {
+                                    continue;
+                                }
+                                if let Some(pending) =
+                                    state_for_video.schedule.take(&result.request_id)
+                                {
+                                    if let Some(io) =
+                                        io_for_video.lock().ok().and_then(|io| io.clone())
+                                    {
+                                        emit_recording_to_owner(
+                                            &io,
+                                            &state_for_video,
+                                            &pending.socket_id,
+                                            "recording_schedule_command_result",
+                                            serde_json::to_value(result).unwrap_or(Value::Null),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "recording_schedule_snapshot" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                let Ok(snapshot) =
+                                    serde_json::from_slice::<RecordingScheduleSnapshot>(
+                                        binary_array.value(0),
+                                    )
+                                else {
+                                    continue;
+                                };
+                                if snapshot.validate().is_err() {
+                                    continue;
+                                }
+                                if let Some(pending) =
+                                    state_for_video.schedule.take(&snapshot.request_id)
+                                {
+                                    if let Some(io) =
+                                        io_for_video.lock().ok().and_then(|io| io.clone())
+                                    {
+                                        emit_recording_to_owner(
+                                            &io,
+                                            &state_for_video,
+                                            &pending.socket_id,
+                                            "recording_schedule_snapshot",
+                                            serde_json::to_value(snapshot).unwrap_or(Value::Null),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "recording_reconciliation_request" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                let Ok(request) =
+                                    serde_json::from_slice::<RecordingReconciliationRequest>(
+                                        binary_array.value(0),
+                                    )
+                                else {
+                                    continue;
+                                };
+                                if request.validate().is_ok() {
+                                    if let Ok(bytes) = serde_json::to_vec(&request) {
+                                        if let Ok(mut node) = node_handle.lock() {
+                                            let _ = node.send_output(
+                                                reconciliation_request_output.clone(),
+                                                Default::default(),
+                                                BinaryArray::from_vec(vec![bytes.as_slice()]),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "recording_reconciliation_snapshot" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                let Ok(snapshot) =
+                                    serde_json::from_slice::<RecordingReconciliationSnapshot>(
+                                        binary_array.value(0),
+                                    )
+                                else {
+                                    continue;
+                                };
+                                if snapshot.validate().is_ok() {
+                                    let effects = state_for_video
+                                        .scheduled_coordinator
+                                        .lock()
+                                        .map(|mut coordinator| {
+                                            coordinator.reconcile_snapshot(&snapshot)
+                                        })
+                                        .unwrap_or_default();
+                                    apply_scheduled_effects(&state_for_video, effects);
+                                    if let Ok(bytes) = serde_json::to_vec(&snapshot) {
+                                        if let Ok(mut node) = node_handle.lock() {
+                                            let _ = node.send_output(
+                                                reconciliation_snapshot_output.clone(),
+                                                Default::default(),
+                                                BinaryArray::from_vec(vec![bytes.as_slice()]),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "recording_scheduler_manual_suppression_ack" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                let Ok(feedback) =
+                                    serde_json::from_slice::<RecordingCoordinatorFeedback>(
+                                        binary_array.value(0),
+                                    )
+                                else {
+                                    continue;
+                                };
+                                let effects = state_for_video
+                                    .scheduled_coordinator
+                                    .lock()
+                                    .map(|mut coordinator| {
+                                        coordinator.manual_suppression_persisted(&feedback)
+                                    })
+                                    .unwrap_or_default();
+                                apply_scheduled_effects(&state_for_video, effects);
                             }
                         }
                     }
@@ -4209,6 +4554,15 @@ fn recording_consumer_id(recording_id: &str) -> String {
     format!("recording:{recording_id}")
 }
 
+fn unix_now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(i64::MAX)
+}
+
 fn enqueue_recording_demand(
     shared_state: &SharedState,
     entity_id: &str,
@@ -4257,6 +4611,153 @@ fn release_recording_demand(shared_state: &SharedState, recording_id: &str) {
         .map(|mut registry| registry.release_consumer(&recording_consumer_id(recording_id)))
         .unwrap_or_default();
     enqueue_media_transitions(&shared_state.targeted_media_control_queue, transitions);
+}
+
+fn apply_scheduled_effects(shared_state: &SharedState, effects: Vec<CoordinatorEffect>) {
+    for effect in effects {
+        match effect {
+            CoordinatorEffect::StartScheduled {
+                group_id,
+                generation,
+                entity_id,
+                consumer_id,
+                planned_end_ms,
+                command,
+            } => {
+                let failure = if !is_target_active(shared_state, &entity_id) {
+                    Some("target rover is not active")
+                } else if enqueue_recording_demand(shared_state, &entity_id, &consumer_id, true)
+                    .is_err()
+                {
+                    Some("scheduled media demand unavailable")
+                } else if shared_state
+                    .recording
+                    .enqueue_scheduled_command(
+                        command,
+                        ScheduledCommandGuard {
+                            group_id: group_id.clone(),
+                            generation,
+                            consumer_id: consumer_id.clone(),
+                            planned_end_ms,
+                        },
+                    )
+                    .is_err()
+                {
+                    // The scheduled consumer is generation-scoped, so this rollback
+                    // cannot release a browser/manual recording hold.
+                    let _ = enqueue_recording_demand(shared_state, &entity_id, &consumer_id, false);
+                    Some("recording command queue is full")
+                } else {
+                    shared_state
+                        .scheduled_coordinator
+                        .lock()
+                        .map(|mut coordinator| {
+                            coordinator.scheduled_start_enqueued(&group_id, generation)
+                        })
+                        .ok();
+                    None
+                };
+                if let Some(detail) = failure {
+                    let effects = shared_state
+                        .scheduled_coordinator
+                        .lock()
+                        .map(|mut coordinator| {
+                            coordinator
+                                .scheduled_start_enqueue_failed(&group_id, generation, detail)
+                        })
+                        .unwrap_or_default();
+                    apply_scheduled_effects(shared_state, effects);
+                }
+            }
+            CoordinatorEffect::AcquireMedia {
+                entity_id,
+                consumer_id,
+            } => {
+                if let Err(error) =
+                    enqueue_recording_demand(shared_state, &entity_id, &consumer_id, true)
+                {
+                    tracing::warn!(%error, entity_id, "failed to acquire scheduled recording demand");
+                }
+            }
+            CoordinatorEffect::ReleaseMedia { consumer_id } => {
+                if let Err(error) = enqueue_recording_demand(shared_state, "", &consumer_id, false)
+                {
+                    tracing::warn!(%error, "failed to release scheduled recording demand");
+                }
+            }
+            CoordinatorEffect::RecorderCommand(command) => {
+                let durable_manual_stop = shared_state
+                    .scheduled_coordinator
+                    .lock()
+                    .map(|coordinator| coordinator.is_durable_manual_stop(&command))
+                    .unwrap_or(false);
+                if durable_manual_stop {
+                    // Scheduler suppression is already durable. Wait for the
+                    // bounded recorder queue to make room instead of dropping
+                    // the exact Stop and diverging from that durable state.
+                    while shared_state
+                        .recording
+                        .enqueue_command(command.clone())
+                        .is_err()
+                    {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                } else if shared_state
+                    .recording
+                    .enqueue_command(command.clone())
+                    .is_err()
+                {
+                    tracing::warn!("recording command queue unavailable for scheduled intent");
+                    let effects = shared_state
+                        .scheduled_coordinator
+                        .lock()
+                        .map(|mut coordinator| {
+                            coordinator.recorder_command_enqueue_failed(&command)
+                        })
+                        .unwrap_or_default();
+                    apply_scheduled_effects(shared_state, effects);
+                }
+            }
+            CoordinatorEffect::ManualRecorderCommand(command) => {
+                let RecordingSessionAction::Start { entity_id, .. } = &command.action else {
+                    continue;
+                };
+                let entity_id = entity_id.clone();
+                let consumer_id = recording_consumer_id(&command.request_id);
+                if enqueue_recording_demand(shared_state, &entity_id, &consumer_id, true).is_err() {
+                    tracing::warn!(
+                        entity_id,
+                        "failed to acquire manual replacement media demand"
+                    );
+                    continue;
+                }
+                if shared_state.recording.enqueue_command(command).is_ok() {
+                    // The manual session begins only after terminal scheduled status
+                    // released the generation-scoped scheduled consumer.
+                } else {
+                    let _ = enqueue_recording_demand(shared_state, &entity_id, &consumer_id, false);
+                    tracing::warn!("recording command queue unavailable for manual replacement");
+                }
+            }
+            CoordinatorEffect::Feedback(feedback) => {
+                let _ = shared_state
+                    .schedule_feedback_spool
+                    .persist_blocking(feedback);
+            }
+            CoordinatorEffect::InvariantViolation { entity_id } => {
+                tracing::error!(
+                    entity_id,
+                    "recorder snapshot has multiple active sessions; refusing scheduled adoption"
+                );
+            }
+            CoordinatorEffect::ManualStartDeferred { entity_id } => {
+                tracing::info!(
+                    entity_id,
+                    "manual start deferred until scheduled recording finalizes"
+                );
+            }
+        }
+    }
 }
 
 fn rejected_recording_command(

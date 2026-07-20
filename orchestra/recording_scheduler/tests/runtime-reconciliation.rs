@@ -6,9 +6,10 @@ use recording_scheduler::{
     runtime::SchedulerRuntime,
 };
 use robo_rover_lib::{
-    scheduled_intent_id, RecordingCoordinatorFeedback, RecordingLocalStart,
+    scheduled_intent_id, RecordingAttemptState, RecordingCoordinatorFeedback, RecordingLocalStart,
     RecordingOccurrenceState, RecordingSchedule, RecordingScheduleDefinition,
-    RecordingScheduleReasonCode, RecordingScheduleRecurrence, ScheduledRecordingIntentAction,
+    RecordingScheduleReasonCode, RecordingScheduleRecurrence, RecordingSessionState,
+    ScheduledRecordingIntentAction,
 };
 
 #[test]
@@ -38,6 +39,7 @@ fn reconciliation_blocks_then_deduplicates_transient_feedback() {
         group_id: runtime.occurrences[&due].group_id.clone(),
         recording_id: None,
         recorder_state: None,
+        manual_suppression: false,
         reason_code: Some(RecordingScheduleReasonCode::Unavailable),
         detail: None,
     };
@@ -71,6 +73,161 @@ fn reconciliation_blocks_then_deduplicates_transient_feedback() {
         ),
         scheduled_intent_id(&due, generation, ScheduledRecordingIntentAction::Acquire)
     );
+}
+
+#[test]
+fn terminal_recorder_failure_marks_the_started_clip_partial_and_occurrence_failed() {
+    let now_ms = epoch(2026, 1, 1, 0, 0);
+    let clock = FakeClock::new(now_ms);
+    let mut runtime = SchedulerRuntime::new(clock.clone());
+    runtime
+        .materialize(&schedule(), now_ms + 2 * 60 * 60 * 1_000)
+        .unwrap();
+    runtime.complete_reconciliation();
+    clock.advance_ms(60 * 60 * 1_000);
+    let occurrence_id = runtime.due().pop().unwrap();
+    let start = runtime.begin_start(&occurrence_id).unwrap();
+    let start_intent_id = start.intent_id.unwrap();
+    assert!(runtime.apply_feedback(feedback(
+        start_intent_id.clone(),
+        occurrence_id.clone(),
+        start.generation,
+        true,
+        true,
+        false,
+        Some("recording-1"),
+    )));
+    let group_id = runtime.occurrences[&occurrence_id].group_id.clone();
+    assert!(runtime.apply_feedback(RecordingCoordinatorFeedback {
+        intent_id: start_intent_id,
+        occurrence_id: occurrence_id.clone(),
+        generation: start.generation,
+        accepted: false,
+        applied: false,
+        retryable: false,
+        group_id,
+        recording_id: Some("recording-1".into()),
+        recorder_state: Some(RecordingSessionState::Failed),
+        manual_suppression: false,
+        reason_code: Some(RecordingScheduleReasonCode::Unavailable),
+        detail: Some("encoder exited".into()),
+    }));
+    assert_eq!(
+        runtime.occurrences[&occurrence_id].state,
+        RecordingOccurrenceState::Failed
+    );
+    assert_eq!(
+        runtime.occurrences[&occurrence_id]
+            .attempts
+            .last()
+            .unwrap()
+            .state,
+        RecordingAttemptState::Partial
+    );
+}
+
+#[test]
+fn manual_suppression_is_durable_and_removes_the_live_group_owner() {
+    let now_ms = epoch(2026, 1, 1, 0, 0);
+    let clock = FakeClock::new(now_ms);
+    let mut runtime = SchedulerRuntime::new(clock.clone());
+    runtime
+        .materialize(&schedule(), now_ms + 2 * 60 * 60 * 1_000)
+        .unwrap();
+    runtime.complete_reconciliation();
+    clock.advance_ms(60 * 60 * 1_000);
+    let occurrence_id = runtime.due().pop().unwrap();
+    let start = runtime.begin_start(&occurrence_id).unwrap();
+    let intent_id = start.intent_id.unwrap();
+    assert!(runtime.apply_feedback(feedback(
+        intent_id.clone(),
+        occurrence_id.clone(),
+        start.generation,
+        true,
+        true,
+        false,
+        Some("recording-1"),
+    )));
+    let mut manual = feedback(
+        intent_id,
+        occurrence_id.clone(),
+        start.generation,
+        true,
+        true,
+        false,
+        None,
+    );
+    manual.manual_suppression = true;
+    assert!(runtime.apply_feedback(manual));
+    assert_eq!(
+        runtime.occurrences[&occurrence_id].state,
+        RecordingOccurrenceState::Suppressed
+    );
+    assert!(runtime.occurrences[&occurrence_id].suppressed_by_manual);
+    let group_id = runtime.occurrences[&occurrence_id]
+        .group_id
+        .as_ref()
+        .unwrap();
+    assert!(runtime.groups[group_id].owner_ids.is_empty());
+}
+
+#[test]
+fn manual_suppression_terminalizes_every_owner_in_an_overlap_group() {
+    let now_ms = epoch(2026, 1, 1, 0, 0);
+    let clock = FakeClock::new(now_ms);
+    let mut runtime = SchedulerRuntime::new(clock.clone());
+    let first = schedule();
+    let mut second = schedule();
+    second.schedule_id = "00000000-0000-0000-0000-000000000201".into();
+    second.definition.recurrence = RecordingScheduleRecurrence::OneTime {
+        local_start: RecordingLocalStart {
+            date: "2026-01-01".into(),
+            time: "01:30".into(),
+            timezone: "UTC".into(),
+        },
+    };
+    runtime
+        .materialize(&first, now_ms + 4 * 60 * 60 * 1_000)
+        .unwrap();
+    runtime
+        .materialize(&second, now_ms + 4 * 60 * 60 * 1_000)
+        .unwrap();
+    runtime.complete_reconciliation();
+    clock.advance_ms(60 * 60 * 1_000);
+    let first_id = runtime.due().pop().unwrap();
+    let start = runtime.begin_start(&first_id).unwrap();
+    let start_id = start.intent_id.clone().unwrap();
+    clock.advance_ms(30 * 60 * 1_000);
+    let second_id = runtime.due().pop().unwrap();
+    assert!(runtime.begin_start(&second_id).unwrap().intent_id.is_none());
+    assert!(runtime.apply_feedback(feedback(
+        start_id.clone(),
+        first_id.clone(),
+        start.generation,
+        true,
+        true,
+        false,
+        Some("recording-1"),
+    )));
+    let mut manual = feedback(
+        start_id,
+        first_id.clone(),
+        start.generation,
+        true,
+        true,
+        false,
+        None,
+    );
+    manual.manual_suppression = true;
+    assert!(runtime.apply_feedback(manual));
+    for occurrence_id in [first_id, second_id] {
+        assert_eq!(
+            runtime.occurrences[&occurrence_id].state,
+            RecordingOccurrenceState::Suppressed
+        );
+        assert!(runtime.occurrences[&occurrence_id].suppressed_by_manual);
+    }
+    assert!(runtime.groups.values().next().unwrap().owner_ids.is_empty());
 }
 
 #[test]
@@ -456,6 +613,7 @@ fn feedback(
         group_id: None,
         recording_id: recording_id.map(str::to_owned),
         recorder_state: None,
+        manual_suppression: false,
         reason_code: retryable.then_some(RecordingScheduleReasonCode::Unavailable),
         detail: None,
     }

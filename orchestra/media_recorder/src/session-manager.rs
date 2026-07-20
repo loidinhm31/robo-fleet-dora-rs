@@ -5,8 +5,8 @@ use crate::frame_timeline::{AudioFrame, FrameTimeline, VideoFrame};
 use crate::path_resolver::PathResolver;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use robo_rover_lib::{
-    RecordingAudioCodec, RecordingClip, RecordingReasonCode, RecordingSessionState,
-    RecordingVideoCodec, RECORDING_PROTOCOL_VERSION,
+    RecordingAudioCodec, RecordingClip, RecordingReasonCode, RecordingReconciliationSession,
+    RecordingSessionState, RecordingVideoCodec, RECORDING_PROTOCOL_VERSION,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
@@ -47,6 +47,15 @@ impl SessionStatus {
             duration_ms: self.duration_ms,
             bytes_written: self.bytes_written,
             reason_code: self.reason_code,
+        }
+    }
+
+    pub fn reconciliation_session(&self) -> RecordingReconciliationSession {
+        RecordingReconciliationSession {
+            entity_id: self.entity_id.clone(),
+            start_request_id: self.request_id.clone(),
+            recording_id: self.recording_id.clone(),
+            state: self.state,
         }
     }
 }
@@ -704,9 +713,11 @@ fn available_bytes(path: &PathBuf) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{recording_timestamp_expression, BoundedInputs};
+    use super::{recording_timestamp_expression, BoundedInputs, SessionStatus};
     use crate::frame_timeline::{AudioFrame, VideoFrame};
-    use robo_rover_lib::{AudioFrameMetadata, PcmSampleFormat, VideoFrameMetadata};
+    use robo_rover_lib::{
+        AudioFrameMetadata, PcmSampleFormat, RecordingSessionState, VideoFrameMetadata,
+    };
     use uuid::Uuid;
 
     fn video(frame_id: u64) -> VideoFrame {
@@ -817,6 +828,24 @@ mod tests {
             super::Input::Audio(frame) => assert_eq!(frame.metadata.frame_id, 3),
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn reconciliation_session_preserves_recorder_owned_identity() {
+        let status = SessionStatus {
+            request_id: Uuid::new_v4().to_string(),
+            recording_id: Uuid::new_v4().to_string(),
+            entity_id: "rover-a".into(),
+            state: RecordingSessionState::Recording,
+            started_at_ms: Some(1),
+            duration_ms: 0,
+            bytes_written: 0,
+            reason_code: None,
+        };
+        let snapshot = status.reconciliation_session();
+        assert_eq!(snapshot.start_request_id, status.request_id);
+        assert_eq!(snapshot.recording_id, status.recording_id);
+        assert_eq!(snapshot.entity_id, "rover-a");
     }
 
     #[test]

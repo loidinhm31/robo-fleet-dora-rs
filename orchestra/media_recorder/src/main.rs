@@ -7,9 +7,9 @@ use eyre::Result;
 use robo_rover_lib::{
     init_tracing, AudioFrameMetadata, PcmSampleFormat, RecordingClipQuery,
     RecordingClipQueryResult, RecordingDeleteRequest, RecordingDeleteResult,
-    RecordingPlaybackTicketRequest, RecordingReasonCode, RecordingSessionAction,
-    RecordingSessionCommand, RecordingSessionCommandResult, VideoFrameMetadata,
-    RECORDING_PROTOCOL_VERSION,
+    RecordingPlaybackTicketRequest, RecordingReasonCode, RecordingReconciliationRequest,
+    RecordingReconciliationSnapshot, RecordingSessionAction, RecordingSessionCommand,
+    RecordingSessionCommandResult, VideoFrameMetadata, RECORDING_PROTOCOL_VERSION,
 };
 use std::convert::TryFrom;
 use std::time::Duration;
@@ -29,6 +29,7 @@ fn main() -> Result<()> {
     let clip_list_output = DataId::from("recording_clip_list_result".to_owned());
     let playback_lookup_output = DataId::from("recording_playback_clip_result".to_owned());
     let delete_output = DataId::from("recording_delete_result".to_owned());
+    let reconciliation_output = DataId::from("recording_reconciliation_snapshot".to_owned());
     tracing::info!("media recorder ready");
     while let Some(event) = events.recv_timeout(Duration::from_millis(100)) {
         for status in manager.reap() {
@@ -53,6 +54,12 @@ fn main() -> Result<()> {
                     handle_playback_lookup(&mut node, &playback_lookup_output, &manager, &*data)?
                 }
                 "recording_delete" => handle_delete(&mut node, &delete_output, &manager, &*data)?,
+                "recording_reconciliation_request" => handle_reconciliation_request(
+                    &mut node,
+                    &reconciliation_output,
+                    &mut manager,
+                    &*data,
+                )?,
                 "video_frame" => {
                     if let Ok((entity, frame)) = parse_video(&metadata.parameters, &*data) {
                         let _ = manager.push_video(&entity, frame);
@@ -73,6 +80,51 @@ fn main() -> Result<()> {
         send_json(&mut node, &status_output, &status.wire())?;
     }
     Ok(())
+}
+
+fn handle_reconciliation_request(
+    node: &mut DoraNode,
+    output: &DataId,
+    manager: &mut SessionManager,
+    data: &dyn Array,
+) -> Result<()> {
+    let bytes = match single_binary(data) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            tracing::warn!(%error, "invalid reconciliation request payload");
+            return Ok(());
+        }
+    };
+    let request: RecordingReconciliationRequest = match serde_json::from_slice(bytes) {
+        Ok(request) => request,
+        Err(error) => {
+            tracing::warn!(%error, "invalid reconciliation request");
+            return Ok(());
+        }
+    };
+    if let Err(error) = request.validate() {
+        tracing::warn!(%error, "rejected reconciliation request");
+        return Ok(());
+    }
+    let sessions = manager
+        .statuses()
+        .into_iter()
+        .filter(|status| {
+            request
+                .entity_id
+                .as_deref()
+                .is_none_or(|entity| entity == status.entity_id)
+        })
+        .map(|status| status.reconciliation_session())
+        .collect();
+    send_json(
+        node,
+        output,
+        &RecordingReconciliationSnapshot {
+            request_id: request.request_id,
+            sessions,
+        },
+    )
 }
 
 fn handle_delete(

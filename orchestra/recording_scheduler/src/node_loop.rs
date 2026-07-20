@@ -7,9 +7,9 @@ use dora_node_api::{
 };
 use eyre::Result;
 use robo_rover_lib::{
-    AuthenticatedRecordingScheduleCommand, RecordingCoordinatorFeedback,
-    RecordingReconciliationRequest, RecordingReconciliationSnapshot,
-    ScheduledRecordingIntentAction,
+    scheduled_intent_id, AuthenticatedRecordingScheduleCommand, RecordingCoordinatorFeedback,
+    RecordingReconciliationRequest, RecordingReconciliationSnapshot, RecordingScheduleQuery,
+    RecordingScheduleSnapshot, ScheduledRecordingIntentAction, RECORDING_SCHEDULE_PROTOCOL_VERSION,
 };
 
 use crate::{
@@ -38,8 +38,11 @@ pub fn run() -> Result<()> {
     let service = ScheduleService::new(SystemClock, config.clone(), repository.clone());
     let (mut node, mut events) = DoraNode::init_from_env()?;
     let result = DataId::from("recording_schedule_command_result".to_owned());
+    let snapshot_result = DataId::from("recording_schedule_snapshot".to_owned());
     let intent = DataId::from("scheduled_recording_intent".to_owned());
     let reconcile = DataId::from("recording_reconciliation_request".to_owned());
+    let manual_suppression_ack =
+        DataId::from("recording_scheduler_manual_suppression_ack".to_owned());
     let mut reconciliation_id = uuid::Uuid::new_v4().to_string();
     send(
         &mut node,
@@ -75,6 +78,30 @@ pub fn run() -> Result<()> {
                         send(&mut node, &result, &response)?;
                     }
                 }
+                "recording_schedule_query" => {
+                    if let Some(query) = decode::<RecordingScheduleQuery>(&*data) {
+                        if let Err(error) = query.validate() {
+                            tracing::warn!(%error, "rejected recording schedule query");
+                            continue;
+                        }
+                        let schedules = tokio
+                            .block_on(repository.load_schedules())
+                            .map_err(eyre::Report::msg)?
+                            .into_iter()
+                            .filter(|schedule| schedule.definition.entity_id == query.entity_id)
+                            .collect();
+                        send(
+                            &mut node,
+                            &snapshot_result,
+                            &RecordingScheduleSnapshot {
+                                protocol_version: RECORDING_SCHEDULE_PROTOCOL_VERSION,
+                                request_id: query.request_id,
+                                entity_id: query.entity_id,
+                                schedules,
+                            },
+                        )?;
+                    }
+                }
                 "recording_scheduler_recorder_feedback" => {
                     if let Some(value) = decode::<RecordingCoordinatorFeedback>(&*data) {
                         if scheduler.apply_feedback(value.clone()) {
@@ -82,10 +109,18 @@ pub fn run() -> Result<()> {
                             tokio
                                 .block_on(repository.acknowledge_intent(&value.intent_id))
                                 .map_err(eyre::Report::msg)?;
+                            if value.manual_suppression {
+                                send(&mut node, &manual_suppression_ack, &value)?;
+                            }
                         } else if scheduler.has_handled_intent(&value.intent_id) {
                             tokio
                                 .block_on(repository.acknowledge_intent(&value.intent_id))
                                 .map_err(eyre::Report::msg)?;
+                            if value.manual_suppression {
+                                // Re-echo an idempotent manual suppression after a
+                                // bridge restart so it can finish the exact Stop.
+                                send(&mut node, &manual_suppression_ack, &value)?;
+                            }
                         }
                     }
                 }
@@ -110,6 +145,16 @@ pub fn run() -> Result<()> {
                                 &mut scheduler,
                             )?;
                         }
+                        // The bridge is intentionally stateless across restart. Re-send
+                        // every durable live group only after its recorder snapshot barrier
+                        // has crossed the bridge, so matching sessions are adopted instead
+                        // of blindly started a second time.
+                        replay_desired_groups(&mut node, &intent, &scheduler)?;
+                        replay_manual_suppression_acks(
+                            &mut node,
+                            &manual_suppression_ack,
+                            &scheduler,
+                        )?;
                         tracing::info!("recording scheduler reconciliation applied");
                     }
                 }
@@ -276,6 +321,85 @@ fn replay_pending(
     }
     for intent in recovery.replay {
         send(node, output, &intent)?;
+    }
+    Ok(())
+}
+
+fn replay_desired_groups(
+    node: &mut DoraNode,
+    output: &DataId,
+    scheduler: &SchedulerRuntime<SystemClock>,
+) -> Result<()> {
+    for group in scheduler
+        .groups
+        .values()
+        .filter(|group| !group.owner_ids.is_empty())
+    {
+        let Some(occurrence) = scheduler.occurrences.values().find(|occurrence| {
+            occurrence.group_id.as_deref() == Some(&group.group_id)
+                && !occurrence.state.is_terminal()
+        }) else {
+            continue;
+        };
+        let intent_id = scheduled_intent_id(
+            &occurrence.occurrence_id,
+            group.generation,
+            ScheduledRecordingIntentAction::Acquire,
+        )
+        .map_err(eyre::Report::msg)?;
+        send(
+            node,
+            output,
+            &build_intent(
+                occurrence,
+                group,
+                intent_id,
+                ScheduledRecordingIntentAction::Acquire,
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+fn replay_manual_suppression_acks(
+    node: &mut DoraNode,
+    output: &DataId,
+    scheduler: &SchedulerRuntime<SystemClock>,
+) -> Result<()> {
+    for group in scheduler
+        .groups
+        .values()
+        .filter(|group| group.owner_ids.is_empty())
+    {
+        let Some(occurrence) = scheduler.occurrences.values().find(|occurrence| {
+            occurrence.group_id.as_deref() == Some(&group.group_id)
+                && occurrence.suppressed_by_manual
+        }) else {
+            continue;
+        };
+        send(
+            node,
+            output,
+            &RecordingCoordinatorFeedback {
+                intent_id: scheduled_intent_id(
+                    &occurrence.occurrence_id,
+                    group.generation,
+                    ScheduledRecordingIntentAction::Acquire,
+                )
+                .map_err(eyre::Report::msg)?,
+                occurrence_id: occurrence.occurrence_id.clone(),
+                generation: group.generation,
+                accepted: true,
+                applied: true,
+                retryable: false,
+                group_id: Some(group.group_id.clone()),
+                recording_id: None,
+                recorder_state: None,
+                manual_suppression: true,
+                reason_code: None,
+                detail: Some("replayed durable manual suppression".into()),
+            },
+        )?;
     }
     Ok(())
 }

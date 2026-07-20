@@ -208,6 +208,13 @@ impl MediaDemandRegistry {
             .collect()
     }
 
+    #[cfg(test)]
+    pub fn has_consumer(&self, consumer_id: &str) -> bool {
+        self.demands
+            .iter()
+            .any(|demand| demand.consumer_id == consumer_id)
+    }
+
     fn has_demand(&self, entity_id: &str, resource: MediaResource) -> bool {
         self.demands
             .iter()
@@ -237,6 +244,25 @@ mod tests {
         assert!(registry
             .release("rover-a", "recording:a", MediaResource::Jpeg)
             .is_none());
+    }
+
+    #[test]
+    fn scheduled_rollback_releases_only_its_generation_scoped_demand() {
+        let mut registry = MediaDemandRegistry::default();
+        let resources = [
+            MediaResource::Camera,
+            MediaResource::Jpeg,
+            MediaResource::Microphone,
+        ];
+        for resource in resources {
+            registry.acquire("rover-a", "recording:manual", resource);
+            registry.acquire("rover-a", "scheduled:group:7", resource);
+        }
+        assert!(registry.has_consumer("recording:manual"));
+        assert!(registry.has_consumer("scheduled:group:7"));
+        registry.release_consumer("scheduled:group:7");
+        assert!(registry.has_consumer("recording:manual"));
+        assert!(!registry.has_consumer("scheduled:group:7"));
     }
 
     #[test]
