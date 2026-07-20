@@ -34,6 +34,12 @@ fn terminal_document_has_ttl_date_and_signed_epoch_milliseconds() {
 }
 
 #[test]
+fn nonterminal_document_has_no_ttl_date() {
+    let document = occurrence_document(&occurrence(10_000)).unwrap();
+    assert!(matches!(document.get("expire_at"), Some(Bson::Null)));
+}
+
+#[test]
 fn retry_cadence_is_exact_and_stops_at_window_end() {
     let mut occurrence = occurrence(1_000_000);
     occurrence.planned_end_ms = 2_000_000;

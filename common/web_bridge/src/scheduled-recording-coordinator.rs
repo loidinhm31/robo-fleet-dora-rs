@@ -583,7 +583,20 @@ impl ScheduledRecordingCoordinator {
         let Some(group) = self.groups.get_mut(&intent.group_id) else {
             return vec![feedback(&intent, true, true, false, None, None)];
         };
-        if group.generation != intent.generation {
+        // The scheduler advances its generation when removing the final owner
+        // before it emits Release. Keep the active generation locally until
+        // terminal recorder status releases that generation's media demand.
+        let final_owner_successor = intent.generation == group.generation.saturating_add(1);
+        tracing::debug!(
+            group_id = %intent.group_id,
+            incoming_generation = intent.generation,
+            active_generation = group.generation,
+            owner_count = group.owners.len(),
+            known_owner = group.owners.contains_key(&intent.occurrence_id),
+            final_owner_successor,
+            "evaluating scheduled recording release"
+        );
+        if group.generation != intent.generation && !final_owner_successor {
             return vec![feedback(
                 &intent,
                 false,
@@ -593,7 +606,15 @@ impl ScheduledRecordingCoordinator {
                 Some("stale group generation"),
             )];
         }
-        group.owners.remove(&intent.occurrence_id);
+        if final_owner_successor {
+            // The scheduler's generation increment proves this is the group's
+            // final boundary. The coordinator may only know the occurrence
+            // which first acquired the shared recorder, so clear ownership at
+            // the group level rather than requiring the final occurrence ID.
+            group.owners.clear();
+        } else {
+            group.owners.remove(&intent.occurrence_id);
+        }
         if !group.owners.is_empty() {
             return vec![feedback(&intent, true, true, false, None, None)];
         }
@@ -1011,6 +1032,49 @@ mod tests {
         assert!(matches!(
             coordinator.apply(scheduled).as_slice(),
             [CoordinatorEffect::Feedback(_)]
+        ));
+    }
+
+    #[test]
+    fn final_owner_successor_release_stops_the_active_session() {
+        let mut coordinator = ScheduledRecordingCoordinator::default();
+        coordinator.reconcile_snapshot(&snapshot(vec![]));
+        let scheduled = intent(ScheduledRecordingIntentAction::Acquire, &id(), 1, "rover-a");
+        coordinator.apply(scheduled.clone());
+        let recording_id = id();
+        coordinator.recorder_result(&RecordingSessionCommandResult {
+            protocol_version: 1,
+            request_id: scheduled.start_request_id.clone(),
+            accepted: true,
+            recording_id: Some(recording_id.clone()),
+            reason_code: None,
+            detail: None,
+        });
+        let release = ScheduledRecordingIntent {
+            intent_id: id(),
+            generation: 2,
+            action: ScheduledRecordingIntentAction::Release,
+            occurrence_id: id(),
+            ..scheduled.clone()
+        };
+        assert!(matches!(
+            coordinator.apply(release.clone()).as_slice(),
+            [CoordinatorEffect::RecorderCommand(RecordingSessionCommand {
+                action: RecordingSessionAction::Stop { recording_id: stopped },
+                ..
+            })] if stopped == &recording_id
+        ));
+        assert!(matches!(
+            coordinator
+                .recorder_status(&recording_id, RecordingSessionState::Completed)
+                .as_slice(),
+            [CoordinatorEffect::ReleaseMedia { .. }, CoordinatorEffect::Feedback(RecordingCoordinatorFeedback {
+                intent_id,
+                generation: 2,
+                accepted: true,
+                applied: true,
+                ..
+            })] if intent_id == &release.intent_id
         ));
     }
 
