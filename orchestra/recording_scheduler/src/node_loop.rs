@@ -134,6 +134,7 @@ fn run_ready_session(
     let service = ScheduleService::new(SystemClock, config.clone(), repository.clone());
     let result = DataId::from("recording_schedule_command_result".to_owned());
     let snapshot_result = DataId::from("recording_schedule_snapshot".to_owned());
+    let occurrence_status = DataId::from("recording_occurrence_status".to_owned());
     let intent = DataId::from("scheduled_recording_intent".to_owned());
     let reconcile = DataId::from("recording_reconciliation_request".to_owned());
     let manual_suppression_ack =
@@ -210,10 +211,17 @@ fn run_ready_session(
                             &RecordingScheduleSnapshot {
                                 protocol_version: RECORDING_SCHEDULE_PROTOCOL_VERSION,
                                 request_id: query.request_id,
-                                entity_id: query.entity_id,
+                                entity_id: query.entity_id.clone(),
                                 schedules,
                             },
                         )?;
+                        // The snapshot owns definitions; occurrence updates carry scheduler-owned
+                        // next-run and lifecycle state without letting the browser infer recurrence.
+                        for occurrence in scheduler.occurrences.values().filter(|value| {
+                            value.entity_id == query.entity_id
+                        }) {
+                            send(&mut node, &occurrence_status, occurrence)?;
+                        }
                     }
                 }
                 "recording_scheduler_recorder_feedback" => {
@@ -233,6 +241,17 @@ fn run_ready_session(
                                 .map_err(eyre::Report::msg)?;
                             if value.manual_suppression {
                                 send(&mut node, &manual_suppression_ack, &value)?;
+                            }
+                            if let Some(occurrence) = scheduler.occurrences.get(&value.occurrence_id) {
+                                send(&mut node, &occurrence_status, occurrence)?;
+                            }
+                            if value.manual_suppression && value.group_id.is_some() {
+                                let group_id = value.group_id.as_deref();
+                                for occurrence in scheduler.occurrences.values().filter(|occurrence| {
+                                    occurrence.group_id.as_deref() == group_id
+                                }) {
+                                    send(&mut node, &occurrence_status, occurrence)?;
+                                }
                             }
                             if value.retryable {
                                 tracing::warn!(
@@ -357,8 +376,8 @@ fn run_ready_session(
             send(&mut node, &reconcile, &request)?;
             next_snapshot_ms = now_ms + reconcile_interval_ms;
         }
-        emit_due(tokio, &repository, node, &intent, &mut scheduler)?;
-        emit_stops(tokio, &repository, node, &intent, &mut scheduler)?;
+        emit_due(tokio, &repository, node, &intent, &occurrence_status, &mut scheduler)?;
+        emit_stops(tokio, &repository, node, &intent, &occurrence_status, &mut scheduler)?;
     }
     log_metrics(&scheduler, "shutdown");
     Ok(())
@@ -410,6 +429,7 @@ fn emit_due(
     repository: &MongoRepository,
     node: &mut DoraNode,
     output: &DataId,
+    occurrence_output: &DataId,
     scheduler: &mut SchedulerRuntime<SystemClock>,
 ) -> Result<()> {
     for occurrence_id in scheduler.due() {
@@ -429,6 +449,7 @@ fn emit_due(
             intent_id,
             ScheduledRecordingIntentAction::Acquire,
         );
+        let occurrence_status = occurrence.clone();
         tokio
             .block_on(repository.persist_transition(&OutboxRecord {
                 intent: value.clone(),
@@ -444,6 +465,7 @@ fn emit_due(
             "scheduled recording start intent emitted"
         );
         send(node, output, &value)?;
+        send(node, occurrence_output, &occurrence_status)?;
     }
     Ok(())
 }
@@ -453,6 +475,7 @@ fn emit_stops(
     repository: &MongoRepository,
     node: &mut DoraNode,
     output: &DataId,
+    occurrence_output: &DataId,
     scheduler: &mut SchedulerRuntime<SystemClock>,
 ) -> Result<()> {
     for occurrence_id in scheduler.due_stops() {
@@ -472,6 +495,7 @@ fn emit_stops(
             intent_id,
             ScheduledRecordingIntentAction::Release,
         );
+        let occurrence_status = occurrence.clone();
         tokio
             .block_on(repository.persist_transition(&OutboxRecord {
                 intent: value.clone(),
@@ -487,6 +511,7 @@ fn emit_stops(
             "scheduled recording stop intent emitted"
         );
         send(node, output, &value)?;
+        send(node, occurrence_output, &occurrence_status)?;
     }
     Ok(())
 }

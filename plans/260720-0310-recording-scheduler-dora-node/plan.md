@@ -23,7 +23,7 @@ Add `orchestra/recording_scheduler` as durable schedule/occurrence authority. Ke
 | 2 | Scheduler core, recurrence, persistence | Done | 100% | 14h | [phase-02](./phase-02-scheduler-core-recurrence-and-persistence.md) |
 | 3 | Web coordinator and recorder reconciliation | Done | 100% | 14h | [phase-03](./phase-03-web-bridge-coordinator-and-recorder-reconciliation.md) |
 | 4 | Dora, container, operations integration | Done | 100% | 7h | [phase-04](./phase-04-dora-container-and-operational-integration.md) |
-| 5 | Scheduler UI and client state | Pending | 0% | 9h | [phase-05](./phase-05-scheduler-ui-and-client-state.md) |
+| 5 | Scheduler UI and client state | Done | 100% | 9h | [phase-05](./phase-05-scheduler-ui-and-client-state.md) |
 | 6 | End-to-end, fault, rollout verification | Pending | 0% | 7h | [phase-06](./phase-06-end-to-end-fault-and-rollout-verification.md) |
 
 ## Dependencies
@@ -40,6 +40,7 @@ Add `orchestra/recording_scheduler` as durable schedule/occurrence authority. Ke
 - **2026-07-20 13:40 +07 (UTC+0700):** Phase 1 approved and complete. Version-1 Rust and TypeScript contracts, validation, deterministic IDs, and canonical fixtures are in place; the review's fixture path/type validation follow-up is assigned to Phase 2/CI.
 - **2026-07-20 17:00 +07 (UTC+0700):** Phase 2 hardening approved and complete. Crash-safe occurrence/group/outbox transitions, deterministic bridging-overlap directory selection, durable outbox replay/acknowledgement, and superseding schedule mutation handling are verified by targeted fault, overlap, replay, and update/delete-race tests; package tests, live standalone Mongo verification, Clippy, and code review passed. Follow up in later phases on reconciliation/order integration and production Mongo persistence operations.
 - **2026-07-20 22:19 +07 (UTC+0700):** Phase 4 approved and complete. Bounded Dora scheduler ports, image/Compose integration, exact feature gating, readiness lease/degraded recovery, process health, structured lifecycle diagnostics, and rollout/rollback documentation were reviewed and verified by focused tests, graph/Compose validation, and final image inspection. Live dependency-fault validation remains Phase 6 scope.
+- **2026-07-20 22:56 +07 (UTC+0700):** Phase 5 approved and complete. The shared scheduler UI/state flow now provides authenticated schedule CRUD with CAS handling, authoritative reconnect/entity resync, accessible recurrence and occurrence status presentation, and the backend occurrence-status route required to surface occurrence state. End-to-end fault and rollout validation remains Phase 6 scope.
 
 ## Frozen Architecture
 

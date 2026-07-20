@@ -173,6 +173,7 @@ nodes:
     outputs:
       - recording_schedule_command_result
       - recording_schedule_snapshot
+      - recording_occurrence_status
       - scheduled_recording_intent
       - recording_reconciliation_request
       - recording_scheduler_manual_suppression_ack
@@ -287,6 +288,9 @@ nodes:
       recording_schedule_snapshot:
         source: recording-scheduler/recording_schedule_snapshot
         queue_size: 32
+      recording_occurrence_status:
+        source: recording-scheduler/recording_occurrence_status
+        queue_size: 64
       scheduled_recording_intent:
         source: recording-scheduler/scheduled_recording_intent
         queue_size: 64
