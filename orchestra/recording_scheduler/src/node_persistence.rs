@@ -72,5 +72,13 @@ pub(crate) fn persist(
             .ok_or_else(|| eyre::eyre!("recording group changed concurrently"))?;
         scheduler.group_revisions.insert(group.group_id, revision);
     }
+    for (group_id, revision) in std::mem::take(&mut scheduler.removed_group_revisions) {
+        let deleted = tokio
+            .block_on(repository.delete_group_cas(&group_id, revision))
+            .map_err(eyre::Report::msg)?;
+        if !deleted && revision != 0 {
+            return Err(eyre::eyre!("recording group changed concurrently"));
+        }
+    }
     Ok(())
 }

@@ -13,6 +13,20 @@ pub fn schedule_document(
     Ok(document)
 }
 
+pub fn schedule_document_with_lifecycle(
+    schedule: &RecordingSchedule,
+    next_occurrence_ms: Option<i64>,
+    supersedes_through_revision: Option<u64>,
+    deleted_at_ms: Option<i64>,
+) -> Result<Document, String> {
+    let mut document = schedule_document(schedule, next_occurrence_ms)?;
+    if let Some(revision) = supersedes_through_revision {
+        document.insert("supersedes_through_revision", revision as i64);
+    }
+    document.insert("deleted_at_ms", deleted_at_ms);
+    Ok(document)
+}
+
 pub fn occurrence_document(occurrence: &RecordingOccurrence) -> Result<Document, String> {
     let mut document = bson::to_document(occurrence).map_err(|error| error.to_string())?;
     document.insert("_id", occurrence.occurrence_id.clone());
@@ -26,6 +40,8 @@ pub fn occurrence_document(occurrence: &RecordingOccurrence) -> Result<Document,
 pub fn schedule_from_document(mut document: Document) -> Result<RecordingSchedule, String> {
     document.remove("_id");
     document.remove("next_occurrence_ms");
+    document.remove("supersedes_through_revision");
+    document.remove("deleted_at_ms");
     bson::from_document(document).map_err(|error| error.to_string())
 }
 

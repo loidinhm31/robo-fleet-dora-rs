@@ -7,17 +7,29 @@ use mongodb::{
     Collection, Database, IndexModel,
 };
 use robo_rover_lib::{RecordingOccurrence, RecordingSchedule, ScheduledRecordingIntent};
+use serde::{Deserialize, Serialize};
 
 use crate::domain::RecordingGroup;
 use crate::mongo_documents::{
     document_revision, group_from_document, occurrence_document, occurrence_from_document,
-    schedule_document, schedule_from_document,
+    schedule_document, schedule_document_with_lifecycle, schedule_from_document,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stored<T> {
     pub value: T,
     pub revision: u64,
+}
+
+/// A standalone-Mongo write-ahead record. The snapshots let startup finish a
+/// transition when a process dies after recording intent but before replacing
+/// the occurrence and group documents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutboxRecord {
+    #[serde(flatten)]
+    pub intent: ScheduledRecordingIntent,
+    pub occurrence: RecordingOccurrence,
+    pub group: RecordingGroup,
 }
 
 #[derive(Clone)]
@@ -101,7 +113,7 @@ impl MongoRepository {
             .schedules
             .replace_one(
                 doc! {"schedule_id": &schedule.schedule_id, "revision": expected as i64},
-                schedule_document(schedule, None)?,
+                schedule_document_with_lifecycle(schedule, None, Some(expected), None)?,
                 None,
             )
             .await
@@ -114,7 +126,10 @@ impl MongoRepository {
         schedule_id: &str,
     ) -> Result<Option<RecordingSchedule>, String> {
         self.schedules
-            .find_one(doc! {"schedule_id": schedule_id}, None)
+            .find_one(
+                doc! {"schedule_id": schedule_id, "deleted_at_ms": Bson::Null},
+                None,
+            )
             .await
             .map_err(|error| error.to_string())?
             .map(schedule_from_document)
@@ -123,25 +138,35 @@ impl MongoRepository {
 
     pub async fn enabled_count(&self, entity_id: &str) -> Result<u64, String> {
         self.schedules
-            .count_documents(doc! {"entity_id": entity_id, "enabled": true}, None)
+            .count_documents(
+                doc! {"entity_id": entity_id, "enabled": true, "deleted_at_ms": Bson::Null},
+                None,
+            )
             .await
             .map_err(|error| error.to_string())
     }
 
-    pub async fn delete_schedule_cas(
+    pub async fn tombstone_schedule_cas(
         &self,
-        schedule_id: &str,
+        schedule: &RecordingSchedule,
         expected: u64,
+        now_ms: i64,
     ) -> Result<bool, String> {
         let result = self
             .schedules
-            .delete_one(
-                doc! {"schedule_id": schedule_id, "revision": expected as i64},
+            .replace_one(
+                doc! {"schedule_id": &schedule.schedule_id, "revision": expected as i64},
+                schedule_document_with_lifecycle(
+                    schedule,
+                    None,
+                    Some(schedule.revision),
+                    Some(now_ms),
+                )?,
                 None,
             )
             .await
             .map_err(|error| error.to_string())?;
-        Ok(result.deleted_count == 1)
+        Ok(result.matched_count == 1)
     }
 
     pub async fn cancel_future(
@@ -163,6 +188,27 @@ impl MongoRepository {
         occurrence: &RecordingOccurrence,
         expected_revision: u64,
     ) -> Result<Option<u64>, String> {
+        // A new occurrence is accepted only for the current, live schedule
+        // revision. Existing rows remain writable so active/terminal audit
+        // state can finish after a schedule has been superseded.
+        if expected_revision == 0
+            && self
+                .schedules
+                .find_one(
+                    doc! {
+                        "schedule_id": &occurrence.schedule_id,
+                        "revision": occurrence.schedule_revision as i64,
+                        "enabled": true,
+                        "deleted_at_ms": Bson::Null,
+                    },
+                    None,
+                )
+                .await
+                .map_err(|error| error.to_string())?
+                .is_none()
+        {
+            return Ok(None);
+        }
         let document = occurrence_document(occurrence)?;
         self.save_document(
             &self.occurrences,
@@ -191,9 +237,24 @@ impl MongoRepository {
         .await
     }
 
-    pub async fn persist_intent(&self, intent: &ScheduledRecordingIntent) -> Result<(), String> {
-        let mut document = mongodb::bson::to_document(intent).map_err(|error| error.to_string())?;
-        document.insert("_id", intent.intent_id.clone());
+    pub async fn delete_group_cas(
+        &self,
+        group_id: &str,
+        expected_revision: u64,
+    ) -> Result<bool, String> {
+        self.groups
+            .delete_one(
+                doc! {"group_id": group_id, "_scheduler_revision": expected_revision as i64},
+                None,
+            )
+            .await
+            .map(|result| result.deleted_count == 1)
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn persist_transition(&self, record: &OutboxRecord) -> Result<(), String> {
+        let mut document = mongodb::bson::to_document(record).map_err(|error| error.to_string())?;
+        document.insert("_id", record.intent.intent_id.clone());
         self.outbox
             .insert_one(document, None)
             .await
@@ -208,7 +269,7 @@ impl MongoRepository {
             .map_err(|error| error.to_string())
     }
 
-    pub async fn pending_intents(&self) -> Result<Vec<ScheduledRecordingIntent>, String> {
+    pub async fn pending_outbox(&self) -> Result<Vec<OutboxRecord>, String> {
         self.outbox
             .find(None, None)
             .await
@@ -277,7 +338,7 @@ impl MongoRepository {
 
     pub async fn load_schedules(&self) -> Result<Vec<RecordingSchedule>, String> {
         self.schedules
-            .find(None, None)
+            .find(doc! {"deleted_at_ms": Bson::Null}, None)
             .await
             .map_err(|error| error.to_string())?
             .try_collect::<Vec<_>>()
@@ -286,6 +347,33 @@ impl MongoRepository {
             .into_iter()
             .map(schedule_from_document)
             .collect()
+    }
+
+    /// Reapply the idempotent cancellation side of a schedule mutation after
+    /// any crash boundary. Markers are intentionally retained as audit data.
+    pub async fn recover_superseded_future(&self, now_ms: i64) -> Result<(), String> {
+        let documents = self
+            .schedules
+            .find(
+                doc! {"supersedes_through_revision": {"$exists": true}},
+                None,
+            )
+            .await
+            .map_err(|error| error.to_string())?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|error| error.to_string())?;
+        for document in documents {
+            let schedule_id = document
+                .get_str("schedule_id")
+                .map_err(|error| error.to_string())?;
+            let through = document
+                .get_i64("supersedes_through_revision")
+                .map_err(|error| error.to_string())?;
+            self.cancel_future(schedule_id, through as u64, now_ms)
+                .await?;
+        }
+        Ok(())
     }
 
     async fn save_document(

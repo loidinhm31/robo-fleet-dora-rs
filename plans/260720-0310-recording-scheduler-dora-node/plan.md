@@ -38,7 +38,7 @@ Add `orchestra/recording_scheduler` as durable schedule/occurrence authority. Ke
 ## Completion Log
 
 - **2026-07-20 13:40 +07 (UTC+0700):** Phase 1 approved and complete. Version-1 Rust and TypeScript contracts, validation, deterministic IDs, and canonical fixtures are in place; the review's fixture path/type validation follow-up is assigned to Phase 2/CI.
-- **2026-07-20 15:34 +07 (UTC+0700):** Phase 2 user-approved finalization. The scheduler crate, recurrence/state/persistence path, reconciliation barrier, and local Mongo verification are complete for this phase. Carry forward the review risks: crash-boundary state/group/outbox recovery; bridging-union and directory coalescing; outbox source-of-truth replay; and update/delete mutation lifecycle.
+- **2026-07-20 17:00 +07 (UTC+0700):** Phase 2 hardening approved and complete. Crash-safe occurrence/group/outbox transitions, deterministic bridging-overlap directory selection, durable outbox replay/acknowledgement, and superseding schedule mutation handling are verified by targeted fault, overlap, replay, and update/delete-race tests; package tests, live standalone Mongo verification, Clippy, and code review passed. Follow up in later phases on reconciliation/order integration and production Mongo persistence operations.
 
 ## Frozen Architecture
 

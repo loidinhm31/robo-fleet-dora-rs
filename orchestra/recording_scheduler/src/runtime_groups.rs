@@ -1,99 +1,125 @@
+use std::collections::BTreeMap;
+
 use robo_rover_lib::{
-    scheduled_start_request_id, DstResolution, RecordingOccurrence, RecordingOccurrenceState,
-    RecordingSchedule,
+    scheduled_group_id, scheduled_start_request_id, DstResolution, RecordingOccurrence,
+    RecordingOccurrenceState, RecordingSchedule,
 };
 
 use crate::{clock::Clock, domain::RecordingGroup, runtime::SchedulerRuntime};
 
 impl<C: Clock> SchedulerRuntime<C> {
     pub fn rebuild_groups(&mut self) -> Result<(), String> {
-        let mut occurrences = self
+        self.rebuild_groups_with_directories(&BTreeMap::new())
+    }
+
+    pub(crate) fn assign_new_groups(&mut self, schedule: &RecordingSchedule) -> Result<(), String> {
+        self.rebuild_groups_with_directories(&BTreeMap::from([(
+            schedule.schedule_id.as_str(),
+            schedule.definition.relative_directory_template.as_str(),
+        )]))
+    }
+
+    fn rebuild_groups_with_directories(
+        &mut self,
+        directories: &BTreeMap<&str, &str>,
+    ) -> Result<(), String> {
+        let previous = std::mem::take(&mut self.groups);
+        let mut items = self
             .occurrences
             .values()
             .filter(|item| !item.state.is_terminal())
             .cloned()
             .collect::<Vec<_>>();
-        occurrences.sort_by(|left, right| {
-            (&left.entity_id, left.planned_start_ms, &left.occurrence_id).cmp(&(
-                &right.entity_id,
-                right.planned_start_ms,
-                &right.occurrence_id,
-            ))
+        items.sort_by_key(|item| {
+            (
+                item.entity_id.clone(),
+                item.planned_start_ms,
+                item.occurrence_id.clone(),
+            )
         });
-        self.groups.clear();
-        let mut assignments = Vec::with_capacity(occurrences.len());
-        for occurrence in occurrences {
-            let group_id = self.group_id_for(&occurrence, String::new())?;
-            let group = self.groups.get_mut(&group_id).expect("group inserted");
-            group.end_ms = group.end_ms.max(occurrence.planned_end_ms);
-            assignments.push((occurrence.occurrence_id, group_id));
+        let mut rebuilt = BTreeMap::new();
+        let mut cursor = 0;
+        while cursor < items.len() {
+            let first = cursor;
+            let entity_id = items[cursor].entity_id.clone();
+            let mut end_ms = items[cursor].planned_end_ms;
+            cursor += 1;
+            while cursor < items.len()
+                && items[cursor].entity_id == entity_id
+                && items[cursor].planned_start_ms < end_ms
+            {
+                end_ms = end_ms.max(items[cursor].planned_end_ms);
+                cursor += 1;
+            }
+            let members = &items[first..cursor];
+            let earliest = &members[0];
+            let locked_group_ids = members
+                .iter()
+                .filter_map(|member| member.group_id.as_ref())
+                .filter(|group_id| {
+                    previous.get(*group_id).is_some_and(|group| {
+                        group.recording_id.is_some()
+                            || group.pending_intent_id.is_some()
+                            || !group.owner_ids.is_empty()
+                    })
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            if locked_group_ids.len() > 1 {
+                return Err("cannot merge multiple live recording groups".into());
+            }
+            let group_id = locked_group_ids
+                .iter()
+                .next()
+                .map(|group_id| (*group_id).clone())
+                .unwrap_or(scheduled_group_id(&entity_id, earliest.planned_start_ms)?);
+            let old_directory = earliest
+                .group_id
+                .as_ref()
+                .and_then(|id| previous.get(id))
+                .map(|group| group.relative_directory.clone());
+            let directory = directories
+                .get(earliest.schedule_id.as_str())
+                .map(|value| (*value).to_owned())
+                .or(old_directory)
+                .unwrap_or_default();
+            let locked = locked_group_ids.contains(&group_id);
+            let mut group = previous
+                .get(&group_id)
+                .cloned()
+                .unwrap_or(RecordingGroup::new(
+                    &entity_id,
+                    earliest.planned_start_ms,
+                    end_ms,
+                    directory.clone(),
+                )?);
+            if !locked {
+                group.start_ms = earliest.planned_start_ms;
+            }
+            group.end_ms = end_ms;
+            if group.relative_directory.is_empty() {
+                group.relative_directory = directory;
+            }
+            for member in members {
+                self.occurrences
+                    .get_mut(&member.occurrence_id)
+                    .expect("occurrence exists")
+                    .group_id = Some(group_id.clone());
+            }
+            rebuilt.insert(group_id, group);
         }
-        for (occurrence_id, group_id) in assignments {
-            self.occurrences
-                .get_mut(&occurrence_id)
-                .expect("occurrence exists")
-                .group_id = Some(group_id);
+        for (group_id, _) in previous
+            .into_iter()
+            .filter(|(id, _)| !rebuilt.contains_key(id))
+        {
+            if let Some(revision) = self.group_revisions.remove(&group_id) {
+                self.removed_group_revisions.insert(group_id, revision);
+            }
+        }
+        self.groups = rebuilt;
+        for group_id in self.groups.keys() {
+            self.group_revisions.entry(group_id.clone()).or_insert(0);
         }
         Ok(())
-    }
-
-    pub(crate) fn assign_new_groups(&mut self, schedule: &RecordingSchedule) -> Result<(), String> {
-        let mut ids = self
-            .occurrences
-            .values()
-            .filter(|occurrence| {
-                occurrence.schedule_id == schedule.schedule_id
-                    && occurrence.schedule_revision == schedule.revision
-                    && occurrence.group_id.is_none()
-            })
-            .map(|occurrence| occurrence.occurrence_id.clone())
-            .collect::<Vec<_>>();
-        ids.sort_by(|left, right| {
-            let left = &self.occurrences[left];
-            let right = &self.occurrences[right];
-            (&left.entity_id, left.planned_start_ms, &left.occurrence_id).cmp(&(
-                &right.entity_id,
-                right.planned_start_ms,
-                &right.occurrence_id,
-            ))
-        });
-        for id in ids {
-            let occurrence = self.occurrences[&id].clone();
-            let group_id = self.group_id_for(
-                &occurrence,
-                schedule.definition.relative_directory_template.clone(),
-            )?;
-            let group = self.groups.get_mut(&group_id).expect("group exists");
-            group.end_ms = group.end_ms.max(occurrence.planned_end_ms);
-            self.occurrences
-                .get_mut(&id)
-                .expect("occurrence exists")
-                .group_id = Some(group_id);
-        }
-        Ok(())
-    }
-
-    fn group_id_for(
-        &mut self,
-        occurrence: &RecordingOccurrence,
-        relative_directory: String,
-    ) -> Result<String, String> {
-        if let Some(group) = self.groups.values().find(|group| {
-            group.entity_id == occurrence.entity_id
-                && group.start_ms < occurrence.planned_end_ms
-                && occurrence.planned_start_ms < group.end_ms
-        }) {
-            return Ok(group.group_id.clone());
-        }
-        let group = RecordingGroup::new(
-            &occurrence.entity_id,
-            occurrence.planned_start_ms,
-            occurrence.planned_end_ms,
-            relative_directory,
-        )?;
-        let group_id = group.group_id.clone();
-        self.groups.insert(group_id.clone(), group);
-        Ok(group_id)
     }
 }
 
