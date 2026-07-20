@@ -1,0 +1,87 @@
+{
+  "accepted_command": {
+    "protocol_version": 1,
+    "request_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+    "action": "create",
+    "schedule": {
+      "entity_id": "rover-a",
+      "title": "Morning patrol",
+      "enabled": true,
+      "recurrence": { "kind": "weekly", "local_start": { "date": "2026-07-21", "time": "09:30", "timezone": "Asia/Ho_Chi_Minh" }, "weekdays": ["monday", "wednesday"] },
+      "duration_ms": 900000,
+      "relative_directory_template": "schedules/morning-patrol"
+    }
+  },
+  "accepted_result": {
+    "protocol_version": 1,
+    "request_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+    "accepted": true,
+    "schedule": {
+      "schedule_id": "550e8400-e29b-41d4-a716-446655440000",
+      "revision": 1,
+      "entity_id": "rover-a",
+      "title": "Morning patrol",
+      "enabled": true,
+      "recurrence": { "kind": "weekly", "local_start": { "date": "2026-07-21", "time": "09:30", "timezone": "Asia/Ho_Chi_Minh" }, "weekdays": ["monday", "wednesday"] },
+      "duration_ms": 900000,
+      "relative_directory_template": "schedules/morning-patrol",
+      "created_at_ms": 1784595600000,
+      "created_by": "operator-1",
+      "updated_at_ms": 1784595600000,
+      "updated_by": "operator-1"
+    },
+    "current_schedule": null,
+    "reason_code": null,
+    "detail": null
+  },
+  "rejected_result": {
+    "protocol_version": 1,
+    "request_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a12",
+    "accepted": false,
+    "schedule": null,
+    "current_schedule": null,
+    "reason_code": "invalid_timezone",
+    "detail": "invalid IANA timezone"
+  },
+  "conflict_result": {
+    "protocol_version": 1,
+    "request_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a13",
+    "accepted": false,
+    "schedule": null,
+    "current_schedule": {
+      "schedule_id": "550e8400-e29b-41d4-a716-446655440000",
+      "revision": 2,
+      "entity_id": "rover-a",
+      "title": "Morning patrol",
+      "enabled": true,
+      "recurrence": { "kind": "weekly", "local_start": { "date": "2026-07-21", "time": "09:30", "timezone": "Asia/Ho_Chi_Minh" }, "weekdays": ["monday", "wednesday"] },
+      "duration_ms": 900000,
+      "relative_directory_template": "schedules/morning-patrol",
+      "created_at_ms": 1784595600000,
+      "created_by": "operator-1",
+      "updated_at_ms": 1784595900000,
+      "updated_by": "operator-2"
+    },
+    "reason_code": "conflict",
+    "detail": "revision conflict"
+  },
+  "snapshot": {
+    "protocol_version": 1,
+    "request_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a14",
+    "entity_id": "rover-a",
+    "schedules": [{
+      "schedule_id": "550e8400-e29b-41d4-a716-446655440000",
+      "revision": 1,
+      "entity_id": "rover-a",
+      "title": "Morning patrol",
+      "enabled": true,
+      "recurrence": { "kind": "weekly", "local_start": { "date": "2026-07-21", "time": "09:30", "timezone": "Asia/Ho_Chi_Minh" }, "weekdays": ["monday", "wednesday"] },
+      "duration_ms": 900000,
+      "relative_directory_template": "schedules/morning-patrol",
+      "created_at_ms": 1784595600000,
+      "created_by": "operator-1",
+      "updated_at_ms": 1784595600000,
+      "updated_by": "operator-1"
+    }]
+  }
+}
