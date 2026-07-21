@@ -19,7 +19,7 @@ nodes:
       SAMPLE_RATE: "16000"
       CHANNELS: "1"  # preserve downstream mono contract; multichannel mics are downmixed in audio_capture
       CHUNK_SIZE: "800"
-      AUDIO_DEVICE: "${AUDIO_DEVICE:-}"  # optional manual override; e.g. "pulse" or a device-name substring
+      AUDIO_DEVICE: "${AUDIO_DEVICE:-sysdefault:CARD=Camera}"
   # Audio playback - sole speaker owner for walkie and rover TTS.
   - id: audio-playback
     build: cargo build --release -p audio_playback
@@ -96,6 +96,24 @@ nodes:
       RESOURCE_MONITOR_ROLE: "rover"
       RESOURCE_MONITOR_SCOPE: "${RESOURCE_MONITOR_SCOPE:-}"
       RESOURCE_MONITOR_NODES: '[{"node_id":"audio-capture","executable":"audio_capture"},{"node_id":"audio-converter","executable":"audio_converter"},{"node_id":"edge-voice","executable":"edge_voice"},{"node_id":"audio-playback","executable":"audio_playback"},{"node_id":"gst-camera","executable":"kornia_capture"},{"node_id":"video-encoder","executable":"video_encoder"},{"node_id":"visual-servo-controller","executable":"visual_servo_controller"},{"node_id":"arm-controller","executable":"arm_controller"},{"node_id":"rover-controller","executable":"rover_controller"},{"node_id":"web-bridge","executable":"web_bridge"}]'
+
+  # Always-on authority for validated, acknowledged lifecycle transitions.
+  - id: lifecycle-manager
+    build: cargo build --release -p lifecycle_manager
+    path: ../target/release/lifecycle_manager
+    inputs:
+      lifecycle_command: web-bridge/lifecycle_command
+      lifecycle_status_query: web-bridge/lifecycle_status_query
+      tick: dora/timer/millis/1000
+    outputs:
+      - lifecycle_command_result
+      - lifecycle_status
+      - lifecycle_capabilities
+      - lifecycle_authorized_command
+    env:
+      RUST_LOG: info
+      # Phase 3 flips workload capabilities after their adapters prove terminal release.
+      LIFECYCLE_CAPABILITIES: '[{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"gst-camera"},"supported":false,"always_on":false},{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"audio-capture"},"supported":false,"always_on":false},{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"web-bridge"},"supported":false,"always_on":true}]'
 
   # GStreamer camera capture + consolidated vision pipeline
   - id: gst-camera
@@ -227,6 +245,9 @@ nodes:
       tracked_detections: gst-camera/tracked_detections
       tracking_telemetry: gst-camera/tracking_telemetry
       resource_snapshot: resource-monitor/resource_snapshot
+      lifecycle_command_result: lifecycle-manager/lifecycle_command_result
+      lifecycle_status: lifecycle-manager/lifecycle_status
+      lifecycle_capabilities: lifecycle-manager/lifecycle_capabilities
       voice_status:
         source: edge-voice/voice_status
         queue_size: 8
@@ -244,6 +265,8 @@ nodes:
       - tts_config_command
       - audio_stream
       - voice_command_audio
+      - lifecycle_command
+      - lifecycle_status_query
     env:
       RUST_LOG: info
       BIND_ADDRESS: "0.0.0.0"

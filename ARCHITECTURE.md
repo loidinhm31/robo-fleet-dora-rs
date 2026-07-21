@@ -85,7 +85,7 @@ robo-rover-dora/
 │   ├── rover_controller/           # Motor control
 │   ├── visual_servo_controller/    # PID autonomous following
 │   ├── edge_voice/                 # Supertonic edge TTS service (PCM only)
-│   ├── performance_monitor/        # System metrics
+│   ├── ../common/resource_monitor/ # Scoped CPU/memory collector
 │   ├── dispatcher_keyboard/        # Keyboard control (dev)
 │   ├── zenoh_bridge/               # Rover Zenoh bridge (rover-only)
 │   ├── rover-kiwi-dataflow.yml     # Rover Dora dataflow (zenoh mode, default)
@@ -883,6 +883,98 @@ Recording invariants:
 - Phase 4 owns deployment integration around this node, and Phases 5-6 own UI
   consumption and end-to-end rollout. Phase 2 provides the recorder, storage
   layout, and safe FFmpeg finalization path.
+
+## Planned Resource Monitoring and Soft-Stop Lifecycle
+
+Fleet resource monitoring is resource-only. It does not infer frame rate,
+pipeline latency, queue depth, or dropped work from CPU. One lightweight
+resource monitor runs on Orchestra and one on each rover. Each publishes a
+versioned snapshot with explicit host/container scope, sample interval,
+sequence, CPU usage, memory usage, and process presence. Missing values remain
+unavailable rather than becoming zero.
+
+Soft-stop is a separate authenticated lifecycle control path available to any
+signed-in user. It quiesces
+allowlisted workloads at application boundaries and may close devices, clear
+buffers, and unload models. It never uses `SIGSTOP`, and it does not promise
+that an allocator returns all released memory to the OS. Guaranteed memory
+reclamation through process exit/restart is a separate supervised hard-stop
+concern.
+
+```mermaid
+flowchart LR
+    UI["Fleet Resources UI"]
+
+    subgraph Orchestra["Orchestra"]
+        Web["web-bridge<br/>auth, target pinning, rate limit"]
+        OManager["lifecycle-manager<br/>desired and applied state"]
+        OWork["allowlisted workloads<br/>STT and cancellable media"]
+        OMonitor["resource-monitor<br/>always on"]
+        OBridge["orchestra-bridge<br/>always on"]
+    end
+
+    subgraph Rover["Selected rover"]
+        RBridge["rover zenoh-bridge<br/>always on"]
+        RManager["lifecycle-manager<br/>always on"]
+        RWork["allowlisted workloads<br/>vision, capture, voice"]
+        Safety["controllers and emergency path<br/>always on"]
+        RMonitor["resource-monitor<br/>always on"]
+    end
+
+    UI -->|"authenticated lifecycle command"| Web
+    Web --> OManager
+    OManager -->|"local control"| OWork
+    OManager -->|"targeted remote control"| OBridge
+    OBridge -->|"rover entity lifecycle v1"| RBridge
+    RBridge --> RManager
+    RManager -->|"safe ordered quiesce or resume"| RWork
+    RManager -.->|"safety stop before quiesce"| Safety
+    RWork -->|"applied status"| RManager
+    RManager --> RBridge
+    RBridge --> OBridge
+    OBridge --> OManager
+    OWork -->|"applied status"| OManager
+    OManager -->|"authoritative status"| Web
+    Web --> UI
+    OMonitor -->|"resource snapshot"| Web
+    RMonitor -->|"resource snapshot"| RBridge
+```
+
+Lifecycle invariants:
+
+- Commands carry protocol version, request ID, explicit role/entity/node
+  target, manager epoch, desired state, expected revision, issue time, and
+  expiry. Fleet selection changes never retarget an accepted command, and
+  messages from a prior manager epoch cannot apply after restart.
+- Admission acknowledgement is not completion. UI state changes only from an
+  authoritative applied/failed lifecycle status.
+- User desired state is versioned separately from effective state. Scheduled
+  recording may acquire a temporary, exact-target wake lease without replacing
+  desired Paused; overlapping occurrences share ownership, and final release
+  reconciles against the latest desired revision. Lease operations are
+  idempotent and bounded by expiry/restart reconciliation.
+- Duplicate request IDs are idempotent, stale revisions are rejected, expired
+  commands do not apply, and periodic status reconciliation repairs lost
+  replies without replaying actuator or media data.
+- `web-bridge`, both Zenoh bridges, lifecycle managers, resource monitors,
+  recording scheduler, actuator controllers, and the emergency-stop path are
+  never pausable. Unsupported nodes are visible but locked in the UI.
+- Pausing vision disables tracking and commands safe rover stop before closing
+  capture or unloading inference. Resume never replays an old movement, arm,
+  audio, or media command; actuators remain stopped until a fresh command.
+- Pause closes new admission before active work is cancelled. Recording
+  gracefully finalizes or explicitly fails; synthesis/playback reports
+  `interrupted_by_lifecycle`; STT closes streams without a partial transcript.
+  A missed cancellation deadline never reports Quiesced.
+- Each scheduled recording occurrence revalidates schedule revision/window,
+  rover activity, recorder/storage readiness, lifecycle capability/status, and
+  media authority before wake and again before recording starts. A user Pause
+  during auto-wake cancels/finalizes the occurrence and proceeds to quiesce.
+- Monitoring remains active while workloads are quiesced so CPU/memory savings,
+  stale status, and failed/partial transitions stay observable.
+- Soft-stop desired state is runtime state, not durable configuration. A full
+  dataflow/process restart returns to normal startup defaults; a live link loss
+  preserves the last applied state until reconciliation.
 
 ## References
 

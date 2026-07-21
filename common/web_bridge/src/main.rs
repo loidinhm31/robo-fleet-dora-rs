@@ -16,12 +16,13 @@ use robo_rover_lib::{
     capture_age_ms, init_tracing, record_capture_age, ArmCommand, ArmCommandWithMetadata,
     AudioAction, AudioControl, AudioFrameMetadata, AudioFrameSequenceTracker, CameraAction,
     CameraControl, CommandMetadata, CommandPriority, FrameSequenceTracker, InputSource,
-    MetricWindow, PcmSampleFormat, RecordingClipQueryResult, RecordingCoordinatorFeedback,
-    RecordingReasonCode, RecordingReconciliationRequest, RecordingReconciliationSnapshot,
-    RecordingSessionCommandResult, RecordingSessionStatus, RoverCommand, RoverCommandWithMetadata,
-    ScheduledRecordingIntent, StreamControl, TargetedMediaControl, TtsAckState, TtsCommand,
-    TtsCommandAck, TtsCommandResult, TtsConfigState, TtsConfigUpdate, TtsLanguage,
-    TtsRuntimeConfig, VoiceReasonCode, VoiceStatus,
+    LifecycleCapability, LifecycleCommand, LifecycleCommandResult, LifecycleReasonCode,
+    LifecycleRole, LifecycleStatus, MetricWindow, PcmSampleFormat, RecordingClipQueryResult,
+    RecordingCoordinatorFeedback, RecordingReasonCode, RecordingReconciliationRequest,
+    RecordingReconciliationSnapshot, RecordingSessionCommandResult, RecordingSessionStatus,
+    RoverCommand, RoverCommandWithMetadata, ScheduledRecordingIntent, StreamControl,
+    TargetedMediaControl, TtsAckState, TtsCommand, TtsCommandAck, TtsCommandResult, TtsConfigState,
+    TtsConfigUpdate, TtsLanguage, TtsRuntimeConfig, VoiceReasonCode, VoiceStatus,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -75,6 +76,10 @@ use scheduled_recording_coordinator::{CoordinatorEffect, ScheduledRecordingCoord
 #[path = "media-demand-registry.rs"]
 mod media_demand_registry;
 use media_demand_registry::{MediaDemandRegistry, MediaDemandTransition, MediaResource};
+
+#[path = "lifecycle-socket.rs"]
+mod lifecycle_socket;
+use lifecycle_socket::LifecycleSocketState;
 
 mod stt_bridge;
 mod stt_ingress;
@@ -541,6 +546,7 @@ struct SharedState {
     pub schedule_feedback_spool: RecordingScheduleFeedbackSpool,
     pub scheduled_coordinator: Arc<Mutex<ScheduledRecordingCoordinator>>,
     pub recording_access: Arc<RecordingAccess>,
+    pub lifecycle: LifecycleSocketState,
 }
 
 impl SharedState {
@@ -605,6 +611,7 @@ impl SharedState {
             schedule_feedback_spool,
             scheduled_coordinator: Arc::new(Mutex::new(ScheduledRecordingCoordinator::default())),
             recording_access: Arc::new(RecordingAccess::from_env()),
+            lifecycle: LifecycleSocketState::default(),
         }
     }
 }
@@ -799,6 +806,7 @@ fn setup_socketio(
             emit_recording_event(&socket, "recording_session_status", status);
         }
         recording_schedule_gateway::register(&socket, &socket_id, shared_state.clone());
+        shared_state.lifecycle.register(&socket, &socket_id, &shared_state);
 
         let shared_state_clone = shared_state.clone();
         let socket_id_clone = socket_id.clone();
@@ -1994,6 +2002,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let reconciliation_request_output = DataId::from("recording_reconciliation_request".to_owned());
     let reconciliation_snapshot_output =
         DataId::from("recording_reconciliation_snapshot".to_owned());
+    let lifecycle_command_output = DataId::from("lifecycle_command".to_owned());
+    let lifecycle_status_query_output = DataId::from("lifecycle_status_query".to_owned());
 
     let node_handle = Arc::new(Mutex::new(node));
     let shared_state = SharedState::new(schedule_feedback_spool);
@@ -2241,9 +2251,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node_clone_fleet_sub = node_clone_arm.clone();
     let node_clone_recording = node_clone_arm.clone();
     let node_clone_schedule = node_clone_arm.clone();
+    let node_clone_lifecycle = node_clone_arm.clone();
     let state_clone_arm = shared_state.clone();
 
     let state_clone_recording = shared_state.clone();
+    let state_clone_lifecycle = shared_state.clone();
+    let _lifecycle_processor = tokio::spawn(async move {
+        loop {
+            state_clone_lifecycle
+                .lifecycle
+                .sweep_pending(unix_now_ms().max(0) as u64);
+            if let Some(command) = state_clone_lifecycle.lifecycle.next_command() {
+                if let Ok(bytes) = serde_json::to_vec(&command) {
+                    if let Ok(mut node) = node_clone_lifecycle.lock() {
+                        let _ = node.send_output(
+                            lifecycle_command_output.clone(),
+                            Default::default(),
+                            BinaryArray::from_vec(vec![bytes.as_slice()]),
+                        );
+                    }
+                }
+            }
+            if state_clone_lifecycle.lifecycle.take_status_query() {
+                if let Ok(mut node) = node_clone_lifecycle.lock() {
+                    let _ = node.send_output(
+                        lifecycle_status_query_output.clone(),
+                        Default::default(),
+                        BinaryArray::from_vec(vec![b"{}".as_slice()]),
+                    );
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
     let _recording_processor = tokio::spawn(async move {
         loop {
             let next = state_clone_recording
@@ -3400,6 +3440,91 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         tracing::error!(
                                             "Failed to deserialize servo telemetry: {}",
                                             e
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "lifecycle_command_result" | "rover_lifecycle_command_result" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                if let Ok(result) = serde_json::from_slice::<LifecycleCommandResult>(
+                                    binary_array.value(0),
+                                ) {
+                                    if let Some(socket_id) =
+                                        state_for_video.lifecycle.take_pending(&result.request_id)
+                                    {
+                                        if let Some(namespace) = io_for_video
+                                            .lock()
+                                            .ok()
+                                            .and_then(|io| io.clone())
+                                            .and_then(|io| io.of("/"))
+                                        {
+                                            if let Some(socket) = socket_id
+                                                .parse()
+                                                .ok()
+                                                .and_then(|id| namespace.get_socket(id))
+                                            {
+                                                socket
+                                                    .emit("node_lifecycle_command_result", result)
+                                                    .ok();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "lifecycle_status" | "rover_lifecycle_status" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                if let Ok(status) =
+                                    serde_json::from_slice::<LifecycleStatus>(binary_array.value(0))
+                                {
+                                    if status.validate().is_ok() {
+                                        state_for_video.lifecycle.cache_status(status.clone());
+                                        if let Some(namespace) = io_for_video
+                                            .lock()
+                                            .ok()
+                                            .and_then(|io| io.clone())
+                                            .and_then(|io| io.of("/"))
+                                        {
+                                            emit_authenticated(
+                                                namespace,
+                                                &state_for_video.session_registry,
+                                                "lifecycle_status",
+                                                serde_json::to_value(status).unwrap_or(Value::Null),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "lifecycle_capabilities" | "rover_lifecycle_capabilities" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                if let Ok(capabilities) =
+                                    serde_json::from_slice::<Vec<LifecycleCapability>>(
+                                        binary_array.value(0),
+                                    )
+                                {
+                                    state_for_video
+                                        .lifecycle
+                                        .cache_capabilities(capabilities.clone());
+                                    if let Some(namespace) = io_for_video
+                                        .lock()
+                                        .ok()
+                                        .and_then(|io| io.clone())
+                                        .and_then(|io| io.of("/"))
+                                    {
+                                        emit_authenticated(
+                                            namespace,
+                                            &state_for_video.session_registry,
+                                            "lifecycle_capabilities",
+                                            serde_json::to_value(capabilities)
+                                                .unwrap_or(Value::Null),
                                         );
                                     }
                                 }

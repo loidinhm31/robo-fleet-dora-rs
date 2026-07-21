@@ -4,6 +4,7 @@ pub mod audio_types;
 pub mod config;
 pub mod detection_types;
 pub mod fleet_types;
+pub mod lifecycle_types;
 pub mod nlu_types;
 mod pcm_frame_packet;
 pub mod recording_occurrence_types;
@@ -22,6 +23,7 @@ pub use audio_types::*;
 pub use config::*;
 pub use detection_types::*;
 pub use fleet_types::*;
+pub use lifecycle_types::*;
 pub use nlu_types::*;
 pub use pcm_frame_packet::*;
 pub use recording_occurrence_types::*;
@@ -35,6 +37,8 @@ pub use speech_types::*;
 pub use tts_types::*;
 pub use video_types::*;
 
+#[cfg(test)]
+mod lifecycle_contract_tests;
 #[cfg(test)]
 mod pcm_frame_packet_tests;
 #[cfg(test)]

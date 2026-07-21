@@ -1,0 +1,13 @@
+[package]
+name = "lifecycle_manager"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dora-node-api = { workspace = true }
+eyre = { workspace = true }
+robo_rover_lib = { path = "../../robo_rover_lib" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }

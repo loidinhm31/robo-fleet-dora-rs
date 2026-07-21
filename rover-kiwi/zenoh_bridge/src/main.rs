@@ -8,7 +8,8 @@ use robo_rover_lib::{
     capture_age_ms, init_tracing, record_capture_age,
     types::{ArmCommandWithMetadata, InputSource, RoverCommandWithMetadata},
     AudioFrameMetadata, AudioFrameSequenceTracker, FrameSequenceTracker, JpegFramePacket,
-    MetricWindow, PcmFramePacket, PcmSampleFormat, VideoFrameMetadata,
+    LifecycleCommand, LifecycleCommandResult, LifecycleStatus, LifecycleWakeLease, MetricWindow,
+    PcmFramePacket, PcmSampleFormat, VideoFrameMetadata,
 };
 use std::time::{Duration, Instant};
 use zenoh::Config;
@@ -137,6 +138,40 @@ async fn main() -> Result<()> {
         })?;
     tracing::info!("Publisher: {}", resource_snapshot_topic);
 
+    let lifecycle_status_topic = format!("rover/{}/lifecycle/status/v1", entity_id);
+    let lifecycle_status_pub = session
+        .declare_publisher(&lifecycle_status_topic)
+        .await
+        .map_err(|e| {
+            eyre::eyre!(
+                "Failed to declare publisher {}: {}",
+                lifecycle_status_topic,
+                e
+            )
+        })?;
+    let lifecycle_result_topic = format!("rover/{}/lifecycle/result/v1", entity_id);
+    let lifecycle_result_pub = session
+        .declare_publisher(&lifecycle_result_topic)
+        .await
+        .map_err(|e| {
+            eyre::eyre!(
+                "Failed to declare publisher {}: {}",
+                lifecycle_result_topic,
+                e
+            )
+        })?;
+    let lifecycle_capabilities_topic = format!("rover/{}/lifecycle/capabilities/v1", entity_id);
+    let lifecycle_capabilities_pub = session
+        .declare_publisher(&lifecycle_capabilities_topic)
+        .await
+        .map_err(|e| {
+            eyre::eyre!(
+                "Failed to declare publisher {}: {}",
+                lifecycle_capabilities_topic,
+                e
+            )
+        })?;
+
     // Detection-only mode (YOLO, no tracking IDs) — separate from tracked_detections
     let detections_topic = format!("rover/{}/video/detections_only", entity_id);
     let detections_pub = session
@@ -253,6 +288,40 @@ async fn main() -> Result<()> {
         .map_err(|e| eyre::eyre!("Failed to declare subscriber {}: {}", audio_stream_topic, e))?;
     tracing::info!("Subscriber: {}", audio_stream_topic);
 
+    let lifecycle_command_topic = format!("rover/{}/cmd/lifecycle/v1", entity_id);
+    let lifecycle_command_sub = session
+        .declare_subscriber(&lifecycle_command_topic)
+        .await
+        .map_err(|e| {
+            eyre::eyre!(
+                "Failed to declare subscriber {}: {}",
+                lifecycle_command_topic,
+                e
+            )
+        })?;
+    let lifecycle_wake_lease_topic = format!("rover/{}/cmd/lifecycle-wake-lease/v1", entity_id);
+    let lifecycle_wake_lease_sub = session
+        .declare_subscriber(&lifecycle_wake_lease_topic)
+        .await
+        .map_err(|e| {
+            eyre::eyre!(
+                "Failed to declare subscriber {}: {}",
+                lifecycle_wake_lease_topic,
+                e
+            )
+        })?;
+    let lifecycle_query_topic = format!("rover/{}/cmd/lifecycle-query/v1", entity_id);
+    let lifecycle_query_sub = session
+        .declare_subscriber(&lifecycle_query_topic)
+        .await
+        .map_err(|e| {
+            eyre::eyre!(
+                "Failed to declare subscriber {}: {}",
+                lifecycle_query_topic,
+                e
+            )
+        })?;
+
     // =========================================================================
     // Dora output DataIds
     // =========================================================================
@@ -266,6 +335,9 @@ async fn main() -> Result<()> {
     let tts_command_output = DataId::from("tts_command".to_owned());
     let tts_config_command_output = DataId::from("tts_config_command".to_owned());
     let audio_stream_output = DataId::from("audio_stream".to_owned());
+    let lifecycle_command_output = DataId::from("lifecycle_command_relay".to_owned());
+    let lifecycle_wake_lease_output = DataId::from("lifecycle_wake_lease_relay".to_owned());
+    let lifecycle_status_query_output = DataId::from("lifecycle_status_query".to_owned());
 
     // Statistics
     let mut video_count: u64 = 0;
@@ -517,6 +589,19 @@ async fn main() -> Result<()> {
                                             "resource_snapshot" => {
                                                 let _ = resource_snapshot_pub.put(bytes).await;
                                             }
+                                            "lifecycle_status" => {
+                                                if serde_json::from_slice::<LifecycleStatus>(bytes).is_ok() {
+                                                    let _ = lifecycle_status_pub.put(bytes).await;
+                                                }
+                                            }
+                                            "lifecycle_command_result" => {
+                                                if serde_json::from_slice::<LifecycleCommandResult>(bytes).is_ok() {
+                                                    let _ = lifecycle_result_pub.put(bytes).await;
+                                                }
+                                            }
+                                            "lifecycle_capabilities" => {
+                                                let _ = lifecycle_capabilities_pub.put(bytes).await;
+                                            }
                                             "detections" => {
                                                 let _ = detections_pub.put(bytes).await;
                                             }
@@ -667,6 +752,25 @@ async fn main() -> Result<()> {
                         tracing::warn!(%error, "rejected invalid speaker audio payload");
                     }
                 }
+            }
+
+            Ok(sample) = lifecycle_command_sub.recv_async() => {
+                let payload = sample.payload().to_bytes();
+                if serde_json::from_slice::<LifecycleCommand>(&payload).is_ok() {
+                    let _ = node.send_output(lifecycle_command_output.clone(), Default::default(), BinaryArray::from_vec(vec![payload.as_ref()]));
+                } else { tracing::warn!("rejected malformed lifecycle command"); }
+            }
+
+            Ok(sample) = lifecycle_wake_lease_sub.recv_async() => {
+                let payload = sample.payload().to_bytes();
+                if serde_json::from_slice::<LifecycleWakeLease>(&payload).is_ok() {
+                    let _ = node.send_output(lifecycle_wake_lease_output.clone(), Default::default(), BinaryArray::from_vec(vec![payload.as_ref()]));
+                } else { tracing::warn!("rejected malformed lifecycle wake lease"); }
+            }
+
+            Ok(sample) = lifecycle_query_sub.recv_async() => {
+                let payload = sample.payload().to_bytes();
+                let _ = node.send_output(lifecycle_status_query_output.clone(), Default::default(), BinaryArray::from_vec(vec![payload.as_ref()]));
             }
 
             _ = walkie_metrics_interval.tick() => {

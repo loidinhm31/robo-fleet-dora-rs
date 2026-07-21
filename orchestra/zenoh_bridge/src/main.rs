@@ -7,8 +7,9 @@ use eyre::Result;
 use robo_rover_lib::{
     capture_age_ms, init_tracing, record_capture_age, AudioAction, AudioControl,
     AudioFrameMetadata, AudioFrameSequenceTracker, CameraAction, CameraControl, FleetSelectCommand,
-    FleetSubscriptionCommand, FrameSequenceTracker, JpegFramePacket, MetricWindow, PcmFramePacket,
-    PcmSampleFormat, StreamCommand, StreamControl, TargetedMediaControl,
+    FleetSubscriptionCommand, FrameSequenceTracker, JpegFramePacket, LifecycleCommand,
+    LifecycleCommandResult, LifecycleRole, LifecycleStatus, LifecycleWakeLease, MetricWindow,
+    PcmFramePacket, PcmSampleFormat, StreamCommand, StreamControl, TargetedMediaControl,
 };
 use serde_json;
 use std::collections::{BTreeMap, HashMap};
@@ -42,6 +43,9 @@ struct RoverSubscriptions {
     resource_snapshot_sub: ZenohSubscriber,
     voice_status_sub: ZenohSubscriber,
     tts_command_result_sub: ZenohSubscriber,
+    lifecycle_status_sub: ZenohSubscriber,
+    lifecycle_result_sub: ZenohSubscriber,
+    lifecycle_capabilities_sub: ZenohSubscriber,
 }
 
 struct LegacyAudioState {
@@ -146,6 +150,28 @@ async fn subscribe_to_rover(
         .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", voice_result_topic, e))?;
     tracing::info!("{}", voice_result_topic);
 
+    let lifecycle_status_topic = format!("rover/{}/lifecycle/status/v1", entity_id);
+    let lifecycle_status_sub = session
+        .declare_subscriber(&lifecycle_status_topic)
+        .await
+        .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", lifecycle_status_topic, e))?;
+    let lifecycle_result_topic = format!("rover/{}/lifecycle/result/v1", entity_id);
+    let lifecycle_result_sub = session
+        .declare_subscriber(&lifecycle_result_topic)
+        .await
+        .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", lifecycle_result_topic, e))?;
+    let lifecycle_capabilities_topic = format!("rover/{}/lifecycle/capabilities/v1", entity_id);
+    let lifecycle_capabilities_sub = session
+        .declare_subscriber(&lifecycle_capabilities_topic)
+        .await
+        .map_err(|e| {
+            eyre::eyre!(
+                "Failed to subscribe to {}: {}",
+                lifecycle_capabilities_topic,
+                e
+            )
+        })?;
+
     Ok(RoverSubscriptions {
         entity_id: entity_id.to_string(),
         video_sub,
@@ -160,6 +186,9 @@ async fn subscribe_to_rover(
         resource_snapshot_sub,
         voice_status_sub,
         tts_command_result_sub,
+        lifecycle_status_sub,
+        lifecycle_result_sub,
+        lifecycle_capabilities_sub,
     })
 }
 
@@ -383,6 +412,9 @@ async fn main() -> Result<()> {
     let resource_snapshot_output = DataId::from("resource_snapshot".to_owned());
     let voice_status_output = DataId::from("voice_status".to_owned());
     let tts_command_result_output = DataId::from("tts_command_result".to_owned());
+    let lifecycle_status_output = DataId::from("lifecycle_status".to_owned());
+    let lifecycle_result_output = DataId::from("lifecycle_command_result".to_owned());
+    let lifecycle_capabilities_output = DataId::from("lifecycle_capabilities".to_owned());
 
     // Statistics per rover
     let video_counts: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -462,6 +494,43 @@ async fn main() -> Result<()> {
                                             tracing::warn!(%error, "rejected targeted media control");
                                         }
                                     }
+                                }
+                            }
+
+                            "lifecycle_command_authorized" => {
+                                if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                                    if binary_array.len() == 1 {
+                                        let bytes = binary_array.value(0);
+                                        match serde_json::from_slice::<LifecycleCommand>(bytes) {
+                                            Ok(command) if command.validate().is_ok() && command.target.role == LifecycleRole::Rover && active_rovers.contains_key(&command.target.entity_id) => {
+                                                let topic = format!("rover/{}/cmd/lifecycle/v1", command.target.entity_id);
+                                                if let Err(error) = session.put(topic, bytes).await { tracing::warn!(%error, "failed to publish lifecycle command"); }
+                                            }
+                                            _ => tracing::warn!("rejected lifecycle command with invalid target"),
+                                        }
+                                    }
+                                }
+                            }
+
+                            "lifecycle_wake_lease_authorized" => {
+                                if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                                    if binary_array.len() == 1 {
+                                        let bytes = binary_array.value(0);
+                                        match serde_json::from_slice::<LifecycleWakeLease>(bytes) {
+                                            Ok(lease) if lease.validate().is_ok() && lease.target.role == LifecycleRole::Rover && active_rovers.contains_key(&lease.target.entity_id) => {
+                                                let topic = format!("rover/{}/cmd/lifecycle-wake-lease/v1", lease.target.entity_id);
+                                                if let Err(error) = session.put(topic, bytes).await { tracing::warn!(%error, "failed to publish lifecycle wake lease"); }
+                                            }
+                                            _ => tracing::warn!("rejected lifecycle wake lease with invalid target"),
+                                        }
+                                    }
+                                }
+                            }
+
+                            "lifecycle_status_query" => {
+                                for entity_id in active_rovers.keys() {
+                                    let topic = format!("rover/{}/cmd/lifecycle-query/v1", entity_id);
+                                    if let Err(error) = session.put(topic, b"{}").await { tracing::warn!(%error, %entity_id, "failed to publish lifecycle query"); }
                                 }
                             }
 
@@ -925,6 +994,28 @@ async fn main() -> Result<()> {
             result = receive_from_rovers(&active_rovers, |subs| &subs.tts_command_result_sub) => {
                 if let Some((_entity_id, sample)) = result {
                     forward_binary_output(&mut node, &tts_command_result_output, sample);
+                }
+            }
+
+            result = receive_from_rovers(&active_rovers, |subs| &subs.lifecycle_status_sub) => {
+                if let Some((entity_id, sample)) = result {
+                    let payload = sample.payload().to_bytes();
+                    if let Ok(status) = serde_json::from_slice::<LifecycleStatus>(&payload) {
+                        if status.target.entity_id == entity_id && status.validate().is_ok() { forward_binary_output(&mut node, &lifecycle_status_output, sample); }
+                    }
+                }
+            }
+
+            result = receive_from_rovers(&active_rovers, |subs| &subs.lifecycle_result_sub) => {
+                if let Some((_entity_id, sample)) = result {
+                    let payload = sample.payload().to_bytes();
+                    if serde_json::from_slice::<LifecycleCommandResult>(&payload).is_ok() { forward_binary_output(&mut node, &lifecycle_result_output, sample); }
+                }
+            }
+
+            result = receive_from_rovers(&active_rovers, |subs| &subs.lifecycle_capabilities_sub) => {
+                if let Some((_entity_id, sample)) = result {
+                    forward_binary_output(&mut node, &lifecycle_capabilities_output, sample);
                 }
             }
         }

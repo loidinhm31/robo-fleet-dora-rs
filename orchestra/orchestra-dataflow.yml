@@ -70,6 +70,9 @@ nodes:
         queue_size: 4
       fleet_subscription_command: web-bridge/fleet_subscription_command
       fleet_select_command: web-bridge/fleet_select_command
+      lifecycle_command_authorized: lifecycle-manager/lifecycle_authorized_command
+      lifecycle_wake_lease_authorized: lifecycle-manager/lifecycle_authorized_wake_lease
+      lifecycle_status_query: web-bridge/lifecycle_status_query
     outputs:
       # Data FROM active rovers via Zenoh (subscribers)
       - video_frame         # JPEG frames from rover camera (with entity_id in metadata)
@@ -84,6 +87,9 @@ nodes:
       - resource_snapshot # Resource snapshot from rover (with entity_id)
       - voice_status        # Per-rover voice lifecycle state
       - tts_command_result  # Terminal TTS lifecycle result
+      - lifecycle_command_result
+      - lifecycle_status
+      - lifecycle_capabilities
     env:
       RUST_LOG: info
       ZENOH_MODE: "peer"
@@ -178,6 +184,7 @@ nodes:
       - recording_reconciliation_request
       - recording_scheduler_manual_suppression_ack
       - recording_scheduler_status
+      - lifecycle_wake_lease
     env:
       RUST_LOG: info
       MONGODB_URI: "${MONGODB_URI:-mongodb://localhost:27017}"
@@ -242,6 +249,27 @@ nodes:
       RESOURCE_MONITOR_SCOPE: "${RESOURCE_MONITOR_SCOPE:-}"
       RESOURCE_MONITOR_NODES: '[{"node_id":"orchestra-bridge","executable":"orchestra_zenoh_bridge"},{"node_id":"central-speech-recognizer","executable":"central_speech_recognizer"},{"node_id":"command-parser","executable":"command_parser"},{"node_id":"recording-scheduler","executable":"recording_scheduler"},{"node_id":"media-recorder","executable":"media_recorder"},{"node_id":"web-bridge","executable":"web_bridge"}]'
 
+  - id: lifecycle-manager
+    build: cargo build --release -p lifecycle_manager
+    path: ../target/release/lifecycle_manager
+    inputs:
+      lifecycle_command: web-bridge/lifecycle_command
+      lifecycle_component_status: orchestra-bridge/lifecycle_status
+      lifecycle_wake_lease: recording-scheduler/lifecycle_wake_lease
+      lifecycle_status_query: web-bridge/lifecycle_status_query
+      tick: dora/timer/millis/1000
+    outputs:
+      - lifecycle_command_result
+      - lifecycle_status
+      - lifecycle_capabilities
+      - lifecycle_authorized_command
+      - lifecycle_authorized_wake_lease
+    env:
+      RUST_LOG: info
+      # Phase 3 flips workload capabilities after their adapters prove terminal release.
+      LIFECYCLE_CAPABILITIES: '[{"target":{"role":"orchestra","entity_id":"orchestra","node_id":"central-speech-recognizer"},"supported":false,"always_on":false},{"target":{"role":"orchestra","entity_id":"orchestra","node_id":"orchestra-bridge"},"supported":false,"always_on":true},{"target":{"role":"orchestra","entity_id":"orchestra","node_id":"web-bridge"},"supported":false,"always_on":true}]'
+      LIFECYCLE_REMOTE_ROVER_ENTITIES: "${ACTIVE_ROVERS:-rover-kiwi}"
+
   # Web bridge - Fleet control with entity selection
   - id: web-bridge
     build: cargo build --release -p web_bridge
@@ -272,6 +300,12 @@ nodes:
       servo_telemetry: orchestra-bridge/servo_telemetry
       rover_resource_snapshot: orchestra-bridge/resource_snapshot
       orchestra_resource_snapshot: resource-monitor/resource_snapshot
+      lifecycle_command_result: lifecycle-manager/lifecycle_command_result
+      lifecycle_status: lifecycle-manager/lifecycle_status
+      lifecycle_capabilities: lifecycle-manager/lifecycle_capabilities
+      rover_lifecycle_command_result: orchestra-bridge/lifecycle_command_result
+      rover_lifecycle_status: orchestra-bridge/lifecycle_status
+      rover_lifecycle_capabilities: orchestra-bridge/lifecycle_capabilities
 
       # Processed data (from rovers via orchestra-bridge)
       detections: orchestra-bridge/detections
@@ -355,6 +389,8 @@ nodes:
       - recording_scheduler_recorder_feedback
       - recording_reconciliation_request
       - recording_reconciliation_snapshot
+      - lifecycle_command
+      - lifecycle_status_query
     env:
       RUST_LOG: info
 

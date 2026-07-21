@@ -1,0 +1,63 @@
+{
+  "capabilities": [
+    {
+      "target": {
+        "role": "rover",
+        "entity_id": "rover-a",
+        "node_id": "gst-camera"
+      },
+      "supported": true,
+      "always_on": false
+    }
+  ],
+  "accepted_command": {
+    "protocol_version": 1,
+    "request_id": "11111111-1111-4111-8111-111111111111",
+    "manager_epoch": 42,
+    "target": {
+      "role": "rover",
+      "entity_id": "rover-a",
+      "node_id": "gst-camera"
+    },
+    "desired_state": "quiesced",
+    "expected_revision": 0,
+    "issued_at_ms": 1720000000000,
+    "expires_at_ms": 1720000030000
+  },
+  "accepted_result": {
+    "protocol_version": 1,
+    "request_id": "11111111-1111-4111-8111-111111111111",
+    "accepted": true,
+    "manager_epoch": 42,
+    "revision": 1,
+    "reason_code": null
+  },
+  "conflict_result": {
+    "protocol_version": 1,
+    "request_id": "22222222-2222-4222-8222-222222222222",
+    "accepted": false,
+    "manager_epoch": 42,
+    "revision": 1,
+    "reason_code": "conflict",
+    "detail": "expected revision is stale"
+  },
+  "status": {
+    "protocol_version": 1,
+    "manager_epoch": 42,
+    "target": {
+      "role": "rover",
+      "entity_id": "rover-a",
+      "node_id": "gst-camera"
+    },
+    "revision": 1,
+    "desired_state": "quiesced",
+    "effective_state": "quiesced",
+    "components": [
+      {
+        "node_id": "gst-camera",
+        "state": "quiesced"
+      }
+    ],
+    "updated_at_ms": 1720000000100
+  }
+}

@@ -19,7 +19,7 @@ nodes:
       SAMPLE_RATE: "16000"
       CHANNELS: "1"  # preserve downstream mono contract; multichannel mics are downmixed in audio_capture
       CHUNK_SIZE: "800"
-      AUDIO_DEVICE: "${AUDIO_DEVICE:-}"  # optional manual override; e.g. "pulse" or a device-name substring
+      AUDIO_DEVICE: "${AUDIO_DEVICE:-sysdefault:CARD=Camera}"
       # Debug: dump exactly what this node sends downstream (post downmix/resample,
       # 16 kHz mono f32) to a playable WAV (VLC/Audacity/ffmpeg). Complements
       # scripts/check-usb-microphone.py (OS-level) by verifying the in-pipeline
@@ -119,6 +119,24 @@ nodes:
       RESOURCE_MONITOR_ROLE: "rover"
       RESOURCE_MONITOR_SCOPE: "${RESOURCE_MONITOR_SCOPE:-}"
       RESOURCE_MONITOR_NODES: '[{"node_id":"audio-capture","executable":"audio_capture"},{"node_id":"audio-converter","executable":"audio_converter"},{"node_id":"edge-voice","executable":"edge_voice"},{"node_id":"audio-playback","executable":"audio_playback"},{"node_id":"gst-camera","executable":"kornia_capture"},{"node_id":"video-encoder","executable":"video_encoder"},{"node_id":"visual-servo-controller","executable":"visual_servo_controller"},{"node_id":"arm-controller","executable":"arm_controller"},{"node_id":"rover-controller","executable":"rover_controller"},{"node_id":"zenoh-bridge","executable":"rover_zenoh_bridge"}]'
+
+  - id: lifecycle-manager
+    build: cargo build --release -p lifecycle_manager
+    path: ../target/release/lifecycle_manager
+    inputs:
+      lifecycle_command_relay: zenoh-bridge/lifecycle_command_relay
+      lifecycle_wake_lease_relay: zenoh-bridge/lifecycle_wake_lease_relay
+      lifecycle_status_query: zenoh-bridge/lifecycle_status_query
+      tick: dora/timer/millis/1000
+    outputs:
+      - lifecycle_command_result
+      - lifecycle_status
+      - lifecycle_capabilities
+      - lifecycle_authorized_command
+    env:
+      RUST_LOG: info
+      # Phase 3 flips workload capabilities after their adapters prove terminal release.
+      LIFECYCLE_CAPABILITIES: '[{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"gst-camera"},"supported":false,"always_on":false},{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"audio-capture"},"supported":false,"always_on":false},{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"zenoh-bridge"},"supported":false,"always_on":true}]'
 
   # GStreamer camera capture + consolidated vision pipeline
   # Default: camera-only (zero ML overhead). Enable via TrackingCommand::Enable.
@@ -256,6 +274,9 @@ nodes:
       # arm_telemetry: sim-interface/arm_telemetry
       servo_telemetry: visual-servo-controller/servo_telemetry
       resource_snapshot: resource-monitor/resource_snapshot
+      lifecycle_command_result: lifecycle-manager/lifecycle_command_result
+      lifecycle_status: lifecycle-manager/lifecycle_status
+      lifecycle_capabilities: lifecycle-manager/lifecycle_capabilities
       voice_status:
         source: edge-voice/voice_status
         queue_size: 8
@@ -275,6 +296,9 @@ nodes:
       - tts_command
       - tts_config_command
       - audio_stream
+      - lifecycle_command_relay
+      - lifecycle_wake_lease_relay
+      - lifecycle_status_query
     env:
       RUST_LOG: info
       ZENOH_MODE: "peer"
