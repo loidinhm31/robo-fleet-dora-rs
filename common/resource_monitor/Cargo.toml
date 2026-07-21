@@ -1,5 +1,5 @@
 [package]
-name = "performance_monitor"
+name = "resource_monitor"
 version = "0.1.0"
 edition = "2021"
 
@@ -10,6 +10,5 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 robo_rover_lib = { path = "../../robo_rover_lib" }
-chrono = "0.4"
 sysinfo = "0.31"
-log = "0.4.28"
+chrono = "0.4"

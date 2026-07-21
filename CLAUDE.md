@@ -190,7 +190,7 @@ All node configuration is via environment variables in the dataflow YAML files. 
 ### Socket.IO Events
 
 **Web UI -> Backend**: `rover_command`, `tracking_command`, `camera_control`, `audio_control`, `tts_command`, `audio_stream`
-**Backend -> Web UI**: `video_frame` (JPEG), `tracked_detections`, `servo_telemetry`, `speech_transcription`, `performance_metrics`, `tracking_telemetry`
+**Backend -> Web UI**: `video_frame` (JPEG), `tracked_detections`, `servo_telemetry`, `speech_transcription`, `resource_snapshot`, `tracking_telemetry`
 
 ## References
 

@@ -9,8 +9,8 @@ use robo_rover_lib::types::{
     RecordingClipQuery, RecordingDeleteRequest, RecordingDeleteResult, RecordingOccurrence,
     RecordingPlaybackTicketRequest, RecordingScheduleCommandResult, RecordingScheduleSnapshot,
     RecordingSchedulerReadiness, RecordingSchedulerStatus, RecordingSessionAction,
-    RecordingSessionCommand, RecordingSessionState, SpeechTranscription, SttStatus, SystemMetrics,
-    TrackingCommand, TrackingTelemetry,
+    RecordingSessionCommand, RecordingSessionState, ResourceSnapshot, SpeechTranscription,
+    SttStatus, TrackingCommand, TrackingTelemetry,
 };
 use robo_rover_lib::{
     capture_age_ms, init_tracing, record_capture_age, ArmCommand, ArmCommandWithMetadata,
@@ -69,9 +69,7 @@ mod scheduled_recording_coordinator;
 use recording_access::RecordingAccess;
 use recording_schedule_feedback_spool::RecordingScheduleFeedbackSpool;
 use recording_schedule_queues::RecordingScheduleState;
-use recording_socket::{
-    PendingRequest, RecordingState, RequestKind, ScheduledCommandGuard,
-};
+use recording_socket::{PendingRequest, RecordingState, RequestKind, ScheduledCommandGuard};
 use scheduled_recording_coordinator::{CoordinatorEffect, ScheduledRecordingCoordinator};
 
 #[path = "media-demand-registry.rs"]
@@ -525,7 +523,6 @@ struct SharedState {
     pub fleet_select_command_queue: Arc<Mutex<Vec<FleetSelectCommand>>>,
     pub video_clients: Arc<Mutex<Vec<ClientState>>>,
     pub media_demand_registry: Arc<Mutex<MediaDemandRegistry>>,
-    pub performance_monitoring_enabled: Arc<Mutex<bool>>,
     pub auth_rate_limiter: Arc<AuthRateLimiter>,
     pub ip_rate_limiter: Arc<IpRateLimiter>,
     pub command_rate_limiter: Arc<CommandRateLimiter>,
@@ -593,7 +590,6 @@ impl SharedState {
             fleet_select_command_queue: Arc::new(Mutex::new(Vec::new())),
             video_clients: Arc::new(Mutex::new(Vec::new())),
             media_demand_registry: Arc::new(Mutex::new(MediaDemandRegistry::default())),
-            performance_monitoring_enabled: Arc::new(Mutex::new(true)),
             auth_rate_limiter: Arc::new(AuthRateLimiter::new()),
             ip_rate_limiter: Arc::new(IpRateLimiter::new()),
             command_rate_limiter: Arc::new(CommandRateLimiter::new()),
@@ -1674,17 +1670,6 @@ fn setup_socketio(
         );
 
         let shared_state_clone = shared_state.clone();
-        socket.on(
-            "performance_control",
-            move |_socket: SocketRef, Data::<Value>(data)| {
-                if let Some(enabled) = data.get("enabled").and_then(|v| v.as_bool()) {
-                    tracing::info!("Performance monitoring {}", if enabled { "enabled" } else { "disabled" });
-                    *shared_state_clone.performance_monitoring_enabled.lock().unwrap() = enabled;
-                }
-            },
-        );
-
-        let shared_state_clone = shared_state.clone();
         let socket_id_clone = socket_id.clone();
         let io_for_fleet_clone = io_for_fleet.clone();
         socket.on(
@@ -2388,10 +2373,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .and_then(|value| serde_json::to_vec(&value).ok())
                         .map(|bytes| (recording_schedule_query_output.clone(), bytes, false))
                 });
-            let next = if let Some(value) = feedback.as_ref().filter(|_| prefer_feedback || request.is_none()) {
+            let next = if let Some(value) = feedback
+                .as_ref()
+                .filter(|_| prefer_feedback || request.is_none())
+            {
                 serde_json::to_vec(&value.feedback)
                     .ok()
-                .map(|bytes| (scheduler_feedback_output.clone(), bytes, true))
+                    .map(|bytes| (scheduler_feedback_output.clone(), bytes, true))
             } else {
                 if feedback.is_some() {
                     pending_feedback = feedback.take();
@@ -3823,7 +3811,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if occurrence.validate().is_err() {
                                     continue;
                                 }
-                                if let Some(io) = io_for_video.lock().ok().and_then(|io| io.clone()) {
+                                if let Some(io) = io_for_video.lock().ok().and_then(|io| io.clone())
+                                {
                                     if let Some(namespace) = io.of("/") {
                                         emit_authenticated(
                                             namespace,
@@ -3856,7 +3845,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     readiness = ?status.readiness,
                                     "recording scheduler status updated"
                                 );
-                                if let Some(io) = io_for_video.lock().ok().and_then(|io| io.clone()) {
+                                if let Some(io) = io_for_video.lock().ok().and_then(|io| io.clone())
+                                {
                                     if let Some(namespace) = io.of("/") {
                                         emit_authenticated(
                                             namespace,
@@ -4078,45 +4068,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
-                    "performance_metrics" => {
-                        // Handle performance metrics from performance_monitor
-                        // Only forward if monitoring is enabled
-                        let monitoring_enabled = *state_for_video
-                            .performance_monitoring_enabled
-                            .lock()
-                            .unwrap();
-
-                        if monitoring_enabled {
-                            if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>()
+                    "resource_snapshot"
+                    | "rover_resource_snapshot"
+                    | "orchestra_resource_snapshot" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if let Some(snapshot_data) =
+                                (binary_array.len() > 0).then(|| binary_array.value(0))
                             {
-                                if binary_array.len() > 0 {
-                                    let metrics_data = binary_array.value(0);
-
-                                    // Deserialize SystemMetrics
-                                    match serde_json::from_slice::<SystemMetrics>(metrics_data) {
-                                        Ok(metrics) => {
-                                            tracing::trace!(
-                                                "Performance metrics - CPU: {:.1}%, Memory: {:.0}MB, FPS: {:.1}, Latency: {:.1}ms",
-                                                metrics.total_cpu_percent,
-                                                metrics.total_memory_mb,
-                                                metrics.dataflow_fps,
-                                                metrics.end_to_end_latency_ms
-                                            );
-
-                                            // Forward metrics to all connected clients
-                                            if let Some(ref io) = *io_for_video.lock().unwrap() {
-                                                let _ = io.of("/").unwrap().emit(
-                                                    "performance_metrics",
-                                                    serde_json::to_value(&metrics).unwrap(),
+                                match serde_json::from_slice::<ResourceSnapshot>(snapshot_data) {
+                                    Ok(snapshot) if snapshot.validate().is_ok() => {
+                                        tracing::trace!(entity_id = %snapshot.entity_id, sequence = snapshot.sequence, scope = ?snapshot.scope, "resource snapshot accepted");
+                                        if let Some(ref io) = *io_for_video.lock().unwrap() {
+                                            if let Some(namespace) = io.of("/") {
+                                                emit_authenticated(
+                                                    namespace,
+                                                    &state_for_video.session_registry,
+                                                    "resource_snapshot",
+                                                    serde_json::to_value(&snapshot)
+                                                        .unwrap_or(Value::Null),
                                                 );
                                             }
                                         }
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "Failed to deserialize performance metrics: {}",
-                                                e
-                                            );
-                                        }
+                                    }
+                                    Ok(_) => tracing::warn!("discarded invalid resource snapshot"),
+                                    Err(error) => {
+                                        tracing::warn!(%error, "discarded malformed resource snapshot")
                                     }
                                 }
                             }

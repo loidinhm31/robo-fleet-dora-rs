@@ -39,7 +39,7 @@ struct RoverSubscriptions {
     detections_sub: ZenohSubscriber,
     tracked_detections_sub: ZenohSubscriber,
     tracking_telemetry_sub: ZenohSubscriber,
-    metrics_sub: ZenohSubscriber,
+    resource_snapshot_sub: ZenohSubscriber,
     voice_status_sub: ZenohSubscriber,
     tts_command_result_sub: ZenohSubscriber,
 }
@@ -125,12 +125,12 @@ async fn subscribe_to_rover(
         .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", tracking_telemetry_topic, e))?;
     tracing::info!("{}", tracking_telemetry_topic);
 
-    let metrics_topic = format!("rover/{}/metrics", entity_id);
-    let metrics_sub = session
-        .declare_subscriber(&metrics_topic)
+    let resource_snapshot_topic = format!("rover/{}/resources/v1", entity_id);
+    let resource_snapshot_sub = session
+        .declare_subscriber(&resource_snapshot_topic)
         .await
-        .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", metrics_topic, e))?;
-    tracing::info!("{}", metrics_topic);
+        .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", resource_snapshot_topic, e))?;
+    tracing::info!("{}", resource_snapshot_topic);
 
     let voice_status_topic = voice_status_topic(entity_id);
     let voice_status_sub = session
@@ -157,7 +157,7 @@ async fn subscribe_to_rover(
         detections_sub,
         tracked_detections_sub,
         tracking_telemetry_sub,
-        metrics_sub,
+        resource_snapshot_sub,
         voice_status_sub,
         tts_command_result_sub,
     })
@@ -380,7 +380,7 @@ async fn main() -> Result<()> {
     let detections_output = DataId::from("detections".to_owned());
     let tracked_detections_output = DataId::from("tracked_detections".to_owned());
     let tracking_telemetry_output = DataId::from("tracking_telemetry".to_owned());
-    let performance_metrics_output = DataId::from("performance_metrics".to_owned());
+    let resource_snapshot_output = DataId::from("resource_snapshot".to_owned());
     let voice_status_output = DataId::from("voice_status".to_owned());
     let tts_command_result_output = DataId::from("tts_command_result".to_owned());
 
@@ -904,12 +904,12 @@ async fn main() -> Result<()> {
                 }
             }
 
-            // Receive from all active rovers' metrics
-            result = receive_from_rovers(&active_rovers, |subs| &subs.metrics_sub) => {
+            // Resource snapshots retain their producer scope and must match the topic entity.
+            result = receive_from_rovers(&active_rovers, |subs| &subs.resource_snapshot_sub) => {
                 if let Some((entity_id, sample)) = result {
-                    forward_telemetry_with_entity_id(
+                    forward_resource_snapshot(
                         &mut node,
-                        &performance_metrics_output,
+                        &resource_snapshot_output,
                         entity_id,
                         sample
                     );
@@ -998,6 +998,32 @@ fn forward_telemetry_with_entity_id(
         if let Ok(serialized) = serde_json::to_vec(&telemetry_json) {
             let arrow_data = BinaryArray::from_vec(vec![serialized.as_slice()]);
             let _ = node.send_output(output_id.clone(), Default::default(), arrow_data);
+        }
+    }
+}
+
+fn forward_resource_snapshot(
+    node: &mut DoraNode,
+    output_id: &DataId,
+    entity_id: String,
+    sample: zenoh::sample::Sample,
+) {
+    let payload = sample.payload().to_bytes();
+    let Ok(snapshot) = serde_json::from_slice::<robo_rover_lib::ResourceSnapshot>(&payload) else {
+        tracing::warn!(%entity_id, "discarded malformed rover resource snapshot");
+        return;
+    };
+    if snapshot.entity_id != entity_id
+        || snapshot.role != robo_rover_lib::ResourceRole::Rover
+        || snapshot.validate().is_err()
+    {
+        tracing::warn!(%entity_id, "discarded invalid rover resource snapshot");
+        return;
+    }
+    if let Ok(serialized) = serde_json::to_vec(&snapshot) {
+        let arrow_data = BinaryArray::from_vec(vec![serialized.as_slice()]);
+        if let Err(error) = node.send_output(output_id.clone(), Default::default(), arrow_data) {
+            tracing::warn!(%error, %entity_id, "failed to forward rover resource snapshot");
         }
     }
 }

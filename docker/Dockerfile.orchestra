@@ -23,6 +23,7 @@ COPY Cargo.lock ./
 
 # Copy shared library Cargo.toml
 COPY robo_rover_lib/Cargo.toml robo_rover_lib/
+COPY common/resource_monitor/Cargo.toml common/resource_monitor/
 
 # Copy orchestra node Cargo.toml files
 COPY common/web_bridge/Cargo.toml common/web_bridge/
@@ -40,6 +41,7 @@ COPY orchestra orchestra/
 # Build all orchestra nodes
 RUN cargo build --release \
     -p web_bridge \
+    -p resource_monitor \
     -p central_speech_recognizer \
     -p command_parser \
     -p media_recorder \
@@ -80,6 +82,7 @@ WORKDIR /app
 
 # Copy binaries from builder
 COPY --from=builder /build/target/release/web_bridge ./bin/
+COPY --from=builder /build/target/release/resource_monitor ./bin/
 COPY --from=builder /build/target/release/central_speech_recognizer ./bin/
 COPY --from=builder /build/target/release/command_parser ./bin/
 COPY --from=builder /build/target/release/media_recorder ./bin/

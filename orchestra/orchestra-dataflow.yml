@@ -81,7 +81,7 @@ nodes:
       - detections          # DetectionFrame raw YOLO (detection-only mode, with entity_id)
       - tracked_detections  # DetectionFrame with tracking IDs from rover (with entity_id)
       - tracking_telemetry  # Object tracking telemetry from rover (with entity_id)
-      - performance_metrics # System metrics from rover (with entity_id)
+      - resource_snapshot # Resource snapshot from rover (with entity_id)
       - voice_status        # Per-rover voice lifecycle state
       - tts_command_result  # Terminal TTS lifecycle result
     env:
@@ -227,6 +227,21 @@ nodes:
       RECORDING_ROOT: "${RECORDING_ROOT:-/home/robo-fleet-recordings}"
       RECORDING_CONTROL_QUEUE_CAPACITY: "${RECORDING_CONTROL_QUEUE_CAPACITY:-64}"
 
+  # Local Orchestra resources use the same versioned contract as rover resources.
+  - id: resource-monitor
+    build: cargo build --release -p resource_monitor
+    path: ../target/release/resource_monitor
+    inputs:
+      tick: dora/timer/millis/5000
+    outputs:
+      - resource_snapshot
+    env:
+      RUST_LOG: info
+      ENTITY_ID: "orchestra"
+      RESOURCE_MONITOR_ROLE: "orchestra"
+      RESOURCE_MONITOR_SCOPE: "${RESOURCE_MONITOR_SCOPE:-}"
+      RESOURCE_MONITOR_NODES: '[{"node_id":"orchestra-bridge","executable":"orchestra_zenoh_bridge"},{"node_id":"central-speech-recognizer","executable":"central_speech_recognizer"},{"node_id":"command-parser","executable":"command_parser"},{"node_id":"recording-scheduler","executable":"recording_scheduler"},{"node_id":"media-recorder","executable":"media_recorder"},{"node_id":"web-bridge","executable":"web_bridge"}]'
+
   # Web bridge - Fleet control with entity selection
   - id: web-bridge
     build: cargo build --release -p web_bridge
@@ -255,7 +270,8 @@ nodes:
       rover_telemetry: orchestra-bridge/rover_telemetry
       arm_telemetry: orchestra-bridge/arm_telemetry
       servo_telemetry: orchestra-bridge/servo_telemetry
-      performance_metrics: orchestra-bridge/performance_metrics
+      rover_resource_snapshot: orchestra-bridge/resource_snapshot
+      orchestra_resource_snapshot: resource-monitor/resource_snapshot
 
       # Processed data (from rovers via orchestra-bridge)
       detections: orchestra-bridge/detections
