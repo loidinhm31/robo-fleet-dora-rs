@@ -71,7 +71,6 @@ nodes:
       fleet_subscription_command: web-bridge/fleet_subscription_command
       fleet_select_command: web-bridge/fleet_select_command
       lifecycle_command_authorized: lifecycle-manager/lifecycle_authorized_command
-      lifecycle_wake_lease_authorized: lifecycle-manager/lifecycle_authorized_wake_lease
       lifecycle_status_query: web-bridge/lifecycle_status_query
     outputs:
       # Data FROM active rovers via Zenoh (subscribers)
@@ -119,9 +118,13 @@ nodes:
       stt_status_request:
         source: web-bridge/stt_status_request
         queue_size: 8
+      lifecycle_command:
+        source: lifecycle-manager/lifecycle_authorized_command
+        queue_size: 2
     outputs:
       - transcription  # SpeechTranscription
       - stt_status     # SttStatus loading/ready/error lifecycle
+      - lifecycle_component_status
     env:
       RUST_LOG: info
       STT_PROFILE: "${STT_PROFILE:-en-vad-offline}"
@@ -184,7 +187,6 @@ nodes:
       - recording_reconciliation_request
       - recording_scheduler_manual_suppression_ack
       - recording_scheduler_status
-      - lifecycle_wake_lease
     env:
       RUST_LOG: info
       MONGODB_URI: "${MONGODB_URI:-mongodb://localhost:27017}"
@@ -222,6 +224,9 @@ nodes:
       recording_reconciliation_request:
         source: web-bridge/recording_reconciliation_request
         queue_size: 8
+      lifecycle_command:
+        source: lifecycle-manager/lifecycle_authorized_command
+        queue_size: 2
     outputs:
       - recording_session_command_result
       - recording_session_status
@@ -229,6 +234,7 @@ nodes:
       - recording_playback_clip_result
       - recording_delete_result
       - recording_reconciliation_snapshot
+      - lifecycle_component_status
     env:
       RUST_LOG: info
       RECORDING_ROOT: "${RECORDING_ROOT:-/home/robo-fleet-recordings}"
@@ -255,7 +261,8 @@ nodes:
     inputs:
       lifecycle_command: web-bridge/lifecycle_command
       lifecycle_component_status: orchestra-bridge/lifecycle_status
-      lifecycle_wake_lease: recording-scheduler/lifecycle_wake_lease
+      lifecycle_component_status_recorder: media-recorder/lifecycle_component_status
+      lifecycle_component_status_stt: central-speech-recognizer/lifecycle_component_status
       lifecycle_status_query: web-bridge/lifecycle_status_query
       tick: dora/timer/millis/1000
     outputs:
@@ -263,11 +270,9 @@ nodes:
       - lifecycle_status
       - lifecycle_capabilities
       - lifecycle_authorized_command
-      - lifecycle_authorized_wake_lease
     env:
       RUST_LOG: info
-      # Phase 3 flips workload capabilities after their adapters prove terminal release.
-      LIFECYCLE_CAPABILITIES: '[{"target":{"role":"orchestra","entity_id":"orchestra","node_id":"central-speech-recognizer"},"supported":false,"always_on":false},{"target":{"role":"orchestra","entity_id":"orchestra","node_id":"orchestra-bridge"},"supported":false,"always_on":true},{"target":{"role":"orchestra","entity_id":"orchestra","node_id":"web-bridge"},"supported":false,"always_on":true}]'
+      LIFECYCLE_CAPABILITIES: '[{"target":{"role":"orchestra","entity_id":"orchestra","node_id":"central-speech-recognizer"},"supported":true,"always_on":false},{"target":{"role":"orchestra","entity_id":"orchestra","node_id":"media-recorder"},"supported":true,"always_on":false},{"target":{"role":"orchestra","entity_id":"orchestra","node_id":"orchestra-bridge"},"supported":false,"always_on":true},{"target":{"role":"orchestra","entity_id":"orchestra","node_id":"web-bridge"},"supported":false,"always_on":true}]'
       LIFECYCLE_REMOTE_ROVER_ENTITIES: "${ACTIVE_ROVERS:-rover-kiwi}"
 
   # Web bridge - Fleet control with entity selection

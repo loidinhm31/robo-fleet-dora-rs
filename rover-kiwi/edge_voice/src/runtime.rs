@@ -10,17 +10,18 @@ use dora_node_api::{
 };
 use eyre::{eyre, Result};
 use robo_rover_lib::{
-    init_tracing, TtsCommand, TtsCommandResult, TtsConfigCommand, TtsResultState, TtsRuntimeConfig,
-    VoiceReasonCode, VoiceState,
+    init_tracing, LifecycleCommand, LifecycleComponentState, LifecycleGate, LifecycleReasonCode,
+    LifecycleRole, LifecycleTarget, LifecycleTransition, TtsCommand, TtsCommandResult,
+    TtsConfigCommand, TtsResultState, TtsRuntimeConfig, VoiceReasonCode, VoiceState,
 };
 use serde_json::json;
 
 use crate::{
     config::DeploymentConfig,
     protocol::{
-        audio_metadata, command_result, parse_config_command, parse_playback_state,
-        parse_tts_command, sanitized_error, to_binary, validate_result, validate_voice_status,
-        voice_status, walkie_is_active,
+        audio_metadata, command_result, current_time_ms, parse_config_command,
+        parse_playback_state, parse_tts_command, sanitized_error, to_binary, validate_result,
+        validate_voice_status, voice_status, walkie_is_active,
     },
     queue::{EnqueueStatus, VoiceQueue},
     tts_pacer::{InstantClock, PacingSnapshot, TtsAudioChunk, TtsPacer},
@@ -38,21 +39,46 @@ pub fn run() -> Result<()> {
     let (mut node, mut events) = DoraNode::init_from_env()?;
     let outputs = Outputs::default();
     let mut runtime = RuntimeState::new(deployment.clone());
+    let mut lifecycle_gate = LifecycleGate::new(LifecycleTarget {
+        role: LifecycleRole::Rover,
+        entity_id: runtime.entity_id.clone(),
+        node_id: "edge-voice".into(),
+    });
     emit_status(
         &mut node,
         &outputs,
         runtime.status(VoiceState::Loading, None, None),
     )?;
 
-    let (worker, worker_rx) = worker::spawn(deployment);
+    let (mut worker, mut worker_rx) = worker::spawn(deployment.clone());
     tracing::info!("edge_voice node initialized; model loading on worker");
 
     loop {
-        emit_due_paced_chunk(&mut node, &outputs, &mut runtime, &worker)?;
-        drain_worker_events(&mut node, &outputs, &mut runtime, &worker, &worker_rx)?;
+        if lifecycle_gate.admission_open() || runtime.lifecycle_resume_pending {
+            emit_due_paced_chunk(&mut node, &outputs, &mut runtime, &worker)?;
+            drain_worker_events(&mut node, &outputs, &mut runtime, &worker, &worker_rx)?;
+            complete_ready_lifecycle_resume(
+                &mut node,
+                &outputs,
+                &mut runtime,
+                &mut lifecycle_gate,
+            )?;
+        }
         emit_periodic_metrics(&mut node, &outputs, &mut runtime)?;
 
         match events.recv_timeout(runtime.input_timeout()) {
+            Some(Event::Input { id, data, .. }) if id.as_str() == "lifecycle_command" => {
+                handle_lifecycle_command(
+                    binary_payload(data.as_ref())?,
+                    &mut node,
+                    &outputs,
+                    &mut runtime,
+                    &mut lifecycle_gate,
+                    &mut worker,
+                    &mut worker_rx,
+                    &deployment,
+                )?;
+            }
             Some(Event::Input { id, data, .. }) => {
                 if let Err(error) = handle_input(
                     id.as_str(),
@@ -61,14 +87,17 @@ pub fn run() -> Result<()> {
                     &outputs,
                     &mut runtime,
                     &worker,
+                    &lifecycle_gate,
                 ) {
                     tracing::warn!(%error, input = %id, "edge_voice rejected input");
                 }
-                dispatch_if_idle(&mut runtime, &worker, &mut node, &outputs)?;
+                if lifecycle_gate.admission_open() {
+                    dispatch_if_idle(&mut runtime, &worker, &mut node, &outputs)?;
+                }
             }
             Some(Event::Stop(_)) => {
                 worker.stop();
-                drain_worker_events_until(
+                let _ = drain_worker_events_until(
                     &mut node,
                     &outputs,
                     &mut runtime,
@@ -97,6 +126,7 @@ struct Outputs {
     tts_command_result: DataId,
     tts_synthesis_state: DataId,
     metrics: DataId,
+    lifecycle_component_status: DataId,
 }
 
 impl Default for Outputs {
@@ -107,6 +137,7 @@ impl Default for Outputs {
             tts_command_result: DataId::from("tts_command_result".to_string()),
             tts_synthesis_state: DataId::from("tts_synthesis_state".to_string()),
             metrics: DataId::from("metrics".to_string()),
+            lifecycle_component_status: DataId::from("lifecycle_component_status".to_string()),
         }
     }
 }
@@ -133,6 +164,10 @@ struct RuntimeState {
     current_revision: u64,
     ready: bool,
     load_failed: bool,
+    worker_active: bool,
+    /// A lifecycle Resume is not complete until the replacement worker has
+    /// reported that its model is loaded and ready to accept fresh work.
+    lifecycle_resume_pending: bool,
     busy: bool,
     walkie_active: bool,
     active_command_id: Option<String>,
@@ -156,6 +191,8 @@ impl RuntimeState {
             current_revision: 0,
             ready: false,
             load_failed: false,
+            worker_active: true,
+            lifecycle_resume_pending: false,
             busy: false,
             walkie_active: false,
             active_command_id: None,
@@ -236,6 +273,7 @@ fn handle_input(
     outputs: &Outputs,
     runtime: &mut RuntimeState,
     worker: &WorkerHandle,
+    lifecycle_gate: &LifecycleGate,
 ) -> Result<()> {
     match id {
         "tts_command" | "tts_command_web" => {
@@ -246,7 +284,7 @@ fn handle_input(
                 priority = ?command.priority,
                 "edge_voice received TTS command"
             );
-            handle_tts_command(command, node, outputs, runtime)?;
+            handle_tts_command(command, node, outputs, runtime, lifecycle_gate)?;
         }
         "tts_config_command" | "tts_config" => {
             let command = parse_config_command(binary_payload(data)?)?;
@@ -379,12 +417,218 @@ fn handle_input(
     Ok(())
 }
 
+fn handle_lifecycle_command(
+    bytes: &[u8],
+    node: &mut DoraNode,
+    outputs: &Outputs,
+    runtime: &mut RuntimeState,
+    gate: &mut LifecycleGate,
+    worker: &mut WorkerHandle,
+    worker_rx: &mut Receiver<WorkerEvent>,
+    deployment: &DeploymentConfig,
+) -> Result<()> {
+    let command = serde_json::from_slice::<LifecycleCommand>(bytes)?;
+    let Some(transition) = gate.begin(&command).map_err(eyre::Report::msg)? else {
+        return Ok(());
+    };
+    emit_lifecycle_status(
+        node,
+        outputs,
+        gate,
+        match transition {
+            LifecycleTransition::Quiesce => LifecycleComponentState::Quiescing,
+            LifecycleTransition::Resume => LifecycleComponentState::Resuming,
+        },
+        None,
+    )?;
+
+    match transition {
+        LifecycleTransition::Quiesce => {
+            if !runtime.worker_active && !runtime.lifecycle_resume_pending {
+                gate.complete(LifecycleTransition::Quiesce);
+                return emit_lifecycle_status(
+                    node,
+                    outputs,
+                    gate,
+                    LifecycleComponentState::Quiesced,
+                    None,
+                );
+            }
+            runtime.lifecycle_resume_pending = false;
+            interrupt_for_lifecycle(node, outputs, runtime, worker)?;
+            worker.stop();
+            let stopped = drain_worker_events_until(
+                node,
+                outputs,
+                runtime,
+                worker,
+                worker_rx,
+                Duration::from_secs(2),
+            )?;
+            if !stopped {
+                runtime.ready = false;
+                emit_lifecycle_status(
+                    node,
+                    outputs,
+                    gate,
+                    LifecycleComponentState::Failed,
+                    Some(LifecycleReasonCode::Timeout),
+                )?;
+                return Ok(());
+            }
+            runtime.ready = false;
+            runtime.load_failed = false;
+            runtime.worker_active = false;
+        }
+        LifecycleTransition::Resume => {
+            if runtime.worker_active && !runtime.load_failed {
+                if runtime.ready {
+                    gate.complete(LifecycleTransition::Resume);
+                    return emit_lifecycle_status(
+                        node,
+                        outputs,
+                        gate,
+                        LifecycleComponentState::Running,
+                        None,
+                    );
+                }
+                runtime.lifecycle_resume_pending = true;
+                return Ok(());
+            }
+            let (new_worker, new_worker_rx) = worker::spawn(deployment.clone());
+            *worker = new_worker;
+            *worker_rx = new_worker_rx;
+            runtime.ready = false;
+            runtime.load_failed = false;
+            runtime.worker_active = true;
+            runtime.lifecycle_resume_pending = true;
+            return Ok(());
+        }
+    }
+
+    gate.complete(transition);
+    emit_lifecycle_status(
+        node,
+        outputs,
+        gate,
+        match transition {
+            LifecycleTransition::Quiesce => LifecycleComponentState::Quiesced,
+            LifecycleTransition::Resume => LifecycleComponentState::Running,
+        },
+        None,
+    )
+}
+
+fn complete_ready_lifecycle_resume(
+    node: &mut DoraNode,
+    outputs: &Outputs,
+    runtime: &mut RuntimeState,
+    gate: &mut LifecycleGate,
+) -> Result<()> {
+    if !runtime.lifecycle_resume_pending {
+        return Ok(());
+    }
+    if runtime.load_failed {
+        runtime.lifecycle_resume_pending = false;
+        return emit_lifecycle_status(
+            node,
+            outputs,
+            gate,
+            LifecycleComponentState::Failed,
+            Some(LifecycleReasonCode::Internal),
+        );
+    }
+    if !runtime.ready {
+        return Ok(());
+    }
+    runtime.lifecycle_resume_pending = false;
+    gate.complete(LifecycleTransition::Resume);
+    emit_lifecycle_status(node, outputs, gate, LifecycleComponentState::Running, None)
+}
+
+fn interrupt_for_lifecycle(
+    node: &mut DoraNode,
+    outputs: &Outputs,
+    runtime: &mut RuntimeState,
+    worker: &WorkerHandle,
+) -> Result<()> {
+    if let Some(command_id) = runtime.active_command_id.clone() {
+        request_worker_cancel(runtime, worker, VoiceReasonCode::InterruptedByLifecycle);
+        runtime.record_terminal(
+            TtsResultState::Interrupted,
+            Some(VoiceReasonCode::InterruptedByLifecycle),
+        );
+        runtime.busy = false;
+        runtime.active_command_id = None;
+        runtime.active_revision = None;
+        runtime.active_config = None;
+        runtime.synthesis_finished = false;
+        runtime.playback_failure_pending = false;
+        runtime.clear_pacing_for_active_command();
+        let result = command_result(
+            &runtime.entity_id,
+            &command_id,
+            TtsResultState::Interrupted,
+            Some(VoiceReasonCode::InterruptedByLifecycle),
+            Some("interrupted by lifecycle quiesce".to_string()),
+        );
+        emit_synthesis_state(node, outputs, result.clone())?;
+        emit_result(node, outputs, result)?;
+    }
+    for command_id in runtime.queue.clear_ids() {
+        emit_result(
+            node,
+            outputs,
+            command_result(
+                &runtime.entity_id,
+                &command_id,
+                TtsResultState::Interrupted,
+                Some(VoiceReasonCode::InterruptedByLifecycle),
+                Some("interrupted by lifecycle quiesce".to_string()),
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+fn emit_lifecycle_status(
+    node: &mut DoraNode,
+    outputs: &Outputs,
+    gate: &LifecycleGate,
+    state: LifecycleComponentState,
+    reason: Option<LifecycleReasonCode>,
+) -> Result<()> {
+    let status = gate.status(state, reason, current_time_ms());
+    status.validate().map_err(eyre::Report::msg)?;
+    node.send_output(
+        outputs.lifecycle_component_status.clone(),
+        Default::default(),
+        to_binary(&status)?,
+    )?;
+    Ok(())
+}
+
 fn handle_tts_command(
     command: TtsCommand,
     node: &mut DoraNode,
     outputs: &Outputs,
     runtime: &mut RuntimeState,
+    lifecycle_gate: &LifecycleGate,
 ) -> Result<()> {
+    if !lifecycle_gate.admission_open() {
+        emit_result(
+            node,
+            outputs,
+            command_result(
+                &runtime.entity_id,
+                &command.command_id,
+                TtsResultState::Rejected,
+                Some(VoiceReasonCode::VoiceNotReady),
+                Some("voice engine is quiesced".to_string()),
+            ),
+        )?;
+        return Ok(());
+    }
     if runtime.walkie_active {
         emit_result(
             node,
@@ -528,7 +772,7 @@ fn drain_worker_events_until(
     worker: &WorkerHandle,
     worker_rx: &Receiver<WorkerEvent>,
     timeout: Duration,
-) -> Result<()> {
+) -> Result<bool> {
     let deadline = Instant::now() + timeout;
     loop {
         emit_due_paced_chunk(node, outputs, runtime, worker)?;
@@ -542,7 +786,7 @@ fn drain_worker_events_until(
                 runtime.counters.worker_backpressure_count.saturating_add(1);
             std::thread::sleep(runtime.input_timeout());
             if Instant::now() >= deadline {
-                return Ok(());
+                return Ok(false);
             }
             continue;
         }
@@ -553,11 +797,11 @@ fn drain_worker_events_until(
                     handle_worker_event(node, outputs, runtime, worker, event)?;
                 }
                 if stopped {
-                    return Ok(());
+                    return Ok(true);
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) if Instant::now() < deadline => {}
-            Err(_) => return Ok(()),
+            Err(_) => return Ok(false),
         }
     }
 }
@@ -1250,6 +1494,17 @@ mod tests {
         assert_eq!(payload["worker_backpressure_count"], 3);
         assert_eq!(payload["cancellation_count"], 1);
         assert_eq!(payload["terminal_reason"], "interrupted_by_walkie");
+    }
+
+    #[test]
+    fn lifecycle_interruption_has_a_distinct_terminal_reason() {
+        assert_eq!(
+            terminal_reason_label(
+                TtsResultState::Interrupted,
+                Some(VoiceReasonCode::InterruptedByLifecycle),
+            ),
+            "interrupted_by_lifecycle"
+        );
     }
 
     #[test]

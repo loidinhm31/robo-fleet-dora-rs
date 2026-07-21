@@ -142,7 +142,9 @@ fn is_valid_rejected_result_reason(reason: VoiceReasonCode) -> bool {
 fn is_valid_interrupted_result_reason(reason: VoiceReasonCode) -> bool {
     matches!(
         reason,
-        VoiceReasonCode::InterruptedByWalkie | VoiceReasonCode::Cancelled
+        VoiceReasonCode::InterruptedByWalkie
+            | VoiceReasonCode::InterruptedByLifecycle
+            | VoiceReasonCode::Cancelled
     )
 }
 

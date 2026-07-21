@@ -7,11 +7,10 @@ use dora_node_api::{
 };
 use eyre::Result;
 use robo_rover_lib::{
-    scheduled_intent_id, AuthenticatedRecordingScheduleCommand, LifecycleRole, LifecycleTarget,
-    LifecycleWakeLease, LifecycleWakeLeaseAction, RecordingCoordinatorFeedback,
+    scheduled_intent_id, AuthenticatedRecordingScheduleCommand, RecordingCoordinatorFeedback,
     RecordingReconciliationRequest, RecordingReconciliationSnapshot, RecordingScheduleQuery,
     RecordingScheduleSnapshot, RecordingSchedulerReadiness, RecordingSchedulerStatus,
-    ScheduledRecordingIntent, ScheduledRecordingIntentAction, RECORDING_SCHEDULE_PROTOCOL_VERSION,
+    ScheduledRecordingIntentAction, RECORDING_SCHEDULE_PROTOCOL_VERSION,
 };
 
 use crate::{
@@ -137,7 +136,6 @@ fn run_ready_session(
     let snapshot_result = DataId::from("recording_schedule_snapshot".to_owned());
     let occurrence_status = DataId::from("recording_occurrence_status".to_owned());
     let intent = DataId::from("scheduled_recording_intent".to_owned());
-    let wake_lease = DataId::from("lifecycle_wake_lease".to_owned());
     let reconcile = DataId::from("recording_reconciliation_request".to_owned());
     let manual_suppression_ack =
         DataId::from("recording_scheduler_manual_suppression_ack".to_owned());
@@ -335,7 +333,6 @@ fn run_ready_session(
                                 &repository,
                                 &mut node,
                                 &intent,
-                                &wake_lease,
                                 &mut scheduler,
                             )?;
                         }
@@ -343,7 +340,7 @@ fn run_ready_session(
                         // every durable live group only after its recorder snapshot barrier
                         // has crossed the bridge, so matching sessions are adopted instead
                         // of blindly started a second time.
-                        replay_desired_groups(&mut node, &intent, &wake_lease, &scheduler)?;
+                        replay_desired_groups(&mut node, &intent, &scheduler)?;
                         replay_manual_suppression_acks(
                             &mut node,
                             &manual_suppression_ack,
@@ -390,7 +387,6 @@ fn run_ready_session(
             &repository,
             node,
             &intent,
-            &wake_lease,
             &occurrence_status,
             &mut scheduler,
         )?;
@@ -399,7 +395,6 @@ fn run_ready_session(
             &repository,
             node,
             &intent,
-            &wake_lease,
             &occurrence_status,
             &mut scheduler,
         )?;
@@ -454,7 +449,6 @@ fn emit_due(
     repository: &MongoRepository,
     node: &mut DoraNode,
     output: &DataId,
-    wake_lease_output: &DataId,
     occurrence_output: &DataId,
     scheduler: &mut SchedulerRuntime<SystemClock>,
 ) -> Result<()> {
@@ -491,7 +485,6 @@ fn emit_due(
             "scheduled recording start intent emitted"
         );
         send(node, output, &value)?;
-        send_wake_leases(node, wake_lease_output, &value)?;
         send(node, occurrence_output, &occurrence_status)?;
     }
     Ok(())
@@ -502,7 +495,6 @@ fn emit_stops(
     repository: &MongoRepository,
     node: &mut DoraNode,
     output: &DataId,
-    wake_lease_output: &DataId,
     occurrence_output: &DataId,
     scheduler: &mut SchedulerRuntime<SystemClock>,
 ) -> Result<()> {
@@ -539,7 +531,6 @@ fn emit_stops(
             "scheduled recording stop intent emitted"
         );
         send(node, output, &value)?;
-        send_wake_leases(node, wake_lease_output, &value)?;
         send(node, occurrence_output, &occurrence_status)?;
     }
     Ok(())
@@ -550,7 +541,6 @@ fn replay_pending(
     repository: &MongoRepository,
     node: &mut DoraNode,
     output: &DataId,
-    wake_lease_output: &DataId,
     scheduler: &mut SchedulerRuntime<SystemClock>,
 ) -> Result<()> {
     let records = tokio
@@ -565,7 +555,6 @@ fn replay_pending(
     }
     for intent in recovery.replay {
         send(node, output, &intent)?;
-        send_wake_leases(node, wake_lease_output, &intent)?;
     }
     Ok(())
 }
@@ -573,7 +562,6 @@ fn replay_pending(
 fn replay_desired_groups(
     node: &mut DoraNode,
     output: &DataId,
-    wake_lease_output: &DataId,
     scheduler: &SchedulerRuntime<SystemClock>,
 ) -> Result<()> {
     for group in scheduler
@@ -600,33 +588,6 @@ fn replay_desired_groups(
             ScheduledRecordingIntentAction::Acquire,
         );
         send(node, output, &intent)?;
-        send_wake_leases(node, wake_lease_output, &intent)?;
-    }
-    Ok(())
-}
-
-fn send_wake_leases(
-    node: &mut DoraNode,
-    output: &DataId,
-    intent: &ScheduledRecordingIntent,
-) -> Result<()> {
-    let action = match intent.action {
-        ScheduledRecordingIntentAction::Acquire => LifecycleWakeLeaseAction::Acquire,
-        ScheduledRecordingIntentAction::Release => LifecycleWakeLeaseAction::Release,
-    };
-    for node_id in ["gst-camera", "audio-capture"] {
-        let lease = LifecycleWakeLease {
-            protocol_version: 1,
-            lease_id: format!("{}-{}", intent.intent_id, node_id),
-            target: LifecycleTarget {
-                role: LifecycleRole::Rover,
-                entity_id: intent.entity_id.clone(),
-                node_id: node_id.into(),
-            },
-            expires_at_ms: intent.planned_end_ms.max(1) as u64,
-            action,
-        };
-        send(node, output, &lease)?;
     }
     Ok(())
 }

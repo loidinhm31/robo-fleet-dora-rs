@@ -51,6 +51,7 @@ pub enum LifecycleReasonCode {
     Expired,
     StaleEpoch,
     DuplicateMismatch,
+    InterruptedByLifecycle,
     Timeout,
     Internal,
 }

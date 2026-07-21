@@ -18,7 +18,10 @@ use reid_extractor::ReIdConfig;
 use robo_rover_lib::{
     init_tracing,
     types::{TrackingCommand, TrackingState, TrackingTelemetry},
-    CameraAction, CameraControl, MetricWindow, StreamCommand, StreamControl,
+    AutonomousMotionSafetyAck, AutonomousMotionSafetyCommand, CameraAction, CameraControl,
+    LifecycleCommand, LifecycleComponentState, LifecycleDesiredState, LifecycleGate,
+    LifecycleReasonCode, LifecycleRole, LifecycleTarget, LifecycleTransition, MetricWindow,
+    StreamCommand, StreamControl,
 };
 use std::{
     env,
@@ -68,6 +71,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pipeline_config = build_pipeline_config()?;
 
     let frame_output = DataId::from("frame".to_owned());
+    let lifecycle_status_output = DataId::from("lifecycle_component_status".to_owned());
+    let autonomous_motion_safety_output = DataId::from("autonomous_motion_safety".to_owned());
     let (mut node, mut events) = DoraNode::init_from_env()?;
     let mut frame_id = 0u64;
     let mut last_capture = None;
@@ -94,6 +99,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut vision_output_log_state = VisionOutputLogState::default();
     let mut vision_worker = Some(VisionWorker::start(pipeline_config));
     let mut vision_submission = VisionSubmissionGate::default();
+    let mut lifecycle_gate = LifecycleGate::new(LifecycleTarget {
+        role: LifecycleRole::Rover,
+        entity_id: env::var("ENTITY_ID").unwrap_or_else(|_| "rover-kiwi".into()),
+        node_id: "gst-camera".into(),
+    });
+    let mut quiesce_stop_barrier = QuiesceStopBarrier::default();
 
     while let Some(event) = events.recv() {
         if let Some(worker) = &vision_worker {
@@ -120,6 +131,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match event {
             Event::Input { id, metadata, data } => match id.as_str() {
                 "tick" => {
+                    if !lifecycle_gate.admission_open() {
+                        continue;
+                    }
                     let capture_started = Instant::now();
                     let Some(ref mut camera) = camera_opt else {
                         capture_metrics.record_drop();
@@ -296,6 +310,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 "camera_control" | "camera_control_voice" => {
+                    if !lifecycle_gate.admission_open() {
+                        tracing::debug!("camera control ignored while lifecycle-quiesced");
+                        continue;
+                    }
                     let source = if id.as_str() == "camera_control_voice" {
                         "voice"
                     } else {
@@ -333,6 +351,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 "tracking_command" => {
+                    if !lifecycle_gate.admission_open() {
+                        tracing::debug!("tracking command ignored while lifecycle-quiesced");
+                        continue;
+                    }
                     if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
                         if binary_array.len() > 0 {
                             match serde_json::from_slice::<TrackingCommand>(binary_array.value(0)) {
@@ -370,6 +392,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 "stream_control" => {
+                    if !lifecycle_gate.admission_open() {
+                        tracing::debug!("stream control ignored while lifecycle-quiesced");
+                        continue;
+                    }
                     if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
                         if binary_array.len() > 0 {
                             match serde_json::from_slice::<StreamControl>(binary_array.value(0)) {
@@ -383,6 +409,187 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 Err(e) => tracing::error!("Failed to parse StreamControl: {e}"),
                             }
+                        }
+                    }
+                }
+                "lifecycle_command" => {
+                    let Some(bytes) = single_binary(&*data) else {
+                        continue;
+                    };
+                    let Ok(command) = serde_json::from_slice::<LifecycleCommand>(bytes) else {
+                        tracing::warn!("invalid lifecycle command for camera");
+                        continue;
+                    };
+                    let transition = match lifecycle_gate.begin(&command) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            tracing::warn!(%error, "rejected lifecycle command for camera");
+                            continue;
+                        }
+                    };
+                    let Some(transition) = transition else {
+                        continue;
+                    };
+                    send_lifecycle_status(
+                        &mut node,
+                        &lifecycle_status_output,
+                        &lifecycle_gate,
+                        match transition {
+                            LifecycleTransition::Quiesce => LifecycleComponentState::Quiescing,
+                            LifecycleTransition::Resume => LifecycleComponentState::Resuming,
+                        },
+                        None,
+                    )?;
+                    let result: Result<(), Box<dyn std::error::Error>> = match transition {
+                        LifecycleTransition::Quiesce => {
+                            vision_submission.disable();
+                            view_output.enabled = false;
+                            send_disabled_tracking_telemetry(&mut node)?;
+                            if quiesce_stop_barrier.is_pending() {
+                                // The existing stop remains sufficient, but its acknowledgement
+                                // now belongs to this newer quiesce authority.
+                                quiesce_stop_barrier.retarget(lifecycle_gate.authority())?;
+                                continue;
+                            }
+                            let safety_command =
+                                quiesce_stop_barrier.begin(lifecycle_gate.authority())?;
+                            send_autonomous_motion_safety(
+                                &mut node,
+                                &autonomous_motion_safety_output,
+                                &safety_command,
+                            )?;
+                            // Do not release camera/model resources until the always-on rover
+                            // controller has accepted and forwarded an explicit Stop command.
+                            // The acknowledgement is controller-level only, not motor feedback.
+                            continue;
+                        }
+                        LifecycleTransition::Resume => {
+                            if quiesce_stop_barrier.is_pending() {
+                                // A release must follow the stop in controller order. Wait for
+                                // the outstanding stop acknowledgement instead of reporting a
+                                // false failure or allowing stale teardown.
+                                continue;
+                            } else if camera_opt.is_some() && vision_worker.is_some() {
+                                // A fresh Running authority can arrive after a manager or
+                                // adapter restart reconciliation. Keep a healthy active camera
+                                // and worker intact instead of recreating their resources.
+                                Ok(())
+                            } else {
+                                if let Some(camera) = camera_opt.take() {
+                                    camera.close()?;
+                                }
+                                shutdown_worker(&mut vision_worker);
+                                let release = AutonomousMotionSafetyCommand::release();
+                                send_autonomous_motion_safety(
+                                    &mut node,
+                                    &autonomous_motion_safety_output,
+                                    &release,
+                                )?;
+                                let camera = build_camera(&source_type, &source_uri)?;
+                                camera.start()?;
+                                camera_opt = Some(camera);
+                                vision_worker = Some(VisionWorker::start(build_pipeline_config()?));
+                                vision_submission.disable();
+                                Ok(())
+                            }
+                        }
+                    };
+                    match result {
+                        Ok(()) => {
+                            lifecycle_gate.complete(transition);
+                            let state = match transition {
+                                LifecycleTransition::Quiesce => LifecycleComponentState::Quiesced,
+                                LifecycleTransition::Resume => LifecycleComponentState::Running,
+                            };
+                            send_lifecycle_status(
+                                &mut node,
+                                &lifecycle_status_output,
+                                &lifecycle_gate,
+                                state,
+                                None,
+                            )?;
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "camera lifecycle transition failed");
+                            send_lifecycle_status(
+                                &mut node,
+                                &lifecycle_status_output,
+                                &lifecycle_gate,
+                                LifecycleComponentState::Failed,
+                                Some(LifecycleReasonCode::Internal),
+                            )?
+                        }
+                    }
+                }
+                "autonomous_motion_safety_ack" => {
+                    let Some(bytes) = single_binary(&*data) else {
+                        continue;
+                    };
+                    let Ok(ack) = serde_json::from_slice::<AutonomousMotionSafetyAck>(bytes) else {
+                        tracing::warn!("invalid autonomous motion safety acknowledgement");
+                        continue;
+                    };
+                    let Some(stop_authority) = quiesce_stop_barrier.acknowledge(&ack) else {
+                        tracing::debug!(request_id = %ack.request_id, "ignoring unrelated autonomous motion safety acknowledgement");
+                        continue;
+                    };
+
+                    if lifecycle_gate.desired_state() == Some(LifecycleDesiredState::Running) {
+                        // The quiesce was superseded before the controller processed its
+                        // stop. Do not tear down the active camera for the stale authority;
+                        // release the controller hold only after its correlated acknowledgement.
+                        quiesce_stop_barrier.complete();
+                        let release = AutonomousMotionSafetyCommand::release();
+                        send_autonomous_motion_safety(
+                            &mut node,
+                            &autonomous_motion_safety_output,
+                            &release,
+                        )?;
+                        lifecycle_gate.complete(LifecycleTransition::Resume);
+                        send_lifecycle_status(
+                            &mut node,
+                            &lifecycle_status_output,
+                            &lifecycle_gate,
+                            LifecycleComponentState::Running,
+                            None,
+                        )?;
+                        continue;
+                    }
+                    if lifecycle_gate.authority() != stop_authority
+                        || lifecycle_gate.desired_state() != Some(LifecycleDesiredState::Quiesced)
+                    {
+                        tracing::debug!(?stop_authority, current_authority = ?lifecycle_gate.authority(), "ignoring stale autonomous motion safety acknowledgement");
+                        continue;
+                    }
+
+                    let result: Result<(), Box<dyn std::error::Error>> = (|| {
+                        if let Some(camera) = camera_opt.take() {
+                            camera.close()?;
+                        }
+                        shutdown_worker(&mut vision_worker);
+                        Ok(())
+                    })();
+                    match result {
+                        Ok(()) => {
+                            quiesce_stop_barrier.complete();
+                            lifecycle_gate.complete(LifecycleTransition::Quiesce);
+                            send_lifecycle_status(
+                                &mut node,
+                                &lifecycle_status_output,
+                                &lifecycle_gate,
+                                LifecycleComponentState::Quiesced,
+                                None,
+                            )?;
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "camera teardown after safe-stop acknowledgement failed");
+                            send_lifecycle_status(
+                                &mut node,
+                                &lifecycle_status_output,
+                                &lifecycle_gate,
+                                LifecycleComponentState::Failed,
+                                Some(LifecycleReasonCode::Internal),
+                            )?;
                         }
                     }
                 }
@@ -403,6 +610,98 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     shutdown_worker(&mut vision_worker);
 
     Ok(())
+}
+
+fn single_binary(data: &dyn ArrowArray) -> Option<&[u8]> {
+    data.as_any()
+        .downcast_ref::<BinaryArray>()
+        .filter(|array| array.len() == 1)
+        .map(|array| array.value(0))
+}
+
+fn send_lifecycle_status(
+    node: &mut DoraNode,
+    output: &DataId,
+    gate: &LifecycleGate,
+    state: LifecycleComponentState,
+    reason: Option<LifecycleReasonCode>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let status = gate.status(state, reason, unix_timestamp_ms()?);
+    let bytes = serde_json::to_vec(&status)?;
+    node.send_output(
+        output.clone(),
+        Default::default(),
+        BinaryArray::from_vec(vec![bytes.as_slice()]),
+    )?;
+    Ok(())
+}
+
+fn send_autonomous_motion_safety(
+    node: &mut DoraNode,
+    output: &DataId,
+    command: &AutonomousMotionSafetyCommand,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = serde_json::to_vec(command)?;
+    node.send_output(
+        output.clone(),
+        Default::default(),
+        BinaryArray::from_vec(vec![bytes.as_slice()]),
+    )?;
+    Ok(())
+}
+
+/// Prevents camera teardown until the rover controller acknowledges the exact
+/// stop-and-hold request emitted for this lifecycle transition.
+#[derive(Debug, Default)]
+struct QuiesceStopBarrier {
+    pending: Option<PendingSafetyStop>,
+}
+
+#[derive(Debug)]
+struct PendingSafetyStop {
+    request_id: String,
+    authority: (u64, u64),
+}
+
+impl QuiesceStopBarrier {
+    fn begin(
+        &mut self,
+        authority: (u64, u64),
+    ) -> Result<AutonomousMotionSafetyCommand, &'static str> {
+        if self.pending.is_some() {
+            return Err("safe-stop acknowledgement is already pending");
+        }
+        let command = AutonomousMotionSafetyCommand::stop_and_hold();
+        self.pending = Some(PendingSafetyStop {
+            request_id: command.request_id.clone(),
+            authority,
+        });
+        Ok(command)
+    }
+
+    fn retarget(&mut self, authority: (u64, u64)) -> Result<(), &'static str> {
+        let pending = self
+            .pending
+            .as_mut()
+            .ok_or("safe-stop acknowledgement is not pending")?;
+        pending.authority = authority;
+        Ok(())
+    }
+
+    fn acknowledge(&self, ack: &AutonomousMotionSafetyAck) -> Option<(u64, u64)> {
+        self.pending
+            .as_ref()
+            .filter(|pending| pending.request_id == ack.request_id)
+            .map(|pending| pending.authority)
+    }
+
+    fn is_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    fn complete(&mut self) {
+        self.pending = None;
+    }
 }
 
 fn build_camera(
@@ -959,10 +1258,12 @@ fn log_metric_snapshot(
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_path_from_bases, ViewFrameCadence, ViewOutputGate, VisionSubmissionGate,
-        MAX_SERVO_FRAME_AGE,
+        resolve_path_from_bases, QuiesceStopBarrier, ViewFrameCadence, ViewOutputGate,
+        VisionSubmissionGate, MAX_SERVO_FRAME_AGE,
     };
-    use robo_rover_lib::{StreamCommand, StreamControl, TrackingCommand};
+    use robo_rover_lib::{
+        AutonomousMotionSafetyAck, StreamCommand, StreamControl, TrackingCommand,
+    };
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -1020,6 +1321,37 @@ mod tests {
 
         gate.apply_tracking_command(&TrackingCommand::Enable { timestamp: 4 });
         assert!(gate.should_submit_frames());
+    }
+
+    #[test]
+    fn camera_quiesce_barrier_requires_matching_controller_ack_before_teardown() {
+        let mut barrier = QuiesceStopBarrier::default();
+        let command = barrier.begin((7, 1)).unwrap();
+
+        assert!(barrier.is_pending());
+        assert_eq!(
+            barrier.acknowledge(&AutonomousMotionSafetyAck {
+                request_id: "unrelated-request".into(),
+            }),
+            None
+        );
+        assert_eq!(
+            barrier.acknowledge(&AutonomousMotionSafetyAck {
+                request_id: command.request_id.clone(),
+            }),
+            Some((7, 1))
+        );
+
+        barrier.retarget((7, 3)).unwrap();
+        assert_eq!(
+            barrier.acknowledge(&AutonomousMotionSafetyAck {
+                request_id: command.request_id,
+            }),
+            Some((7, 3))
+        );
+
+        barrier.complete();
+        assert!(!barrier.is_pending());
     }
 
     #[test]

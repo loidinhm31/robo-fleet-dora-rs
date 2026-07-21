@@ -75,6 +75,24 @@ fn walkie_preempts_tts_and_rejects_new_tts_until_deadline() {
 }
 
 #[test]
+fn lifecycle_interrupt_returns_accepted_tts_and_flushes_all_audio() {
+    let buffers = Arc::new(PlaybackBuffers::new(256, 256));
+    let mut arbiter = SourceArbiter::new(48_000, buffers.clone(), Duration::from_millis(60));
+    let command_id = Uuid::new_v4().to_string();
+    let now = Instant::now();
+    arbiter
+        .accept(
+            frame(AudioSource::Tts, Some(command_id.clone()), vec![0.5; 16]),
+            now,
+        )
+        .unwrap();
+    assert_eq!(arbiter.interrupt_for_lifecycle(), Some(command_id));
+    assert!(buffers.tts_is_empty());
+    assert!(buffers.walkie_is_empty());
+    assert!(!buffers.walkie_is_active());
+}
+
+#[test]
 fn one_hundred_sequential_short_utterances_do_not_overrun() {
     let buffers = Arc::new(PlaybackBuffers::new(4_096, 64));
     let mut arbiter = SourceArbiter::new(48_000, buffers.clone(), Duration::from_millis(60));

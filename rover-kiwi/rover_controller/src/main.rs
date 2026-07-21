@@ -2,8 +2,9 @@ use dora_node_api::arrow::array::Array;
 use dora_node_api::{arrow::array::BinaryArray, dora_core::config::DataId, DoraNode, Event};
 use eyre::Result;
 use robo_rover_lib::{
-    init_tracing, BodyTwist, CommandMetadata, MecanumConfig, MecanumKinematics, RoverCommand,
-    RoverTelemetry,
+    init_tracing, AutonomousMotionSafetyAck, AutonomousMotionSafetyAction,
+    AutonomousMotionSafetyCommand, BodyTwist, CommandMetadata, CommandPriority, InputSource,
+    MecanumConfig, MecanumKinematics, RoverCommand, RoverTelemetry,
 };
 use std::collections::HashMap;
 use std::error::Error;
@@ -16,6 +17,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let (mut node, mut events) = DoraNode::init_from_env()?;
     let output_id = DataId::from("processed_rover_command".to_owned());
+    let autonomous_motion_safety_ack_output =
+        DataId::from("autonomous_motion_safety_ack".to_owned());
 
     // Initialize Mecanum kinematics
     let mecanum_config = MecanumConfig::default();
@@ -94,6 +97,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                                 match serde_json::from_slice::<RoverCommandWithMetadata>(bytes) {
                                     Ok(cmd_with_metadata) => {
+                                        if rover_controller.autonomous_motion_held {
+                                            info!("Ignoring servo command while autonomous motion is held for lifecycle safety");
+                                            continue;
+                                        }
                                         debug!(
                                             "Received servo command (priority {:?})",
                                             cmd_with_metadata.metadata.priority
@@ -109,6 +116,44 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     }
                                     Err(e) => {
                                         warn!("Failed to parse servo command: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    "autonomous_motion_safety" => {
+                        if let Some(array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if array.len() > 0 {
+                                match serde_json::from_slice::<AutonomousMotionSafetyCommand>(
+                                    array.value(0),
+                                ) {
+                                    Ok(command) => {
+                                        let request_id = command.request_id.clone();
+                                        let action = command.action;
+                                        rover_controller.apply_autonomous_motion_safety(command);
+
+                                        if action == AutonomousMotionSafetyAction::StopAndHold {
+                                            // The acknowledgement is sent only after the explicit
+                                            // Stop has been forwarded to the downstream actuator path.
+                                            if let Err(error) = rover_controller
+                                                .process_arbitrated_command(&mut node, &output_id)
+                                            {
+                                                warn!(%error, "Failed to forward lifecycle safe-stop command");
+                                                continue;
+                                            }
+                                        }
+
+                                        let ack = AutonomousMotionSafetyAck { request_id };
+                                        let serialized = serde_json::to_vec(&ack)?;
+                                        node.send_output(
+                                            autonomous_motion_safety_ack_output.clone(),
+                                            Default::default(),
+                                            BinaryArray::from_vec(vec![serialized.as_slice()]),
+                                        )?;
+                                    }
+                                    Err(error) => {
+                                        warn!(%error, "Failed to parse autonomous motion safety command")
                                     }
                                 }
                             }
@@ -180,6 +225,10 @@ struct RoverController {
     // Command arbitration
     manual_command: Option<RoverCommandWithMetadata>,
     servo_command: Option<RoverCommandWithMetadata>,
+    /// Lifecycle-owned Stop command that must outlive queued visual-servo input.
+    safety_stop_command: Option<RoverCommandWithMetadata>,
+    /// Reject stale servo commands until the camera has resumed and explicitly released this hold.
+    autonomous_motion_held: bool,
 }
 
 #[derive(Debug)]
@@ -211,12 +260,17 @@ impl RoverController {
             control_rate_dt: 0.05, // 50ms = 20Hz control rate
             manual_command: None,
             servo_command: None,
+            safety_stop_command: None,
+            autonomous_motion_held: false,
         }
     }
 
     /// Select the highest priority command from available sources
     /// Priority: Emergency (4) > High/Autonomous (3) > Normal/Manual (2) > Low (1)
     fn select_command(&self) -> Option<&RoverCommandWithMetadata> {
+        if let Some(safety_stop) = &self.safety_stop_command {
+            return Some(safety_stop);
+        }
         match (&self.manual_command, &self.servo_command) {
             (Some(manual), Some(servo)) => {
                 // Compare priorities - higher priority wins
@@ -245,6 +299,33 @@ impl RoverController {
             (None, None) => {
                 debug!("No commands available");
                 None
+            }
+        }
+    }
+
+    fn apply_autonomous_motion_safety(&mut self, command: AutonomousMotionSafetyCommand) {
+        match command.action {
+            AutonomousMotionSafetyAction::StopAndHold => {
+                self.autonomous_motion_held = true;
+                self.servo_command = None;
+                self.safety_stop_command = Some(RoverCommandWithMetadata {
+                    command: Some(RoverCommand::new_stop()),
+                    metadata: CommandMetadata {
+                        command_id: command.request_id,
+                        timestamp: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64,
+                        source: InputSource::RoverController,
+                        priority: CommandPriority::Emergency,
+                    },
+                });
+            }
+            AutonomousMotionSafetyAction::Release => {
+                self.autonomous_motion_held = false;
+                self.safety_stop_command = None;
+                // Never revive a command generated before the lifecycle pause.
+                self.servo_command = None;
             }
         }
     }
@@ -441,5 +522,57 @@ impl RoverController {
                 priority: robo_rover_lib::CommandPriority::Normal,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn servo_command() -> RoverCommandWithMetadata {
+        RoverCommandWithMetadata {
+            command: Some(RoverCommand::new_velocity(0.5, 0.3, 0.0)),
+            metadata: CommandMetadata {
+                command_id: "servo-command".into(),
+                timestamp: 1,
+                source: InputSource::VisualServo,
+                priority: CommandPriority::High,
+            },
+        }
+    }
+
+    #[test]
+    fn lifecycle_stop_and_hold_discards_and_blocks_servo_until_release() {
+        let mut controller = RoverController::new(MecanumConfig::default());
+        controller.servo_command = Some(servo_command());
+
+        controller.apply_autonomous_motion_safety(AutonomousMotionSafetyCommand {
+            request_id: "pause-request".into(),
+            action: AutonomousMotionSafetyAction::StopAndHold,
+        });
+
+        assert!(controller.autonomous_motion_held);
+        assert!(controller.servo_command.is_none());
+        assert!(matches!(
+            controller
+                .select_command()
+                .and_then(|command| command.command.as_ref()),
+            Some(RoverCommand::Stop { .. })
+        ));
+
+        // A delayed servo command from before the pause must not revive motion.
+        if !controller.autonomous_motion_held {
+            controller.servo_command = Some(servo_command());
+        }
+        assert!(controller.servo_command.is_none());
+
+        controller.apply_autonomous_motion_safety(AutonomousMotionSafetyCommand {
+            request_id: "resume-request".into(),
+            action: AutonomousMotionSafetyAction::Release,
+        });
+
+        assert!(!controller.autonomous_motion_held);
+        assert!(controller.safety_stop_command.is_none());
+        assert!(controller.servo_command.is_none());
     }
 }

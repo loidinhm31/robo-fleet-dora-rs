@@ -13,8 +13,9 @@ use ringbuf::{traits::*, HeapRb};
 use robo_rover_lib::PlaybackState;
 use robo_rover_lib::{
     describe_device_preference, init_tracing, matches_device_override, select_input_capture_plan,
-    select_preferred_device_name, AudioAction, AudioControl, InputCapturePlan, MetricWindow,
-    SupportedInputConfigDescriptor,
+    select_preferred_device_name, AudioAction, AudioControl, InputCapturePlan, LifecycleCommand,
+    LifecycleComponentState, LifecycleGate, LifecycleReasonCode, LifecycleRole, LifecycleTarget,
+    LifecycleTransition, MetricWindow, SupportedInputConfigDescriptor,
 };
 use signal_metrics::{analyze_signal, PreflightSignalProbe, SignalMetricWindow};
 use std::env;
@@ -65,6 +66,7 @@ fn main() -> Result<()> {
     // Initialize Dora node first — so a failed audio init never cascades to other nodes
     let (mut node, mut events) = DoraNode::init_from_env()?;
     let output_id = DataId::from("audio".to_owned());
+    let lifecycle_status_output = DataId::from("lifecycle_component_status".to_owned());
 
     // Create ring buffer for audio samples (larger buffer to prevent underruns)
     let ring = HeapRb::<f32>::new(chunk_size * 10);
@@ -107,6 +109,11 @@ fn main() -> Result<()> {
         PreflightSignalProbe::new(sample_rate, channels, PRE_FLIGHT_DURATION_MS);
     let mut audio_buffer = Vec::with_capacity(chunk_size);
     let mut capture_gate = CaptureGate::new(true);
+    let mut lifecycle_gate = LifecycleGate::new(LifecycleTarget {
+        role: LifecycleRole::Rover,
+        entity_id: env::var("ENTITY_ID").unwrap_or_else(|_| "rover-kiwi".into()),
+        node_id: "audio-capture".into(),
+    });
     tracing::info!(%stream_id, "audio capture stream identity created");
 
     loop {
@@ -217,6 +224,10 @@ fn main() -> Result<()> {
                     }
                 }
                 "audio_control" => {
+                    if !lifecycle_gate.admission_open() {
+                        tracing::debug!("audio control ignored while lifecycle-quiesced");
+                        continue;
+                    }
                     if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
                         if binary_array.len() > 0 {
                             let control_bytes = binary_array.value(0);
@@ -296,6 +307,79 @@ fn main() -> Result<()> {
                     }
                     Err(error) => tracing::warn!(%error, "rejected playback suppression state"),
                 },
+                "lifecycle_command" => {
+                    let Some(bytes) = single_binary(&*data) else {
+                        continue;
+                    };
+                    let Ok(command) = serde_json::from_slice::<LifecycleCommand>(bytes) else {
+                        tracing::warn!("invalid lifecycle command for audio capture");
+                        continue;
+                    };
+                    let transition = match lifecycle_gate.begin(&command) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            tracing::warn!(%error, "rejected lifecycle command for audio capture");
+                            continue;
+                        }
+                    };
+                    let Some(transition) = transition else {
+                        continue;
+                    };
+                    send_lifecycle_status(
+                        &mut node,
+                        &lifecycle_status_output,
+                        &lifecycle_gate,
+                        match transition {
+                            LifecycleTransition::Quiesce => LifecycleComponentState::Quiescing,
+                            LifecycleTransition::Resume => LifecycleComponentState::Resuming,
+                        },
+                        None,
+                    )?;
+                    let result: Result<()> = match transition {
+                        LifecycleTransition::Quiesce => {
+                            capture_gate.quiesce_for_lifecycle();
+                            stream_opt.take();
+                            clear_capture_buffers(&consumer, &mut audio_buffer);
+                            Ok(())
+                        }
+                        LifecycleTransition::Resume => {
+                            clear_capture_buffers(&consumer, &mut audio_buffer);
+                            capture_gate.resume_after_lifecycle();
+                            tracing::info!(
+                                was_enabled_before_pause = ?capture_gate.user_enabled_before_lifecycle_quiesce(),
+                                "audio capture resumed; waiting for fresh AudioAction::Start"
+                            );
+                            Ok(())
+                        }
+                    };
+                    match result {
+                        Ok(()) => {
+                            lifecycle_gate.complete(transition);
+                            send_lifecycle_status(
+                                &mut node,
+                                &lifecycle_status_output,
+                                &lifecycle_gate,
+                                match transition {
+                                    LifecycleTransition::Quiesce => {
+                                        LifecycleComponentState::Quiesced
+                                    }
+                                    LifecycleTransition::Resume => LifecycleComponentState::Running,
+                                },
+                                None,
+                            )?;
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "audio capture lifecycle transition failed");
+                            send_lifecycle_status(
+                                &mut node,
+                                &lifecycle_status_output,
+                                &lifecycle_gate,
+                                LifecycleComponentState::Failed,
+                                Some(LifecycleReasonCode::Internal),
+                            )?
+                        }
+                    }
+                }
                 other => tracing::warn!("Ignoring unexpected input: {}", other),
             },
             Some(Event::Stop(_)) => {
@@ -361,6 +445,30 @@ fn main() -> Result<()> {
         suppression_tail_active = gate_metrics.tail_active,
         "Audio capture stopped"
     );
+    Ok(())
+}
+
+fn single_binary(data: &dyn Array) -> Option<&[u8]> {
+    data.as_any()
+        .downcast_ref::<BinaryArray>()
+        .filter(|array| array.len() == 1)
+        .map(|array| array.value(0))
+}
+
+fn send_lifecycle_status(
+    node: &mut DoraNode,
+    output: &DataId,
+    gate: &LifecycleGate,
+    state: LifecycleComponentState,
+    reason: Option<LifecycleReasonCode>,
+) -> Result<()> {
+    let status = gate.status(state, reason, current_time_ms()?);
+    let bytes = serde_json::to_vec(&status)?;
+    node.send_output(
+        output.clone(),
+        Default::default(),
+        BinaryArray::from_vec(vec![bytes.as_slice()]),
+    )?;
     Ok(())
 }
 

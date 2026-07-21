@@ -34,7 +34,7 @@ Remove FPS, inferred latency, queue, and drop values from fleet monitoring. Meas
 |---|---|---|---:|---|
 | 1 | Resource-only contracts and collectors | Done (2026-07-21T22:35:04+07:00; review approved) | 6h | [phase-01](./phase-01-resource-only-contracts-and-collectors.md) |
 | 2 | Lifecycle control plane and routing | Done (2026-07-22T00:04:24+07:00; review approved) | 8h | [phase-02](./phase-02-lifecycle-control-plane-and-routing.md) |
-| 3 | Safe node adapters and unload/resume | Pending | 12h | [phase-03](./phase-03-safe-node-adapters-and-unload-resume.md) |
+| 3 | Safe node adapters and unload/resume | Done (2026-07-22; review approved) | 12h | [phase-03](./phase-03-safe-node-adapters-and-unload-resume.md) |
 | 4 | Fleet Resources UI and authoritative state | Pending | 6h | [phase-04](./phase-04-fleet-resources-ui-and-state.md) |
 | 5 | Cross-mode verification and rollout | Pending | 4h | [phase-05](./phase-05-cross-mode-verification-and-rollout.md) |
 
@@ -71,6 +71,6 @@ Remove FPS, inferred latency, queue, and drop values from fleet monitoring. Meas
 
 ### Action Items From Revalidation
 
-- [ ] Revise Phase 03 from hold-Degraded-on-timeout to explicit force teardown after 30 s without false Quiesced.
+- [x] Revise Phase 03 from hold-Degraded-on-timeout to explicit force teardown after 30 s without false Quiesced.
 - [ ] Specify recorder-only lease versus upstream media-demand ownership and cleanup in Phases 02–03.
 - [ ] Add benchmark procedure/output gate to Phase 05; freeze the numeric CPU threshold from evidence before release acceptance.

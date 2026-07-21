@@ -26,6 +26,24 @@ fn assert_queue_size(doc: &Value, node_id: &str, input_id: &str, expected: i64) 
     );
 }
 
+fn assert_lifecycle_wiring(doc: &Value, node_id: &str) {
+    assert_queue_size(doc, node_id, "lifecycle_command", 2);
+    let node = doc["nodes"]
+        .as_sequence()
+        .and_then(|nodes| {
+            nodes
+                .iter()
+                .find(|node| node["id"].as_str() == Some(node_id))
+        })
+        .unwrap_or_else(|| panic!("missing node `{node_id}`"));
+    assert!(
+        node["outputs"].as_sequence().is_some_and(|outputs| outputs
+            .iter()
+            .any(|output| { output.as_str() == Some("lifecycle_component_status") })),
+        "missing lifecycle status output for {node_id}"
+    );
+}
+
 #[test]
 fn queue_policies_remain_explicit_in_rover_and_orchestra_dataflows() {
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -73,5 +91,17 @@ fn queue_policies_remain_explicit_in_rover_and_orchestra_dataflows() {
         ("web-bridge", "tts_command_result", 8),
     ] {
         assert_queue_size(&orchestra, node_id, input_id, expected);
+    }
+}
+
+#[test]
+fn voice_and_playback_lifecycle_adapters_are_wired_in_both_rover_modes() {
+    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for dataflow in [
+        load_yaml(&crate_dir.join("../rover-kiwi-dataflow.yml")),
+        load_yaml(&crate_dir.join("../rover-kiwi-direct-dataflow.yml")),
+    ] {
+        assert_lifecycle_wiring(&dataflow, "edge-voice");
+        assert_lifecycle_wiring(&dataflow, "audio-playback");
     }
 }

@@ -5,14 +5,15 @@ use dora_node_api::{
 };
 use eyre::Result;
 use robo_rover_lib::{
-    init_tracing, AudioFrameMetadata, PcmSampleFormat, RecordingClipQuery,
-    RecordingClipQueryResult, RecordingDeleteRequest, RecordingDeleteResult,
+    init_tracing, AudioFrameMetadata, LifecycleCommand, LifecycleComponentState, LifecycleGate,
+    LifecycleReasonCode, LifecycleRole, LifecycleTarget, LifecycleTransition, PcmSampleFormat,
+    RecordingClipQuery, RecordingClipQueryResult, RecordingDeleteRequest, RecordingDeleteResult,
     RecordingPlaybackTicketRequest, RecordingReasonCode, RecordingReconciliationRequest,
     RecordingReconciliationSnapshot, RecordingSessionAction, RecordingSessionCommand,
     RecordingSessionCommandResult, VideoFrameMetadata, RECORDING_PROTOCOL_VERSION,
 };
 use std::convert::TryFrom;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 use media_recorder::config::RecorderConfig;
@@ -30,6 +31,12 @@ fn main() -> Result<()> {
     let playback_lookup_output = DataId::from("recording_playback_clip_result".to_owned());
     let delete_output = DataId::from("recording_delete_result".to_owned());
     let reconciliation_output = DataId::from("recording_reconciliation_snapshot".to_owned());
+    let lifecycle_status_output = DataId::from("lifecycle_component_status".to_owned());
+    let mut lifecycle_gate = LifecycleGate::new(LifecycleTarget {
+        role: LifecycleRole::Orchestra,
+        entity_id: "orchestra".into(),
+        node_id: "media-recorder".into(),
+    });
     tracing::info!("media recorder ready");
     while let Some(event) = events.recv_timeout(Duration::from_millis(100)) {
         for status in manager.reap() {
@@ -40,13 +47,19 @@ fn main() -> Result<()> {
         }
         match event {
             Event::Input { id, data, metadata } => match id.as_str() {
-                "recording_session_command" => handle_command(
-                    &mut node,
-                    &result_output,
-                    &status_output,
-                    &mut manager,
-                    &*data,
-                )?,
+                "recording_session_command" => {
+                    if lifecycle_gate.admission_open() {
+                        handle_command(
+                            &mut node,
+                            &result_output,
+                            &status_output,
+                            &mut manager,
+                            &*data,
+                        )?;
+                    } else {
+                        tracing::warn!("recording command rejected while lifecycle-quiesced");
+                    }
+                }
                 "recording_clip_query" => {
                     handle_clip_query(&mut node, &clip_list_output, &manager, &*data)?
                 }
@@ -61,25 +74,121 @@ fn main() -> Result<()> {
                     &*data,
                 )?,
                 "video_frame" => {
-                    if let Ok((entity, frame)) = parse_video(&metadata.parameters, &*data) {
-                        let _ = manager.push_video(&entity, frame);
+                    if lifecycle_gate.admission_open() {
+                        if let Ok((entity, frame)) = parse_video(&metadata.parameters, &*data) {
+                            let _ = manager.push_video(&entity, frame);
+                        }
                     }
                 }
                 "audio_frame" => {
-                    if let Ok((entity, frame)) = parse_audio(&metadata.parameters, &*data) {
-                        let _ = manager.push_audio(&entity, frame);
+                    if lifecycle_gate.admission_open() {
+                        if let Ok((entity, frame)) = parse_audio(&metadata.parameters, &*data) {
+                            let _ = manager.push_audio(&entity, frame);
+                        }
                     }
                 }
+                "lifecycle_command" => handle_lifecycle_command(
+                    &mut node,
+                    &lifecycle_status_output,
+                    &status_output,
+                    &mut manager,
+                    &mut lifecycle_gate,
+                    &*data,
+                )?,
                 _ => tracing::debug!(input = %id, "ignored recorder input"),
             },
             Event::Stop(_) => break,
             _ => {}
         }
     }
-    for status in manager.shutdown() {
+    for status in manager.shutdown().statuses {
         send_json(&mut node, &status_output, &status.wire())?;
     }
     Ok(())
+}
+
+fn handle_lifecycle_command(
+    node: &mut DoraNode,
+    lifecycle_output: &DataId,
+    recording_output: &DataId,
+    manager: &mut SessionManager,
+    gate: &mut LifecycleGate,
+    data: &dyn Array,
+) -> Result<()> {
+    let Ok(bytes) = single_binary(data) else {
+        return Ok(());
+    };
+    let Ok(command) = serde_json::from_slice::<LifecycleCommand>(bytes) else {
+        tracing::warn!("invalid lifecycle command for media recorder");
+        return Ok(());
+    };
+    let transition = match gate.begin(&command) {
+        Ok(transition) => transition,
+        Err(error) => {
+            tracing::warn!(%error, "rejected lifecycle command for media recorder");
+            return Ok(());
+        }
+    };
+    let Some(transition) = transition else {
+        return Ok(());
+    };
+    send_lifecycle_status(
+        node,
+        lifecycle_output,
+        gate,
+        match transition {
+            LifecycleTransition::Quiesce => LifecycleComponentState::Cancelling,
+            LifecycleTransition::Resume => LifecycleComponentState::Resuming,
+        },
+        None,
+    )?;
+    if transition == LifecycleTransition::Quiesce {
+        let shutdown = manager.shutdown();
+        for status in &shutdown.statuses {
+            send_json(node, recording_output, &status.wire())?;
+        }
+        if !shutdown.all_sessions_finalized {
+            // Keep admission closed. A pause that cannot prove every accepted
+            // recording finalized successfully is not a successful quiesce.
+            return send_lifecycle_status(
+                node,
+                lifecycle_output,
+                gate,
+                LifecycleComponentState::Failed,
+                Some(LifecycleReasonCode::Internal),
+            );
+        }
+    } else if manager.has_draining_workers() {
+        return send_lifecycle_status(
+            node,
+            lifecycle_output,
+            gate,
+            LifecycleComponentState::Failed,
+            Some(LifecycleReasonCode::Timeout),
+        );
+    }
+    gate.complete(transition);
+    send_lifecycle_status(
+        node,
+        lifecycle_output,
+        gate,
+        match transition {
+            LifecycleTransition::Quiesce => LifecycleComponentState::Quiesced,
+            LifecycleTransition::Resume => LifecycleComponentState::Running,
+        },
+        None,
+    )
+}
+
+fn send_lifecycle_status(
+    node: &mut DoraNode,
+    output: &DataId,
+    gate: &LifecycleGate,
+    state: LifecycleComponentState,
+    reason: Option<LifecycleReasonCode>,
+) -> Result<()> {
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
+    send_json(node, output, &gate.status(state, reason, timestamp))
 }
 
 fn handle_reconciliation_request(

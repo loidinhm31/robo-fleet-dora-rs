@@ -23,6 +23,9 @@ struct ManagedTarget {
     effective_state: LifecycleEffectiveState,
     transition_deadline_ms: Option<u64>,
     authority_epoch: u64,
+    /// A deadline-expired transition cannot accept a late success status at
+    /// the same authority version.
+    timed_out_authority: Option<(u64, u64)>,
 }
 
 pub struct LifecycleManager {
@@ -53,6 +56,7 @@ impl LifecycleManager {
                     effective_state: LifecycleEffectiveState::Running,
                     transition_deadline_ms: None,
                     authority_epoch: epoch,
+                    timed_out_authority: None,
                 },
             );
         }
@@ -186,6 +190,7 @@ impl LifecycleManager {
         // this local reporter forward after restart without creating a second CAS authority.
         target.authority_epoch = command.manager_epoch;
         target.revision = command.expected_revision.saturating_add(1);
+        target.timed_out_authority = None;
         target.desired_state = command.desired_state;
         if command.desired_state == LifecycleDesiredState::Quiesced {
             self.revoke_wake_leases(&command.target);
@@ -220,6 +225,12 @@ impl LifecycleManager {
             return false;
         };
         if target.authority_epoch != status.manager_epoch || target.revision != status.revision {
+            return false;
+        }
+        if target.desired_state != status.desired_state {
+            return false;
+        }
+        if target.timed_out_authority == Some((status.manager_epoch, status.revision)) {
             return false;
         }
         let state = status
@@ -333,6 +344,7 @@ impl LifecycleManager {
             {
                 item.effective_state = LifecycleEffectiveState::Failed;
                 item.transition_deadline_ms = None;
+                item.timed_out_authority = Some((item.authority_epoch, item.revision));
             }
         }
     }
@@ -379,6 +391,7 @@ impl LifecycleManager {
                 .expect("target checked above");
             item.desired_state = command.desired_state;
             item.revision = item.revision.saturating_add(1);
+            item.timed_out_authority = None;
             item.revision
         };
         if command.desired_state == LifecycleDesiredState::Quiesced {
@@ -414,6 +427,9 @@ impl LifecycleManager {
         let Some(item) = self.targets.get_mut(target) else {
             return;
         };
+        if item.timed_out_authority == Some((item.authority_epoch, item.revision)) {
+            return;
+        }
         let desired = if has_wake_lease {
             LifecycleDesiredState::Running
         } else {
@@ -618,6 +634,73 @@ mod tests {
         assert_eq!(
             manager.status(&target(), 30_002).unwrap().effective_state,
             LifecycleEffectiveState::Failed
+        );
+    }
+
+    #[test]
+    fn timeout_rejects_late_quiesced_status_until_newer_authority() {
+        let mut manager = LifecycleManager::new(
+            9,
+            vec![LifecycleCapability {
+                target: target(),
+                supported: true,
+                always_on: false,
+            }],
+        )
+        .unwrap();
+        assert!(
+            manager
+                .apply(command(9, 0, LifecycleDesiredState::Quiesced), 2)
+                .accepted
+        );
+        manager.tick(30_002);
+
+        let mut late = manager.status(&target(), 30_002).unwrap();
+        late.components[0].state = LifecycleComponentState::Quiesced;
+        assert!(!manager.apply_component_status(&late));
+        assert_eq!(
+            manager.status(&target(), 30_002).unwrap().effective_state,
+            LifecycleEffectiveState::Failed
+        );
+
+        let mut resume = command(9, 1, LifecycleDesiredState::Running);
+        resume.request_id = "f4f3e2d1-c0b9-48a7-9615-141312111006".into();
+        resume.issued_at_ms = 30_003;
+        resume.expires_at_ms = 40_003;
+        assert!(manager.apply(resume, 30_003).accepted);
+        let mut current = manager.status(&target(), 30_003).unwrap();
+        current.components[0].state = LifecycleComponentState::Running;
+        assert!(manager.apply_component_status(&current));
+        assert_eq!(
+            manager.status(&target(), 30_003).unwrap().effective_state,
+            LifecycleEffectiveState::Running
+        );
+    }
+
+    #[test]
+    fn component_status_cannot_contradict_current_desired_state() {
+        let mut manager = LifecycleManager::new(
+            9,
+            vec![LifecycleCapability {
+                target: target(),
+                supported: true,
+                always_on: false,
+            }],
+        )
+        .unwrap();
+        assert!(
+            manager
+                .apply(command(9, 0, LifecycleDesiredState::Quiesced), 2)
+                .accepted
+        );
+        let mut contradictory = manager.status(&target(), 2).unwrap();
+        contradictory.desired_state = LifecycleDesiredState::Running;
+        contradictory.components[0].state = LifecycleComponentState::Running;
+
+        assert!(!manager.apply_component_status(&contradictory));
+        assert_eq!(
+            manager.status(&target(), 2).unwrap().effective_state,
+            LifecycleEffectiveState::Quiescing
         );
     }
 

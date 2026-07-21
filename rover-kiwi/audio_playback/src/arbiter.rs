@@ -77,6 +77,18 @@ impl SourceArbiter {
         event
     }
 
+    /// Cancels any accepted TTS before the output stream is dropped. The
+    /// caller owns the terminal result; this method only removes local state.
+    pub fn interrupt_for_lifecycle(&mut self) -> Option<String> {
+        let command_id = self.tts.preempt();
+        self.buffers.clear_all();
+        if let Some(resampler) = self.walkie_resampler.as_mut() {
+            resampler.reset();
+        }
+        self.walkie_deadline = None;
+        command_id
+    }
+
     pub fn prune_command_ids(&mut self) {
         self.tts.prune_command_ids();
     }

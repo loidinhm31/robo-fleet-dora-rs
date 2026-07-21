@@ -17,7 +17,10 @@ fn job() -> DecodeJob {
 #[test]
 fn bounded_submitter_drops_new_job_without_blocking() {
     let (sender, _receiver) = mpsc::sync_channel(1);
-    let submitter = DecodeSubmitter { sender };
+    let submitter = DecodeSubmitter {
+        sender,
+        admission: Arc::new(RwLock::new(true)),
+    };
     assert_eq!(submitter.try_submit(job()), SubmitResult::Submitted);
     assert_eq!(submitter.try_submit(job()), SubmitResult::Full);
 }
@@ -26,7 +29,21 @@ fn bounded_submitter_drops_new_job_without_blocking() {
 fn submitter_reports_disconnected_worker() {
     let (sender, receiver) = mpsc::sync_channel(1);
     drop(receiver);
-    let submitter = DecodeSubmitter { sender };
+    let submitter = DecodeSubmitter {
+        sender,
+        admission: Arc::new(RwLock::new(true)),
+    };
+    assert_eq!(submitter.try_submit(job()), SubmitResult::Disconnected);
+}
+
+#[test]
+fn lifecycle_close_rejects_new_decode_jobs() {
+    let (sender, _receiver) = mpsc::sync_channel(1);
+    let submitter = DecodeSubmitter {
+        sender,
+        admission: Arc::new(RwLock::new(true)),
+    };
+    submitter.close_admission();
     assert_eq!(submitter.try_submit(job()), SubmitResult::Disconnected);
 }
 

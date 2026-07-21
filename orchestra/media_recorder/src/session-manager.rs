@@ -35,6 +35,19 @@ pub struct SessionStatus {
     pub reason_code: Option<RecordingReasonCode>,
 }
 
+/// The result of stopping every recorder worker for a lifecycle transition.
+///
+/// A lifecycle pause may only report `Quiesced` once every session that was
+/// active at the beginning of shutdown has emitted a terminal status.  Keeping
+/// that fact next to the status payload prevents callers from accidentally
+/// treating an empty result (for example, after a worker panic) as success.
+#[derive(Debug, Default)]
+pub struct ShutdownResult {
+    pub statuses: Vec<SessionStatus>,
+    pub all_sessions_terminal: bool,
+    pub all_sessions_finalized: bool,
+}
+
 impl SessionStatus {
     pub fn wire(&self) -> robo_rover_lib::RecordingSessionStatus {
         robo_rover_lib::RecordingSessionStatus {
@@ -167,6 +180,10 @@ pub struct SessionManager {
     resolver: PathResolver,
     catalog: ClipCatalog,
     sessions: HashMap<String, ActiveSession>,
+    /// Workers that did not stop before a lifecycle finalization deadline.
+    /// They stay owned here so a subsequent recording cannot overlap a still
+    /// live encoder; `reap` joins them only after they have finished.
+    draining_joins: Vec<thread::JoinHandle<()>>,
     finished: HashSet<String>,
     completed_rx: Receiver<SessionStatus>,
     completed_tx: Sender<SessionStatus>,
@@ -186,6 +203,7 @@ impl SessionManager {
             resolver,
             catalog,
             sessions: HashMap::new(),
+            draining_joins: Vec::new(),
             finished: HashSet::new(),
             completed_rx,
             completed_tx,
@@ -197,6 +215,9 @@ impl SessionManager {
         robo_rover_lib::validate_id("entity_id", &request.entity_id)?;
         robo_rover_lib::validate_relative_directory(&request.relative_directory)?;
         let _ = self.reap();
+        if !self.draining_joins.is_empty() {
+            return Err("recorder still has a lifecycle-cancelled worker draining".into());
+        }
         if self.sessions.contains_key(&request.entity_id) {
             return Err("rover already has an active recording".into());
         }
@@ -305,6 +326,7 @@ impl SessionManager {
     }
 
     pub fn reap(&mut self) -> Vec<SessionStatus> {
+        self.reap_draining_workers();
         let mut completed = Vec::new();
         while let Ok(status) = self.completed_rx.try_recv() {
             if let Some(mut session) = self.sessions.remove(&status.entity_id) {
@@ -318,6 +340,18 @@ impl SessionManager {
         completed
     }
 
+    fn reap_draining_workers(&mut self) {
+        let mut still_draining = Vec::new();
+        for join in std::mem::take(&mut self.draining_joins) {
+            if join.is_finished() {
+                let _ = join.join();
+            } else {
+                still_draining.push(join);
+            }
+        }
+        self.draining_joins = still_draining;
+    }
+
     pub fn statuses(&mut self) -> Vec<SessionStatus> {
         self.sessions
             .values()
@@ -325,11 +359,29 @@ impl SessionManager {
             .collect()
     }
 
+    /// A timed-out worker must finish before a lifecycle resume can reopen
+    /// recorder admission; otherwise two encoders could overlap after a failed
+    /// quiesce attempt.
+    pub fn has_draining_workers(&mut self) -> bool {
+        self.reap_draining_workers();
+        !self.draining_joins.is_empty()
+    }
+
     pub fn catalog(&self) -> &ClipCatalog {
         &self.catalog
     }
 
-    pub fn shutdown(&mut self) -> Vec<SessionStatus> {
+    /// Requests graceful finalization, joins every recorder worker, and
+    /// returns one terminal status for each session that was active when the
+    /// shutdown started. A worker that exits without its terminal result is
+    /// represented explicitly as a failed recording.
+    ///
+    /// Worker finalization is bounded by one `finalization_timeout_ms` deadline
+    /// for the complete set. Workers that miss it remain tracked for later
+    /// nonblocking reaping and prevent new recording admission; this method
+    /// must not turn a missing terminal result into a successful lifecycle
+    /// quiesce.
+    pub fn shutdown(&mut self) -> ShutdownResult {
         for session in self.sessions.values() {
             session
                 .stop
@@ -337,13 +389,122 @@ impl SessionManager {
             session.inputs.wake();
         }
         let sessions = std::mem::take(&mut self.sessions);
-        for (_, mut session) in sessions {
+        let mut expected = Vec::with_capacity(sessions.len());
+        let mut failed = Vec::new();
+        let mut joins = Vec::new();
+        for (entity_id, mut session) in sessions {
+            let snapshot = session
+                .status
+                .lock()
+                .map(|status| status.clone())
+                .unwrap_or_else(|_| SessionStatus {
+                    request_id: String::new(),
+                    recording_id: session.id.clone(),
+                    entity_id,
+                    state: RecordingSessionState::Failed,
+                    started_at_ms: None,
+                    duration_ms: 0,
+                    bytes_written: 0,
+                    reason_code: Some(RecordingReasonCode::Internal),
+                });
+            expected.push(snapshot.clone());
             if let Some(join) = session.join.take() {
-                let _ = join.join();
+                joins.push((snapshot, join));
+            } else {
+                failed.push(failed_shutdown_status(snapshot));
             }
         }
-        self.reap()
+        let deadline = Instant::now() + Duration::from_millis(self.config.finalization_timeout_ms);
+        while !joins.is_empty() && Instant::now() < deadline {
+            let (finished, pending) = take_finished_joins(joins);
+            joins = pending;
+            failed.extend(finished.into_iter().filter_map(|(snapshot, result)| {
+                result.err().map(|_| failed_shutdown_status(snapshot))
+            }));
+            if !joins.is_empty() {
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+        let (finished, pending) = take_finished_joins(joins);
+        failed.extend(finished.into_iter().filter_map(|(snapshot, result)| {
+            result.err().map(|_| failed_shutdown_status(snapshot))
+        }));
+        for (snapshot, join) in pending {
+            failed.push(failed_shutdown_status(snapshot));
+            self.draining_joins.push(join);
+        }
+        let mut statuses = self.reap();
+        for snapshot in &expected {
+            if !statuses
+                .iter()
+                .any(|status| status.recording_id == snapshot.recording_id)
+            {
+                statuses.push(failed_shutdown_status(snapshot.clone()));
+            }
+        }
+        for status in failed {
+            if let Some(existing) = statuses
+                .iter_mut()
+                .find(|existing| existing.recording_id == status.recording_id)
+            {
+                *existing = status;
+            } else {
+                statuses.push(status);
+            }
+        }
+        let all_sessions_terminal = all_sessions_terminal(&expected, &statuses);
+        let all_sessions_finalized = all_sessions_finalized(&expected, &statuses);
+        ShutdownResult {
+            statuses,
+            all_sessions_terminal,
+            all_sessions_finalized,
+        }
     }
+}
+
+fn take_finished_joins(
+    joins: Vec<(SessionStatus, thread::JoinHandle<()>)>,
+) -> (
+    Vec<(SessionStatus, thread::Result<()>)>,
+    Vec<(SessionStatus, thread::JoinHandle<()>)>,
+) {
+    let mut finished = Vec::new();
+    let mut pending = Vec::new();
+    for (snapshot, join) in joins {
+        if join.is_finished() {
+            finished.push((snapshot, join.join()));
+        } else {
+            pending.push((snapshot, join));
+        }
+    }
+    (finished, pending)
+}
+
+fn all_sessions_terminal(expected: &[SessionStatus], statuses: &[SessionStatus]) -> bool {
+    expected.iter().all(|snapshot| {
+        statuses.iter().any(|status| {
+            status.recording_id == snapshot.recording_id
+                && matches!(
+                    status.state,
+                    RecordingSessionState::Completed | RecordingSessionState::Failed
+                )
+        })
+    })
+}
+
+fn all_sessions_finalized(expected: &[SessionStatus], statuses: &[SessionStatus]) -> bool {
+    expected.iter().all(|snapshot| {
+        statuses.iter().any(|status| {
+            status.recording_id == snapshot.recording_id
+                && status.state == RecordingSessionState::Completed
+        })
+    })
+}
+
+fn failed_shutdown_status(mut status: SessionStatus) -> SessionStatus {
+    status.state = RecordingSessionState::Failed;
+    status.reason_code = Some(RecordingReasonCode::Internal);
+    status
 }
 
 fn run_worker(
@@ -713,7 +874,10 @@ fn available_bytes(path: &PathBuf) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{recording_timestamp_expression, BoundedInputs, SessionStatus};
+    use super::{
+        all_sessions_finalized, all_sessions_terminal, failed_shutdown_status,
+        recording_timestamp_expression, take_finished_joins, BoundedInputs, SessionStatus,
+    };
     use crate::frame_timeline::{AudioFrame, VideoFrame};
     use robo_rover_lib::{
         AudioFrameMetadata, PcmSampleFormat, RecordingSessionState, VideoFrameMetadata,
@@ -854,5 +1018,59 @@ mod tests {
             recording_timestamp_expression(1_720_000_000_123),
             "%{pts:gmtime:1720000000.123:%Y-%m-%d %H\\:%M\\:%S UTC}"
         );
+    }
+
+    #[test]
+    fn missing_shutdown_terminal_status_is_not_a_clean_quiesce() {
+        let active = SessionStatus {
+            request_id: Uuid::new_v4().to_string(),
+            recording_id: Uuid::new_v4().to_string(),
+            entity_id: "rover-a".into(),
+            state: RecordingSessionState::Recording,
+            started_at_ms: Some(1),
+            duration_ms: 10,
+            bytes_written: 32,
+            reason_code: None,
+        };
+
+        assert!(!all_sessions_terminal(&[active.clone()], &[]));
+
+        let failed = failed_shutdown_status(active.clone());
+        assert_eq!(failed.state, RecordingSessionState::Failed);
+        assert_eq!(
+            failed.reason_code,
+            Some(robo_rover_lib::RecordingReasonCode::Internal)
+        );
+        assert!(all_sessions_terminal(&[active.clone()], &[failed.clone()]));
+        assert!(!all_sessions_finalized(&[active], &[failed]));
+    }
+
+    #[test]
+    fn unfinished_shutdown_worker_is_retained_for_nonblocking_reap() {
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let status = SessionStatus {
+            request_id: Uuid::new_v4().to_string(),
+            recording_id: Uuid::new_v4().to_string(),
+            entity_id: "rover-a".into(),
+            state: RecordingSessionState::Recording,
+            started_at_ms: Some(1),
+            duration_ms: 0,
+            bytes_written: 0,
+            reason_code: None,
+        };
+        let join = std::thread::spawn(move || release_rx.recv().unwrap());
+
+        let (finished, pending) = take_finished_joins(vec![(status, join)]);
+        assert!(finished.is_empty());
+        assert_eq!(pending.len(), 1);
+
+        release_tx.send(()).unwrap();
+        while !pending[0].1.is_finished() {
+            std::thread::yield_now();
+        }
+        let (finished, pending) = take_finished_joins(pending);
+        assert_eq!(finished.len(), 1);
+        assert!(finished[0].1.is_ok());
+        assert!(pending.is_empty());
     }
 }

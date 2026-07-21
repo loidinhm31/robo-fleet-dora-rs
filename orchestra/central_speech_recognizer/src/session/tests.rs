@@ -167,6 +167,30 @@ fn browser_stop_before_start_discards_pending_frames() {
 }
 
 #[test]
+fn lifecycle_discard_drops_browser_and_rover_without_final_jobs() {
+    let browser_id = Uuid::new_v4();
+    let rover_id = Uuid::new_v4();
+    let mut sessions = manager();
+    sessions
+        .accept_browser(browser(browser_id, "rover-a", 0, vec![1.0; 512]))
+        .unwrap();
+    sessions
+        .accept_rover(rover("rover-a", rover_id, vec![2.0; 512]))
+        .unwrap();
+
+    let cancelled = sessions.cancel_all_for_lifecycle();
+    assert_eq!(cancelled.len(), 2);
+    assert!(cancelled
+        .iter()
+        .any(|identity| identity.stream_id == browser_id));
+    assert!(cancelled
+        .iter()
+        .any(|identity| identity.stream_id == rover_id));
+    assert!(sessions.flush_all_browsers().is_empty());
+    assert!(sessions.stop_browser(browser_id).is_err());
+}
+
+#[test]
 fn sequence_gap_discards_only_the_current_utterance() {
     let stream_id = Uuid::new_v4();
     let mut sessions = manager();

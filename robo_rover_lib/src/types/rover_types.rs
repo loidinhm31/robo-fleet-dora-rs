@@ -95,6 +95,51 @@ impl RoverCommand {
     }
 }
 
+/// Internal control-plane request for autonomous-motion safety.
+///
+/// `StopAndHold` makes the rover controller emit a `RoverCommand::Stop`,
+/// discard cached visual-servo commands, and reject further servo commands
+/// until `Release` arrives. The acknowledgement proves only that the rover
+/// controller accepted and forwarded the stop command; it is not hardware
+/// motion feedback.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousMotionSafetyAction {
+    StopAndHold,
+    Release,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutonomousMotionSafetyCommand {
+    pub request_id: String,
+    pub action: AutonomousMotionSafetyAction,
+}
+
+impl AutonomousMotionSafetyCommand {
+    pub fn stop_and_hold() -> Self {
+        Self {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            action: AutonomousMotionSafetyAction::StopAndHold,
+        }
+    }
+
+    pub fn release() -> Self {
+        Self {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            action: AutonomousMotionSafetyAction::Release,
+        }
+    }
+}
+
+/// Controller acknowledgement for an autonomous-motion safety request.
+///
+/// This confirms dataflow/controller handling only. It intentionally does not
+/// claim that physical motors have reached zero velocity.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutonomousMotionSafetyAck {
+    pub request_id: String,
+}
+
 /// Rover Telemetry - feedback from simulation/hardware
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoverTelemetry {

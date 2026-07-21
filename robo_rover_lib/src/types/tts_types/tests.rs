@@ -56,6 +56,10 @@ fn every_enum_wire_name_is_stable() {
             VoiceReasonCode::InterruptedByWalkie,
             "interrupted_by_walkie",
         ),
+        (
+            VoiceReasonCode::InterruptedByLifecycle,
+            "interrupted_by_lifecycle",
+        ),
         (VoiceReasonCode::Cancelled, "cancelled"),
         (VoiceReasonCode::SynthesisFailed, "synthesis_failed"),
         (VoiceReasonCode::PlaybackFailed, "playback_failed"),
@@ -167,6 +171,13 @@ fn lifecycle_validation_rejects_inconsistent_optional_fields() {
         detail: None,
     };
     assert!(invalid_result.validate().is_err());
+
+    let lifecycle_interruption = TtsCommandResult {
+        state: TtsResultState::Interrupted,
+        reason_code: Some(VoiceReasonCode::InterruptedByLifecycle),
+        ..invalid_result
+    };
+    assert!(lifecycle_interruption.validate().is_ok());
 
     let invalid_status = VoiceStatus {
         entity_id: "rover-kiwi".into(),

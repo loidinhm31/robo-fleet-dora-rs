@@ -13,8 +13,12 @@ nodes:
       playback_state:
         source: audio-playback/playback_state
         queue_size: 8
+      lifecycle_command:
+        source: lifecycle-manager/lifecycle_authorized_command
+        queue_size: 2
     outputs:
       - audio  # Float32 audio data
+      - lifecycle_component_status
     env:
       SAMPLE_RATE: "16000"
       CHANNELS: "1"  # preserve downstream mono contract; multichannel mics are downmixed in audio_capture
@@ -60,12 +64,16 @@ nodes:
       playback_result:
         source: audio-playback/playback_result
         queue_size: 8
+      lifecycle_command:
+        source: lifecycle-manager/lifecycle_authorized_command
+        queue_size: 2
     outputs:
       - tts_audio
       - tts_synthesis_state
       - voice_status
       - tts_command_result
       - metrics
+      - lifecycle_component_status
     env:
       RUST_LOG: info
       ENTITY_ID: "rover-kiwi"
@@ -95,11 +103,15 @@ nodes:
       tts_synthesis_state:
         source: edge-voice/tts_synthesis_state
         queue_size: 8
+      lifecycle_command:
+        source: lifecycle-manager/lifecycle_authorized_command
+        queue_size: 2
     outputs:
       - playback_state  # Actual samples consumed; gates rover microphone publication
       - walkie_state    # 250 ms walkie authority window; cancels/rejects edge TTS
       - playback_audio   # Digital speaker monitor for browser clients
       - playback_result # Terminal only after final CPAL consumption or playback failure
+      - lifecycle_component_status
     env:
       RUST_LOG: info
       ENTITY_ID: "rover-kiwi"
@@ -127,6 +139,10 @@ nodes:
       lifecycle_command_relay: zenoh-bridge/lifecycle_command_relay
       lifecycle_wake_lease_relay: zenoh-bridge/lifecycle_wake_lease_relay
       lifecycle_status_query: zenoh-bridge/lifecycle_status_query
+      lifecycle_component_status_camera: gst-camera/lifecycle_component_status
+      lifecycle_component_status_audio: audio-capture/lifecycle_component_status
+      lifecycle_component_status_edge_voice: edge-voice/lifecycle_component_status
+      lifecycle_component_status_audio_playback: audio-playback/lifecycle_component_status
       tick: dora/timer/millis/1000
     outputs:
       - lifecycle_command_result
@@ -135,8 +151,7 @@ nodes:
       - lifecycle_authorized_command
     env:
       RUST_LOG: info
-      # Phase 3 flips workload capabilities after their adapters prove terminal release.
-      LIFECYCLE_CAPABILITIES: '[{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"gst-camera"},"supported":false,"always_on":false},{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"audio-capture"},"supported":false,"always_on":false},{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"zenoh-bridge"},"supported":false,"always_on":true}]'
+      LIFECYCLE_CAPABILITIES: '[{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"gst-camera"},"supported":true,"always_on":false},{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"audio-capture"},"supported":true,"always_on":false},{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"edge-voice"},"supported":true,"always_on":false},{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"audio-playback"},"supported":true,"always_on":false},{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"zenoh-bridge"},"supported":false,"always_on":true}]'
 
   # GStreamer camera capture + consolidated vision pipeline
   # Default: camera-only (zero ML overhead). Enable via TrackingCommand::Enable.
@@ -148,11 +163,19 @@ nodes:
       camera_control: zenoh-bridge/camera_command
       stream_control: zenoh-bridge/stream_command  # Gates only operator view branch
       tracking_command: zenoh-bridge/tracking_command  # Gates detection/tracking pipeline
+      lifecycle_command:
+        source: lifecycle-manager/lifecycle_authorized_command
+        queue_size: 2
+      autonomous_motion_safety_ack:
+        source: rover-controller/autonomous_motion_safety_ack
+        queue_size: 2
     outputs:
       - frame                  # 15 FPS raw RGB8 view branch for local JPEG encoding
       - detections             # DetectionFrame raw YOLO (detection-only mode)
       - tracked_detections     # DetectionFrame with tracking IDs (when full pipeline enabled)
       - tracking_telemetry     # TrackingTelemetry (when full pipeline enabled)
+      - lifecycle_component_status
+      - autonomous_motion_safety # Stop-and-hold request; camera waits for controller acknowledgement
     env:
       # Camera
       SOURCE_TYPE: "webcam"
@@ -239,9 +262,13 @@ nodes:
     inputs:
       rover_command: zenoh-bridge/rover_command  # From Orchestra via Zenoh
       servo_command: visual-servo-controller/servo_command
+      autonomous_motion_safety:
+        source: gst-camera/autonomous_motion_safety
+        queue_size: 2
       # rover_telemetry: sim-interface/rover_telemetry
     outputs:
       - processed_rover_command
+      - autonomous_motion_safety_ack # Controller acceptance/forwarding acknowledgement, not motor feedback
     env:
       RUST_LOG: info
 

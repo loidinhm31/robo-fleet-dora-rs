@@ -11,6 +11,7 @@ pub enum VoiceReasonCode {
     VoiceNotReady,
     WalkieActive,
     InterruptedByWalkie,
+    InterruptedByLifecycle,
     Cancelled,
     SynthesisFailed,
     PlaybackFailed,

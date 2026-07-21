@@ -1,16 +1,23 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use dora_node_api::{arrow::array::BinaryArray, DoraNode, Event, MetadataParameters, Parameter};
+use dora_node_api::{
+    arrow::array::{Array, BinaryArray},
+    DoraNode, Event, MetadataParameters, Parameter,
+};
 use eyre::Result;
-use robo_rover_lib::{AudioFrameMetadata, PcmSampleFormat, TtsResultState};
+use robo_rover_lib::{
+    AudioFrameMetadata, LifecycleCommand, LifecycleComponentState, LifecycleGate,
+    LifecycleReasonCode, LifecycleRole, LifecycleTarget, LifecycleTransition, PcmSampleFormat,
+    TtsResultState,
+};
 use uuid::Uuid;
 
 use crate::arbiter::SourceArbiter;
 use crate::buffers::PlaybackBuffers;
 use crate::device::default_output_plan;
 use crate::playback_event::ArbiterEvent;
-use crate::playback_result::report_tts_result;
+use crate::playback_result::{report_tts_interrupted_by_lifecycle, report_tts_result};
 use crate::protocol::{parse_source_frame, AudioSource};
 use crate::state::{current_time_ms, PlaybackOutputs, StateReporter};
 use crate::tts_result::parse_tts_result;
@@ -31,6 +38,11 @@ pub fn run() -> Result<()> {
     let entity_id = std::env::var("ENTITY_ID").unwrap_or_else(|_| "rover-kiwi".to_owned());
     let volume = playback_volume();
     let mut reporter = StateReporter::new(entity_id.clone());
+    let mut lifecycle_gate = LifecycleGate::new(LifecycleTarget {
+        role: LifecycleRole::Rover,
+        entity_id,
+        node_id: "audio-playback".into(),
+    });
 
     let plan = default_output_plan();
     let output_rate = plan
@@ -77,8 +89,23 @@ pub fn run() -> Result<()> {
     while let Some(event) = events.recv() {
         match event {
             Event::Input { id, data, metadata } => match id.as_str() {
+                "lifecycle_command" => {
+                    handle_lifecycle_command(
+                        lifecycle_payload(data.as_ref())?,
+                        &mut node,
+                        &outputs,
+                        &mut reporter,
+                        &mut lifecycle_gate,
+                        &mut arbiter,
+                        &buffers,
+                        &mut playback_monitor,
+                        &mut device,
+                        &mut available,
+                        volume,
+                    )?;
+                }
                 "tick" => {
-                    if available {
+                    if available && lifecycle_gate.admission_open() {
                         let event = buffers.take_interval_consumption();
                         reporter.report_consumption(
                             &mut node,
@@ -120,6 +147,9 @@ pub fn run() -> Result<()> {
                     } else {
                         AudioSource::Walkie
                     };
+                    if !lifecycle_gate.admission_open() {
+                        continue;
+                    }
                     match parse_source_frame(source, &metadata.parameters, data.as_ref()) {
                         Ok(frame) if available => {
                             if frame.normalized_samples > 0 {
@@ -152,6 +182,7 @@ pub fn run() -> Result<()> {
                         Err(error) => tracing::warn!(input = %id, %error, "rejected audio frame"),
                     }
                 }
+                "tts_synthesis_state" if !lifecycle_gate.admission_open() => {}
                 "tts_synthesis_state" => match parse_tts_result(data.as_ref()) {
                     Ok(result) if result.state == TtsResultState::Completed && !available => {
                         if unavailable_failed_command.as_deref() != Some(&result.command_id) {
@@ -479,6 +510,131 @@ fn handle_arbiter_event(
             report_tts_result(node, outputs, reporter.entity_id(), command_id, false)?
         }
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_lifecycle_command(
+    bytes: &[u8],
+    node: &mut DoraNode,
+    outputs: &PlaybackOutputs,
+    reporter: &mut StateReporter,
+    gate: &mut LifecycleGate,
+    arbiter: &mut SourceArbiter,
+    buffers: &Arc<PlaybackBuffers>,
+    playback_monitor: &mut PlaybackMonitor,
+    device: &mut Option<crate::device::PlaybackDevice>,
+    available: &mut bool,
+    volume: f32,
+) -> Result<()> {
+    let command = serde_json::from_slice::<LifecycleCommand>(bytes)?;
+    let Some(transition) = gate.begin(&command).map_err(eyre::Report::msg)? else {
+        return Ok(());
+    };
+    emit_lifecycle_status(
+        node,
+        outputs,
+        gate,
+        match transition {
+            LifecycleTransition::Quiesce => LifecycleComponentState::Quiescing,
+            LifecycleTransition::Resume => LifecycleComponentState::Resuming,
+        },
+        None,
+    )?;
+
+    match transition {
+        LifecycleTransition::Quiesce => {
+            if let Some(command_id) = arbiter.interrupt_for_lifecycle() {
+                report_tts_interrupted_by_lifecycle(
+                    node,
+                    outputs,
+                    reporter.entity_id(),
+                    command_id,
+                )?;
+            }
+            buffers.clear_all();
+            playback_monitor.pending.clear();
+            device.take();
+            *available = false;
+            reporter.report_consumption(
+                node,
+                outputs,
+                crate::buffers::SOURCE_IDLE,
+                0,
+                arbiter.command_ids(),
+            )?;
+            gate.complete(transition);
+            emit_lifecycle_status(node, outputs, gate, LifecycleComponentState::Quiesced, None)?;
+        }
+        LifecycleTransition::Resume => {
+            if *available && device.is_some() {
+                gate.complete(transition);
+                return emit_lifecycle_status(
+                    node,
+                    outputs,
+                    gate,
+                    LifecycleComponentState::Running,
+                    None,
+                );
+            }
+            buffers.clear_all();
+            playback_monitor.pending.clear();
+            match default_output_plan().and_then(|plan| plan.open(buffers.clone(), volume)) {
+                Ok(playback_device) => {
+                    *device = Some(playback_device);
+                    *available = true;
+                    gate.complete(transition);
+                    emit_lifecycle_status(
+                        node,
+                        outputs,
+                        gate,
+                        LifecycleComponentState::Running,
+                        None,
+                    )?;
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "audio playback resume could not open output device");
+                    *available = false;
+                    emit_lifecycle_status(
+                        node,
+                        outputs,
+                        gate,
+                        LifecycleComponentState::Failed,
+                        Some(LifecycleReasonCode::Internal),
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn lifecycle_payload(data: &dyn Array) -> Result<&[u8]> {
+    let array = data
+        .as_any()
+        .downcast_ref::<BinaryArray>()
+        .ok_or_else(|| eyre::eyre!("lifecycle command must be binary"))?;
+    if array.len() != 1 {
+        return Err(eyre::eyre!("lifecycle command must contain one payload"));
+    }
+    Ok(array.value(0))
+}
+
+fn emit_lifecycle_status(
+    node: &mut DoraNode,
+    outputs: &PlaybackOutputs,
+    gate: &LifecycleGate,
+    state: LifecycleComponentState,
+    reason: Option<LifecycleReasonCode>,
+) -> Result<()> {
+    let status = gate.status(state, reason, current_time_ms());
+    status.validate().map_err(eyre::Report::msg)?;
+    let bytes = serde_json::to_vec(&status)?;
+    node.send_output(
+        outputs.lifecycle_component_status.clone(),
+        MetadataParameters::default(),
+        BinaryArray::from_vec(vec![bytes.as_slice()]),
+    )?;
     Ok(())
 }
 

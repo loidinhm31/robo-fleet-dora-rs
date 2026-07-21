@@ -21,6 +21,7 @@ pub struct PlaybackOutputs {
     walkie_state: DataId,
     pub(crate) playback_audio: DataId,
     pub(crate) playback_result: DataId,
+    pub(crate) lifecycle_component_status: DataId,
 }
 
 impl PlaybackOutputs {
@@ -30,6 +31,7 @@ impl PlaybackOutputs {
             walkie_state: DataId::from("walkie_state".to_owned()),
             playback_audio: DataId::from("playback_audio".to_owned()),
             playback_result: DataId::from("playback_result".to_owned()),
+            lifecycle_component_status: DataId::from("lifecycle_component_status".to_owned()),
         }
     }
 }

@@ -5,7 +5,7 @@ use robo_rover_lib::{SpeechTranscription, SttProfile};
 use sherpa_onnx::OfflineRecognizer;
 use std::sync::{
     mpsc::{self, Receiver, SyncSender, TrySendError},
-    Arc, Mutex,
+    Arc, Mutex, RwLock,
 };
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
@@ -49,14 +49,25 @@ impl DecoderBackend for SherpaDecoder {
 #[derive(Clone)]
 pub struct DecodeSubmitter {
     sender: SyncSender<DecodeJob>,
+    admission: Arc<RwLock<bool>>,
 }
 
 impl DecodeSubmitter {
     pub fn try_submit(&self, job: DecodeJob) -> SubmitResult {
+        if !admission_open(&self.admission) {
+            return SubmitResult::Disconnected;
+        }
         match self.sender.try_send(job) {
             Ok(()) => SubmitResult::Submitted,
             Err(TrySendError::Full(_)) => SubmitResult::Full,
             Err(TrySendError::Disconnected(_)) => SubmitResult::Disconnected,
+        }
+    }
+
+    /// Stops both queued and in-flight work from emitting a partial result.
+    pub fn close_admission(&self) {
+        if let Ok(mut admission) = self.admission.write() {
+            *admission = false;
         }
     }
 }
@@ -68,10 +79,12 @@ pub fn spawn(
     node: SharedNode,
 ) -> std::io::Result<(DecodeSubmitter, JoinHandle<()>)> {
     let (sender, receiver) = mpsc::sync_channel(capacity);
+    let admission = Arc::new(RwLock::new(true));
+    let worker_admission = admission.clone();
     let handle = thread::Builder::new()
         .name("sherpa-offline-decode".into())
-        .spawn(move || worker_loop(receiver, decoder, profile, node))?;
-    Ok((DecodeSubmitter { sender }, handle))
+        .spawn(move || worker_loop(receiver, decoder, profile, node, worker_admission))?;
+    Ok((DecodeSubmitter { sender, admission }, handle))
 }
 
 fn worker_loop(
@@ -79,11 +92,15 @@ fn worker_loop(
     mut decoder: Box<dyn DecoderBackend>,
     profile: SttProfile,
     node: SharedNode,
+    admission: Arc<RwLock<bool>>,
 ) {
     let mut decode_count = 0u64;
     let mut empty_count = 0u64;
     let mut latencies = Vec::new();
     while let Ok(job) = receiver.recv() {
+        if !admission_open(&admission) {
+            continue;
+        }
         let started = Instant::now();
         let audio_seconds = job.samples.len() as f64 / f64::from(VAD_SAMPLE_RATE);
         let transcription = decode_job(decoder.as_mut(), job, profile);
@@ -96,11 +113,22 @@ fn worker_loop(
             "offline speech decode completed"
         );
         match transcription {
-            Some(transcription) => send_transcription(&node, transcription),
+            Some(transcription) if admission_open(&admission) => {
+                // Hold the shared read lock across the output. Quiesce obtains
+                // the writer lock, so once it returns no pre-pause result can
+                // race into Dora's output queue.
+                let Ok(guard) = admission.read() else {
+                    continue;
+                };
+                if *guard {
+                    send_transcription(&node, transcription);
+                }
+            }
             None => {
                 empty_count += 1;
                 tracing::debug!("offline speech decode produced an empty result");
             }
+            Some(_) => tracing::debug!("discarded speech decode during lifecycle quiesce"),
         }
         if decode_count % 32 == 0 {
             log_decode_metrics(decode_count, empty_count, &latencies);
@@ -108,6 +136,10 @@ fn worker_loop(
         }
     }
     log_decode_metrics(decode_count, empty_count, &latencies);
+}
+
+fn admission_open(admission: &RwLock<bool>) -> bool {
+    admission.read().map(|state| *state).unwrap_or(false)
 }
 
 fn decode_job(

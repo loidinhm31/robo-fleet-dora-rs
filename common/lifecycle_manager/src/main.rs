@@ -73,7 +73,10 @@ fn main() -> Result<()> {
                         .map(|command| manager.apply(command, now))
                         .unwrap_or_else(|error| invalid_result(epoch, error.to_string()));
                     send(&mut node, &result_output, &result)?;
-                    if let Some(status) = target.and_then(|target| manager.status(&target, now)) {
+                    if let Some(status) = target
+                        .as_ref()
+                        .and_then(|target| manager.status(target, now))
+                    {
                         send(&mut node, &status_output, &status)?;
                     }
                     if result.accepted {
@@ -91,12 +94,22 @@ fn main() -> Result<()> {
                         .map(|command| manager.apply_relayed(command, now))
                         .unwrap_or_else(|error| invalid_result(epoch, error.to_string()));
                     send(&mut node, &result_output, &result)?;
-                    if let Some(status) = target.and_then(|target| manager.status(&target, now)) {
+                    if let Some(status) = target
+                        .as_ref()
+                        .and_then(|target| manager.status(target, now))
+                    {
                         send(&mut node, &status_output, &status)?;
+                    }
+                    if result.accepted {
+                        if let Ok(command) = serde_json::from_slice::<LifecycleCommand>(bytes) {
+                            send(&mut node, &authorized_command_output, &command)?;
+                        }
                     }
                 }
             }
-            Event::Input { id, data, .. } if id.as_str() == "lifecycle_component_status" => {
+            Event::Input { id, data, .. }
+                if id.as_str().starts_with("lifecycle_component_status") =>
+            {
                 if let Some(bytes) = binary(&data) {
                     if let Ok(status) =
                         serde_json::from_slice::<robo_rover_lib::LifecycleStatus>(bytes)

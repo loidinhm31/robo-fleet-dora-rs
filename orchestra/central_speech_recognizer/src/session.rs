@@ -142,6 +142,32 @@ impl SessionManager {
             .collect()
     }
 
+    /// Drops every active and pre-start stream without flushing a final segment.
+    /// Lifecycle quiesce uses this instead of the normal disconnect path: audio
+    /// captured before a pause must never become a post-pause transcription.
+    pub fn discard_all(&mut self) -> usize {
+        self.cancel_all_for_lifecycle().len()
+    }
+
+    /// Removes every stream without flushing and returns its identity for the
+    /// lifecycle cancellation audit/status. No caller can create a final
+    /// decode job after this method returns.
+    pub fn cancel_all_for_lifecycle(&mut self) -> Vec<SourceIdentity> {
+        let mut cancelled: Vec<_> = self
+            .sessions
+            .values()
+            .map(|session| session.identity.clone())
+            .collect();
+        cancelled.extend(
+            self.pending_browsers
+                .values()
+                .map(|pending| pending.identity.clone()),
+        );
+        self.sessions.clear();
+        self.pending_browsers.clear();
+        cancelled
+    }
+
     fn buffer_prestart(&mut self, input: AudioInput) -> Result<()> {
         validate_browser_identity(&input.identity, input.sample_rate)?;
         let key = SessionKey::Browser(input.identity.stream_id);
