@@ -26,7 +26,7 @@ members = [
     "rover-kiwi/audio_playback",
     "rover-kiwi/visual_servo_controller",
     "rover-kiwi/edge_voice",
-    "rover-kiwi/performance_monitor",
+    "common/resource_monitor",
     "rover-kiwi/zenoh_bridge",
     "rover-kiwi/dispatcher_keyboard",
     "rover-kiwi/reid_extractor",

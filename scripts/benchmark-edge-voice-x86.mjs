@@ -19,11 +19,11 @@ const evidenceLog = cli.get('--evidence-log')
   ?? `${outputDir}/phase-05-audio-acceptance.log`;
 const socketUrl = 'http://127.0.0.1:3030';
 const targetEntityId = 'rover-kiwi';
-const performanceMetricIntervalMs = 5000;
+const resourceSampleIntervalMs = 5000;
 
 const corpus = JSON.parse(readFileSync(corpusFile, 'utf8'));
 const evidence = [];
-const performanceSamples = [];
+const resourceSamples = [];
 const edgeVoiceSamples = [];
 const trackingSamples = [];
 let currentMetricPhase = 'startup';
@@ -64,8 +64,7 @@ function average(values) {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
-function summarizePerformanceSamples(samples) {
-  const dataflowFpsValues = samples.map((sample) => sample.dataflow_fps).filter((value) => Number.isFinite(value));
+function summarizeResourceSamples(samples) {
   const edgeVoiceCpuValues = samples
     .map((sample) => sample.edge_voice_cpu_percent)
     .filter((value) => Number.isFinite(value));
@@ -74,16 +73,14 @@ function summarizePerformanceSamples(samples) {
     .filter((value) => Number.isFinite(value));
   return {
     samples: samples.length,
-    avg_dataflow_fps: Number(average(dataflowFpsValues).toFixed(2)),
-    p95_dataflow_fps: Number(percentile(dataflowFpsValues, 95).toFixed(2)),
     avg_edge_voice_cpu_percent: Number(average(edgeVoiceCpuValues).toFixed(2)),
     peak_edge_voice_cpu_percent: Number(percentile(edgeVoiceCpuValues, 100).toFixed(1)),
     peak_edge_voice_rss_mb: Number(percentile(edgeVoiceRssValues, 100).toFixed(1)),
   };
 }
 
-function metricsForPhase(phase) {
-  return performanceSamples.filter((sample) => sample.phase === phase);
+function resourcesForPhase(phase) {
+  return resourceSamples.filter((sample) => sample.phase === phase);
 }
 
 function setMetricPhase(phase) {
@@ -246,18 +243,16 @@ class SocketSession {
       return;
     }
     const item = { event, payload, receivedAt: Date.now() };
-    if (event === 'performance_metrics') {
-      this.latestPerformanceMetrics = payload;
-      const edgeVoice = payload?.node_metrics?.['edge-voice'];
-      performanceSamples.push({
+    if (event === 'resource_snapshot' && payload?.entity_id === targetEntityId) {
+      this.latestResourceSnapshot = payload;
+      const edgeVoice = payload?.nodes?.['edge-voice'];
+      resourceSamples.push({
         at: item.receivedAt,
         phase: currentMetricPhase,
-        dataflow_fps: payload.dataflow_fps,
-        total_cpu_percent: payload.total_cpu_percent,
+        total_cpu_percent: payload.cpu_usage_percent,
         edge_voice_found: Boolean(edgeVoice),
         edge_voice_cpu_percent: edgeVoice?.cpu_usage_percent ?? null,
-        edge_voice_memory_mb: edgeVoice?.memory_usage_mb ?? null,
-        edge_voice_fps: edgeVoice?.fps ?? null,
+        edge_voice_memory_mb: edgeVoice?.memory_rss_bytes == null ? null : edgeVoice.memory_rss_bytes / (1024 * 1024),
       });
       if (edgeVoice) {
         edgeVoiceSamples.push(edgeVoice);
@@ -312,21 +307,21 @@ async function disableVision(client) {
   return await sendTrackingCommand(client, 'disable_detection', ['Disabled']);
 }
 
-async function samplePerformanceWindow(phase, durationMs, minSamples) {
-  const startIndex = performanceSamples.length;
+async function sampleResourceWindow(phase, durationMs, minSamples) {
+  const startIndex = resourceSamples.length;
   setMetricPhase(phase);
-  const deadline = Date.now() + Math.max(durationMs, (minSamples * performanceMetricIntervalMs) + 2000);
+  const deadline = Date.now() + Math.max(durationMs, (minSamples * resourceSampleIntervalMs) + 2000);
   let samples = [];
   do {
     await sleep(500);
-    samples = performanceSamples.slice(startIndex).filter((sample) => sample.phase === phase);
+    samples = resourceSamples.slice(startIndex).filter((sample) => sample.phase === phase);
   } while (samples.length < minSamples && Date.now() < deadline);
   if (samples.length < minSamples) {
-    throw new Error(`expected at least ${minSamples} performance samples for ${phase}, got ${samples.length}`);
+    throw new Error(`expected at least ${minSamples} resource samples for ${phase}, got ${samples.length}`);
   }
-  const summary = summarizePerformanceSamples(samples);
+  const summary = summarizeResourceSamples(samples);
   evidence.push(
-    `performance_window=${phase} samples=${summary.samples} avg_dataflow_fps=${summary.avg_dataflow_fps} peak_edge_voice_rss_mb=${summary.peak_edge_voice_rss_mb}`,
+    `resource_window=${phase} samples=${summary.samples} peak_edge_voice_rss_mb=${summary.peak_edge_voice_rss_mb}`,
   );
   return summary;
 }
@@ -415,7 +410,7 @@ async function runTtsCase(client, currentRevision, testCase, label) {
 
   evidence.push(
     `${label} cmd=${ack.payload.command_id} ttfa_ms=${ttfaMs} wall_ms=${wallMs} estimated_rtf=${estimatedRtf.toFixed(3)} edge_voice_rss_mb=${(
-      client.latestPerformanceMetrics?.node_metrics?.['edge-voice']?.memory_usage_mb ?? 0
+      (client.latestResourceSnapshot?.nodes?.['edge-voice']?.memory_rss_bytes ?? 0) / (1024 * 1024)
     ).toFixed(1)}`,
   );
 
@@ -430,8 +425,8 @@ async function runTtsCase(client, currentRevision, testCase, label) {
     wall_ms: wallMs,
     estimated_audio_ms: estimatedAudioMs,
     estimated_rtf: Number(estimatedRtf.toFixed(3)),
-    edge_voice_cpu_percent: client.latestPerformanceMetrics?.node_metrics?.['edge-voice']?.cpu_usage_percent ?? 0,
-    edge_voice_memory_mb: client.latestPerformanceMetrics?.node_metrics?.['edge-voice']?.memory_usage_mb ?? 0,
+    edge_voice_cpu_percent: client.latestResourceSnapshot?.nodes?.['edge-voice']?.cpu_usage_percent ?? 0,
+    edge_voice_memory_mb: (client.latestResourceSnapshot?.nodes?.['edge-voice']?.memory_rss_bytes ?? 0) / (1024 * 1024),
   };
 }
 
@@ -582,14 +577,14 @@ async function main() {
 
   setMetricPhase('initial_state');
   const defaults = await collectDefaultState(client, corpus.default_config);
-  const baselineMetrics = await client.waitFor('performance_metrics', () => true, 15000);
-  evidence.push(`baseline_dataflow_fps=${baselineMetrics.payload.dataflow_fps} baseline_edge_voice_rss_mb=${baselineMetrics.payload.node_metrics?.['edge-voice']?.memory_usage_mb ?? 0}`);
+  const baselineResource = await client.waitFor('resource_snapshot', (value) => value?.entity_id === targetEntityId, 15000);
+  evidence.push(`baseline_scope=${baselineResource.payload.scope} baseline_edge_voice_rss_mb=${((baselineResource.payload.nodes?.['edge-voice']?.memory_rss_bytes ?? 0) / (1024 * 1024)).toFixed(1)}`);
 
   setMetricPhase('vision_activation');
   const visionState = await ensureVisionActive(client);
   evidence.push(`vision_state=${visionState.state}`);
 
-  const visionOnly = await samplePerformanceWindow('vision_only', 5000, 2);
+  const visionOnly = await sampleResourceWindow('vision_only', 5000, 2);
 
   const balancedResults = [];
   let revision = defaults.revision;
@@ -613,21 +608,22 @@ async function main() {
   setMetricPhase('vision_shutdown');
   const disabledVision = await disableVision(client);
   evidence.push(`vision_state=${disabledVision.state}`);
-  const latestMetrics = client.latestPerformanceMetrics;
-  const visionTtsSamples = metricsForPhase('vision_tts');
+  const latestResource = client.latestResourceSnapshot;
+  const visionTtsSamples = resourcesForPhase('vision_tts');
   if (!visionTtsSamples.length) {
-    throw new Error('no performance samples recorded while vision and TTS were active');
+    throw new Error('no resource samples recorded while vision and TTS were active');
   }
   if (!edgeVoiceSamples.length) {
-    throw new Error('no edge-voice performance samples were observed');
+    throw new Error('no edge-voice resource samples were observed');
   }
-  const visionTts = summarizePerformanceSamples(visionTtsSamples);
+  const visionTts = summarizeResourceSamples(visionTtsSamples);
   const peakEdgeVoiceCpu = percentile(edgeVoiceSamples.map((sample) => sample.cpu_usage_percent), 100);
-  const peakEdgeVoiceRss = percentile(edgeVoiceSamples.map((sample) => sample.memory_usage_mb), 100);
-  const peakDataflowFps = percentile(performanceSamples.map((sample) => sample.dataflow_fps), 100);
-  const visionFpsRegressionPercent = visionOnly.avg_dataflow_fps > 0
-    ? Math.max(0, ((visionOnly.avg_dataflow_fps - visionTts.avg_dataflow_fps) / visionOnly.avg_dataflow_fps) * 100)
-    : 0;
+  const peakEdgeVoiceRss = percentile(
+    edgeVoiceSamples
+      .map((sample) => sample.memory_rss_bytes == null ? null : sample.memory_rss_bytes / (1024 * 1024))
+      .filter((value) => Number.isFinite(value)),
+    100,
+  );
   const summary = {
     started_at_utc: startedAt,
     socket_url: socketUrl,
@@ -642,18 +638,17 @@ async function main() {
       soak,
     },
     metrics: {
-      samples: performanceSamples.length,
+      samples: resourceSamples.length,
       peak_edge_voice_cpu_percent: Number(peakEdgeVoiceCpu.toFixed(1)),
       peak_edge_voice_rss_mb: Number(peakEdgeVoiceRss.toFixed(1)),
-      peak_dataflow_fps: Number(peakDataflowFps.toFixed(1)),
       phases: {
         vision_only: visionOnly,
         vision_tts: visionTts,
       },
-      latest_total_cpu_percent: latestMetrics?.total_cpu_percent ?? 0,
-      latest_total_memory_mb: latestMetrics?.total_memory_mb ?? 0,
-      latest_edge_voice_cpu_percent: latestMetrics?.node_metrics?.['edge-voice']?.cpu_usage_percent ?? 0,
-      latest_edge_voice_memory_mb: latestMetrics?.node_metrics?.['edge-voice']?.memory_usage_mb ?? 0,
+      latest_total_cpu_percent: latestResource?.cpu_usage_percent ?? 0,
+      latest_total_memory_mb: (latestResource?.memory_used_bytes ?? 0) / (1024 * 1024),
+      latest_edge_voice_cpu_percent: latestResource?.nodes?.['edge-voice']?.cpu_usage_percent ?? 0,
+      latest_edge_voice_memory_mb: (latestResource?.nodes?.['edge-voice']?.memory_rss_bytes ?? 0) / (1024 * 1024),
     },
     capture: {
       samples_rejected: capture.samplesRejected,
@@ -663,17 +658,15 @@ async function main() {
       ttfa_p95_ms: soak.p95_ttfa_ms,
       estimated_rtf_p95: soak.p95_estimated_rtf,
       peak_edge_voice_rss_mb: peakEdgeVoiceRss,
-      vision_fps_regression_percent: Number(visionFpsRegressionPercent.toFixed(2)),
     },
   };
 
   const failures = [];
-  if (visionOnly.samples < 2) failures.push(`expected at least 2 vision-only metric samples, got ${visionOnly.samples}`);
-  if (visionTts.samples < 1) failures.push(`expected at least 1 concurrent vision+tts metric sample, got ${visionTts.samples}`);
+  if (visionOnly.samples < 2) failures.push(`expected at least 2 vision-only resource samples, got ${visionOnly.samples}`);
+  if (visionTts.samples < 1) failures.push(`expected at least 1 concurrent vision+tts resource sample, got ${visionTts.samples}`);
   if (soak.p95_ttfa_ms >= 1000) failures.push(`p95 TTFA ${soak.p95_ttfa_ms.toFixed(1)}ms >= 1000ms`);
   if (soak.p95_estimated_rtf >= 1.0) failures.push(`p95 estimated RTF ${soak.p95_estimated_rtf.toFixed(3)} >= 1.0`);
   if (peakEdgeVoiceRss >= 2048) failures.push(`peak edge_voice RSS ${peakEdgeVoiceRss.toFixed(1)}MB >= 2048MB`);
-  if (visionFpsRegressionPercent > 10) failures.push(`vision FPS regression ${visionFpsRegressionPercent.toFixed(2)}% > 10%`);
   if ((capture.samplesRejected ?? 0) <= 0) failures.push(`expected audio capture suppression counter to be > 0, got ${capture.samplesRejected ?? 'unavailable'}`);
   if ((capture.captureDrops ?? 0) <= 0) failures.push(`expected audio capture drops to be > 0, got ${capture.captureDrops ?? 'unavailable'}`);
 
@@ -686,7 +679,6 @@ async function main() {
   console.log(`p95_ttfa_ms=${soak.p95_ttfa_ms.toFixed(1)}`);
   console.log(`p95_estimated_rtf=${soak.p95_estimated_rtf.toFixed(3)}`);
   console.log(`peak_edge_voice_rss_mb=${peakEdgeVoiceRss.toFixed(1)}`);
-  console.log(`vision_fps_regression_percent=${visionFpsRegressionPercent.toFixed(2)}`);
   console.log(`capture_samples_rejected=${capture.samplesRejected ?? 'unavailable'}`);
 
   if (failures.length > 0) {

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     # Shared library
     "robo_rover_lib",
+    "common/resource_monitor",
 
     # Rover-kiwi - On-robot nodes
     "rover-kiwi/kornia_capture",
@@ -17,7 +18,6 @@ members = [
     "rover-kiwi/edge_voice",
     "rover-kiwi/arm_controller",
     "rover-kiwi/rover_controller",
-    "rover-kiwi/performance_monitor",
     "rover-kiwi/zenoh_bridge",
     "rover-kiwi/dispatcher_keyboard",
     "rover-kiwi/sim_interface",

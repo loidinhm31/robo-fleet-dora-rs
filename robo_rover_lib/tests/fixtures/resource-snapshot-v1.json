@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "role": "rover",
+  "entity_id": "rover-kiwi",
+  "scope": "container",
+  "source": "cgroup_v2",
+  "sequence": 42,
+  "sampled_at_ms": 1784599200000,
+  "sample_interval_ms": 5000,
+  "cpu_usage_percent": 12.5,
+  "cpu_capacity_cores": 2.0,
+  "memory_used_bytes": 104857600,
+  "memory_available_bytes": 104857600,
+  "memory_limit_bytes": 209715200,
+  "nodes": {
+    "edge-voice": {
+      "state": "running",
+      "cpu_usage_percent": 4.0,
+      "memory_rss_bytes": 52428800,
+      "process_count": 1,
+      "sampled_at_ms": 1784599200000
+    },
+    "video-encoder": {
+      "state": "not_found",
+      "process_count": 0,
+      "sampled_at_ms": 1784599200000
+    }
+  }
+}

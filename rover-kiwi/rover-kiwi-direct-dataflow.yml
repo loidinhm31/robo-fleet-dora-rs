@@ -82,17 +82,20 @@ nodes:
       TTS_DEFAULT_STEPS: "8"
       TTS_DEFAULT_VOLUME: "0.8"
 
-  # Performance monitor - Local system metrics
-  - id: performance-monitor
-    build: cargo build --release -p performance_monitor
-    path: ../target/release/performance_monitor
+  # Resource monitor stays active while workload nodes pause.
+  - id: resource-monitor
+    build: cargo build --release -p resource_monitor
+    path: ../target/release/resource_monitor
     inputs:
       tick: dora/timer/millis/5000
     outputs:
-      - metrics  # SystemMetrics
+      - resource_snapshot
     env:
       RUST_LOG: info
-      ENTITY_ID: "rover-kiwi"  # Rover identity for fleet tracking
+      ENTITY_ID: "rover-kiwi"
+      RESOURCE_MONITOR_ROLE: "rover"
+      RESOURCE_MONITOR_SCOPE: "${RESOURCE_MONITOR_SCOPE:-}"
+      RESOURCE_MONITOR_NODES: '[{"node_id":"audio-capture","executable":"audio_capture"},{"node_id":"audio-converter","executable":"audio_converter"},{"node_id":"edge-voice","executable":"edge_voice"},{"node_id":"audio-playback","executable":"audio_playback"},{"node_id":"gst-camera","executable":"kornia_capture"},{"node_id":"video-encoder","executable":"video_encoder"},{"node_id":"visual-servo-controller","executable":"visual_servo_controller"},{"node_id":"arm-controller","executable":"arm_controller"},{"node_id":"rover-controller","executable":"rover_controller"},{"node_id":"web-bridge","executable":"web_bridge"}]'
 
   # GStreamer camera capture + consolidated vision pipeline
   - id: gst-camera
@@ -223,7 +226,7 @@ nodes:
       detections: gst-camera/detections
       tracked_detections: gst-camera/tracked_detections
       tracking_telemetry: gst-camera/tracking_telemetry
-      performance_metrics: performance-monitor/metrics
+      resource_snapshot: resource-monitor/resource_snapshot
       voice_status:
         source: edge-voice/voice_status
         queue_size: 8

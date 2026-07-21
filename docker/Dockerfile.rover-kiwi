@@ -25,6 +25,7 @@ COPY Cargo.lock ./
 
 # Copy shared library Cargo.toml
 COPY robo_rover_lib/Cargo.toml robo_rover_lib/
+COPY common/resource_monitor/Cargo.toml common/resource_monitor/
 
 # Copy rover-kiwi node Cargo.toml files
 COPY rover-kiwi/kornia_capture/Cargo.toml rover-kiwi/kornia_capture/
@@ -39,7 +40,6 @@ COPY rover-kiwi/audio_playback/Cargo.toml rover-kiwi/audio_playback/
 COPY rover-kiwi/edge_voice/Cargo.toml rover-kiwi/edge_voice/
 COPY rover-kiwi/arm_controller/Cargo.toml rover-kiwi/arm_controller/
 COPY rover-kiwi/rover_controller/Cargo.toml rover-kiwi/rover_controller/
-COPY rover-kiwi/performance_monitor/Cargo.toml rover-kiwi/performance_monitor/
 COPY rover-kiwi/zenoh_bridge/Cargo.toml rover-kiwi/zenoh_bridge/
 COPY rover-kiwi/sim_interface/Cargo.toml rover-kiwi/sim_interface/
 COPY rover-kiwi/dispatcher_keyboard/Cargo.toml rover-kiwi/dispatcher_keyboard/
@@ -76,8 +76,8 @@ RUN mkdir -p rover-kiwi/kornia_capture/src && \
     echo "fn main() {}" > rover-kiwi/arm_controller/src/main.rs && \
     mkdir -p rover-kiwi/rover_controller/src && \
     echo "fn main() {}" > rover-kiwi/rover_controller/src/main.rs && \
-    mkdir -p rover-kiwi/performance_monitor/src && \
-    echo "fn main() {}" > rover-kiwi/performance_monitor/src/main.rs && \
+    mkdir -p common/resource_monitor/src && \
+    echo "fn main() {}" > common/resource_monitor/src/main.rs && \
     mkdir -p rover-kiwi/zenoh_bridge/src && \
     echo "fn main() {}" > rover-kiwi/zenoh_bridge/src/main.rs && \
     mkdir -p rover-kiwi/sim_interface/src && \
@@ -112,7 +112,7 @@ RUN cargo build --release \
     -p edge_voice \
     -p arm_controller \
     -p rover_controller \
-    -p performance_monitor \
+    -p resource_monitor \
     -p rover_zenoh_bridge \
     -p sim_interface \
     -p web_bridge \
@@ -181,7 +181,7 @@ COPY --from=builder /build/target/release/audio_playback ./bin/
 COPY --from=builder /build/target/release/edge_voice ./bin/
 COPY --from=builder /build/target/release/arm_controller ./bin/
 COPY --from=builder /build/target/release/rover_controller ./bin/
-COPY --from=builder /build/target/release/performance_monitor ./bin/
+COPY --from=builder /build/target/release/resource_monitor ./bin/
 COPY --from=builder /build/target/release/rover_zenoh_bridge ./bin/
 COPY --from=builder /build/target/release/sim_interface ./bin/
 COPY --from=builder /build/target/release/web_bridge ./bin/

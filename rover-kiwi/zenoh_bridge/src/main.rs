@@ -124,12 +124,18 @@ async fn main() -> Result<()> {
         })?;
     tracing::info!("Publisher: {}", servo_telemetry_topic);
 
-    let metrics_topic = format!("rover/{}/metrics", entity_id);
-    let metrics_pub = session
-        .declare_publisher(&metrics_topic)
+    let resource_snapshot_topic = format!("rover/{}/resources/v1", entity_id);
+    let resource_snapshot_pub = session
+        .declare_publisher(&resource_snapshot_topic)
         .await
-        .map_err(|e| eyre::eyre!("Failed to declare publisher {}: {}", metrics_topic, e))?;
-    tracing::info!("Publisher: {}", metrics_topic);
+        .map_err(|e| {
+            eyre::eyre!(
+                "Failed to declare publisher {}: {}",
+                resource_snapshot_topic,
+                e
+            )
+        })?;
+    tracing::info!("Publisher: {}", resource_snapshot_topic);
 
     // Detection-only mode (YOLO, no tracking IDs) — separate from tracked_detections
     let detections_topic = format!("rover/{}/video/detections_only", entity_id);
@@ -508,8 +514,8 @@ async fn main() -> Result<()> {
                                             "servo_telemetry" => {
                                                 let _ = servo_telemetry_pub.put(bytes).await;
                                             }
-                                            "performance_metrics" => {
-                                                let _ = metrics_pub.put(bytes).await;
+                                            "resource_snapshot" => {
+                                                let _ = resource_snapshot_pub.put(bytes).await;
                                             }
                                             "detections" => {
                                                 let _ = detections_pub.put(bytes).await;
