@@ -36,7 +36,7 @@ Remove FPS, inferred latency, queue, and drop values from fleet monitoring. Meas
 | 2 | Lifecycle control plane and routing | Done (2026-07-22T00:04:24+07:00; review approved) | 8h | [phase-02](./phase-02-lifecycle-control-plane-and-routing.md) |
 | 3 | Safe node adapters and unload/resume | Done (2026-07-22; review approved) | 12h | [phase-03](./phase-03-safe-node-adapters-and-unload-resume.md) |
 | 4 | Fleet Resources UI and authoritative state | Done (2026-07-22T03:04:10+07:00; review approved) | 6h | [phase-04](./phase-04-fleet-resources-ui-and-state.md) |
-| 5 | Cross-mode verification and rollout | Pending | 4h | [phase-05](./phase-05-cross-mode-verification-and-rollout.md) |
+| 5 | Cross-mode verification and rollout | Done (2026-07-22T20:00:36+07:00; follow-up review and user approval) | 4h | [phase-05](./phase-05-cross-mode-verification-and-rollout.md) |
 
 ## Architecture and Research
 

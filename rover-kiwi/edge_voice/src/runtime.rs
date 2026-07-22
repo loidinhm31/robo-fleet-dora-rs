@@ -30,6 +30,11 @@ use crate::{
 
 const INPUT_POLL_CEILING: Duration = Duration::from_millis(20);
 const METRICS_INTERVAL: Duration = Duration::from_secs(5);
+// Supertonic can remain inside one native generation callback for several
+// seconds. Keep this below the lifecycle manager's 30-second deadline so a
+// confirmed worker shutdown is reported as Quiesced instead of timing out
+// prematurely.
+const LIFECYCLE_WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(25);
 const MAX_WORKER_EVENTS_PER_TICK: usize = worker::WORKER_EVENT_CAPACITY + 1;
 
 pub fn run() -> Result<()> {
@@ -427,8 +432,7 @@ fn handle_lifecycle_command(
     worker_rx: &mut Receiver<WorkerEvent>,
     deployment: &DeploymentConfig,
 ) -> Result<()> {
-    let command = serde_json::from_slice::<LifecycleCommand>(bytes)?;
-    let Some(transition) = gate.begin(&command).map_err(eyre::Report::msg)? else {
+    let Some(transition) = begin_lifecycle_transition(bytes, gate)? else {
         return Ok(());
     };
     emit_lifecycle_status(
@@ -463,7 +467,7 @@ fn handle_lifecycle_command(
                 runtime,
                 worker,
                 worker_rx,
-                Duration::from_secs(2),
+                LIFECYCLE_WORKER_STOP_TIMEOUT,
             )?;
             if !stopped {
                 runtime.ready = false;
@@ -517,6 +521,18 @@ fn handle_lifecycle_command(
         },
         None,
     )
+}
+
+fn begin_lifecycle_transition(
+    bytes: &[u8],
+    gate: &mut LifecycleGate,
+) -> Result<Option<LifecycleTransition>> {
+    let command = serde_json::from_slice::<LifecycleCommand>(bytes)?;
+    if !gate.accepts_target(&command.target) {
+        tracing::trace!(target = ?command.target, "ignoring lifecycle command for another workload");
+        return Ok(None);
+    }
+    gate.begin(&command).map_err(eyre::Report::msg)
 }
 
 fn complete_ready_lifecycle_resume(
@@ -1378,6 +1394,41 @@ mod tests {
         }
     }
 
+    fn sibling_command() -> LifecycleCommand {
+        LifecycleCommand {
+            protocol_version: robo_rover_lib::LIFECYCLE_PROTOCOL_VERSION,
+            request_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            manager_epoch: 1,
+            target: LifecycleTarget {
+                role: LifecycleRole::Rover,
+                entity_id: "rover-kiwi".into(),
+                node_id: "audio-playback".into(),
+            },
+            desired_state: robo_rover_lib::LifecycleDesiredState::Quiesced,
+            expected_revision: 0,
+            issued_at_ms: 1,
+            expires_at_ms: 2,
+        }
+    }
+
+    #[test]
+    fn sibling_lifecycle_command_leaves_edge_voice_running() {
+        let mut gate = LifecycleGate::new(LifecycleTarget {
+            role: LifecycleRole::Rover,
+            entity_id: "rover-kiwi".into(),
+            node_id: "edge-voice".into(),
+        });
+        let payload = serde_json::to_vec(&sibling_command()).unwrap();
+
+        assert_eq!(
+            begin_lifecycle_transition(&payload, &mut gate).unwrap(),
+            None
+        );
+        assert!(gate.admission_open());
+        assert_eq!(gate.authority(), (0, 0));
+        assert_eq!(gate.desired_state(), None);
+    }
+
     #[test]
     fn speaking_status_uses_active_config_snapshot() {
         let mut runtime = RuntimeState::new(deployment());
@@ -1585,6 +1636,12 @@ mod tests {
             MAX_WORKER_EVENTS_PER_TICK,
             crate::worker::WORKER_EVENT_CAPACITY + 1
         );
+    }
+
+    #[test]
+    fn lifecycle_worker_stop_budget_covers_observed_native_generation_latency() {
+        assert!(LIFECYCLE_WORKER_STOP_TIMEOUT >= Duration::from_secs(10));
+        assert!(LIFECYCLE_WORKER_STOP_TIMEOUT < Duration::from_secs(30));
     }
 
     #[test]

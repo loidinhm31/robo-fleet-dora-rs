@@ -302,7 +302,10 @@ nodes:
       servo_telemetry: visual-servo-controller/servo_telemetry
       resource_snapshot: resource-monitor/resource_snapshot
       lifecycle_command_result: lifecycle-manager/lifecycle_command_result
-      lifecycle_status: lifecycle-manager/lifecycle_status
+      # Preserve the complete lifecycle snapshot for Orchestra forwarding.
+      lifecycle_status:
+        source: lifecycle-manager/lifecycle_status
+        queue_size: 64
       lifecycle_capabilities: lifecycle-manager/lifecycle_capabilities
       voice_status:
         source: edge-voice/voice_status

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     # Shared library
     "robo_rover_lib",
+    "common/lifecycle_manager",
     "common/resource_monitor",
 
     # Rover-kiwi - On-robot nodes

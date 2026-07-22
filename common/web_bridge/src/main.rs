@@ -3446,7 +3446,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
-                    "lifecycle_command_result" | "rover_lifecycle_command_result" => {
+                    "lifecycle_command_result" => {
                         if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
                             if binary_array.len() == 1 {
                                 if let Ok(result) = serde_json::from_slice::<LifecycleCommandResult>(
@@ -3476,7 +3476,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
-                    "lifecycle_status" | "rover_lifecycle_status" => {
+                    // The Orchestra lifecycle manager is authoritative for
+                    // Rover targets in Zenoh mode. Raw Rover reports feed that
+                    // manager; emitting them directly would overwrite its
+                    // authority epoch in browser state.
+                    "lifecycle_status" => {
                         if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
                             if binary_array.len() == 1 {
                                 if let Ok(status) =
@@ -3502,7 +3506,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
-                    "lifecycle_capabilities" | "rover_lifecycle_capabilities" => {
+                    "lifecycle_capabilities" => {
                         if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
                             if binary_array.len() == 1 {
                                 if let Ok(capabilities) =

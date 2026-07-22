@@ -93,7 +93,7 @@ nodes:
       RUST_LOG: info
       ZENOH_MODE: "peer"
       ENTITY_ID: "orchestra"                    # This node's ID
-      ACTIVE_ROVERS: "rover-kiwi"               # Comma-separated list of rovers to subscribe to initially
+      ACTIVE_ROVERS: "rover-kiwi"               # Comma-separated list; lifecycle status queues support up to 15 active Rovers
       ZENOH_CONFIG: "${ORCHESTRA_ZENOH_CONFIG:-zenoh_bridge/zenoh_config.json5}"
       VIDEO_WIDTH: "640"
       VIDEO_HEIGHT: "480"
@@ -260,7 +260,12 @@ nodes:
     path: ../target/release/lifecycle_manager
     inputs:
       lifecycle_command: web-bridge/lifecycle_command
-      lifecycle_component_status: orchestra-bridge/lifecycle_status
+      # The bridge relays every safe Rover node status in one manager tick.
+      # Retain the full remote snapshot before the manager merges it locally.
+      # 15 Rovers × four safe nodes plus four local Orchestra statuses fill this queue.
+      lifecycle_component_status:
+        source: orchestra-bridge/lifecycle_status
+        queue_size: 64
       lifecycle_component_status_recorder: media-recorder/lifecycle_component_status
       lifecycle_component_status_stt: central-speech-recognizer/lifecycle_component_status
       lifecycle_status_query: web-bridge/lifecycle_status_query
@@ -306,11 +311,14 @@ nodes:
       rover_resource_snapshot: orchestra-bridge/resource_snapshot
       orchestra_resource_snapshot: resource-monitor/resource_snapshot
       lifecycle_command_result: lifecycle-manager/lifecycle_command_result
-      lifecycle_status: lifecycle-manager/lifecycle_status
+      # One manager tick emits every local and active-Rover status. Keep the
+      # complete authoritative snapshot instead of retaining only its tail.
+      lifecycle_status:
+        source: lifecycle-manager/lifecycle_status
+        queue_size: 64
       lifecycle_capabilities: lifecycle-manager/lifecycle_capabilities
-      rover_lifecycle_command_result: orchestra-bridge/lifecycle_command_result
-      rover_lifecycle_status: orchestra-bridge/lifecycle_status
-      rover_lifecycle_capabilities: orchestra-bridge/lifecycle_capabilities
+      # Browser lifecycle state is emitted by Orchestra's lifecycle manager,
+      # which owns the command epoch for relayed Rover operations.
 
       # Processed data (from rovers via orchestra-bridge)
       detections: orchestra-bridge/detections

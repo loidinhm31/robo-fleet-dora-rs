@@ -756,7 +756,8 @@ async fn main() -> Result<()> {
 
             Ok(sample) = lifecycle_command_sub.recv_async() => {
                 let payload = sample.payload().to_bytes();
-                if serde_json::from_slice::<LifecycleCommand>(&payload).is_ok() {
+                if let Some(command) = lifecycle_command_for_manager(payload.as_ref()) {
+                    tracing::info!(request_id = %command.request_id, target = ?command.target, "received validated lifecycle command payload from Zenoh; forwarding to lifecycle manager");
                     let _ = node.send_output(lifecycle_command_output.clone(), Default::default(), BinaryArray::from_vec(vec![payload.as_ref()]));
                 } else { tracing::warn!("rejected malformed lifecycle command"); }
             }
@@ -785,6 +786,12 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn lifecycle_command_for_manager(payload: &[u8]) -> Option<LifecycleCommand> {
+    serde_json::from_slice::<LifecycleCommand>(payload)
+        .ok()
+        .filter(|command| command.validate().is_ok())
 }
 
 fn frame_metadata(
@@ -847,4 +854,49 @@ fn audio_frame_metadata(
             .map_err(|_| "sample_count exceeds u32")?,
         format: PcmSampleFormat::from_metadata_name(string("format")?)?,
     })
+}
+
+#[cfg(test)]
+mod lifecycle_command_tests {
+    use super::*;
+    use robo_rover_lib::{
+        LifecycleDesiredState, LifecycleRole, LifecycleTarget, LIFECYCLE_PROTOCOL_VERSION,
+    };
+
+    fn valid_command() -> LifecycleCommand {
+        LifecycleCommand {
+            protocol_version: LIFECYCLE_PROTOCOL_VERSION,
+            request_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            manager_epoch: 1,
+            target: LifecycleTarget {
+                role: LifecycleRole::Rover,
+                entity_id: "rover-kiwi".into(),
+                node_id: "edge-voice".into(),
+            },
+            desired_state: LifecycleDesiredState::Quiesced,
+            expected_revision: 0,
+            issued_at_ms: 1,
+            expires_at_ms: 2,
+        }
+    }
+
+    #[test]
+    fn malformed_zenoh_lifecycle_payload_is_not_forwarded_to_manager() {
+        assert!(lifecycle_command_for_manager(br#"{\"target\":\"not-a-command\"}"#).is_none());
+    }
+
+    #[test]
+    fn invalid_zenoh_lifecycle_payload_is_not_forwarded_to_manager() {
+        let mut command = valid_command();
+        command.expires_at_ms = command.issued_at_ms;
+
+        assert!(lifecycle_command_for_manager(&serde_json::to_vec(&command).unwrap()).is_none());
+    }
+
+    #[test]
+    fn valid_zenoh_lifecycle_payload_remains_forwardable() {
+        assert!(
+            lifecycle_command_for_manager(&serde_json::to_vec(&valid_command()).unwrap()).is_some()
+        );
+    }
 }

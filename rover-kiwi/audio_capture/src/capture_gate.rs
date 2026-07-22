@@ -6,6 +6,8 @@ const SUPPRESSION_TAIL: Duration = Duration::from_millis(400);
 
 pub struct CaptureGate {
     capture_enabled_by_user: bool,
+    user_enabled_before_lifecycle_quiesce: Option<bool>,
+    fresh_start_required: bool,
     playback_suppressed: bool,
     tail_until: Option<Instant>,
     last_producer_instance_id: Option<String>,
@@ -21,6 +23,8 @@ impl CaptureGate {
     pub fn new(capture_enabled_by_user: bool) -> Self {
         Self {
             capture_enabled_by_user,
+            user_enabled_before_lifecycle_quiesce: None,
+            fresh_start_required: false,
             playback_suppressed: false,
             tail_until: None,
             last_producer_instance_id: None,
@@ -35,6 +39,29 @@ impl CaptureGate {
 
     pub fn set_user_enabled(&mut self, enabled: bool) {
         self.capture_enabled_by_user = enabled;
+        if enabled {
+            self.fresh_start_required = false;
+        }
+    }
+
+    /// Resuming never restores microphone capture automatically. The prior
+    /// user choice is retained for diagnostics; only a new Start may reopen it.
+    pub fn quiesce_for_lifecycle(&mut self) {
+        self.user_enabled_before_lifecycle_quiesce = Some(self.capture_enabled_by_user);
+        self.capture_enabled_by_user = false;
+        self.fresh_start_required = true;
+    }
+
+    pub fn resume_after_lifecycle(&mut self) {
+        self.capture_enabled_by_user = false;
+    }
+
+    pub fn user_enabled_before_lifecycle_quiesce(&self) -> Option<bool> {
+        self.user_enabled_before_lifecycle_quiesce
+    }
+
+    pub fn fresh_start_required(&self) -> bool {
+        self.fresh_start_required
     }
 
     pub fn observe_playback(&mut self, state: &PlaybackState, now: Instant) {
@@ -151,6 +178,35 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_resume_preserves_enabled_intent_but_requires_fresh_start() {
+        let now = Instant::now();
+        let mut gate = CaptureGate::new(true);
+
+        gate.quiesce_for_lifecycle();
+        gate.resume_after_lifecycle();
+
+        assert_eq!(gate.user_enabled_before_lifecycle_quiesce(), Some(true));
+        assert!(gate.fresh_start_required());
+        assert!(!gate.can_publish(now));
+        gate.set_user_enabled(true);
+        assert!(!gate.fresh_start_required());
+        assert!(gate.can_publish(now));
+    }
+
+    #[test]
+    fn lifecycle_resume_keeps_previously_stopped_capture_closed() {
+        let now = Instant::now();
+        let mut gate = CaptureGate::new(false);
+
+        gate.quiesce_for_lifecycle();
+        gate.resume_after_lifecycle();
+
+        assert_eq!(gate.user_enabled_before_lifecycle_quiesce(), Some(false));
+        assert!(gate.fresh_start_required());
+        assert!(!gate.can_publish(now));
+    }
+
+    #[test]
     fn stale_or_duplicate_states_do_not_clear_active_suppression() {
         let now = Instant::now();
         let mut gate = CaptureGate::new(true);
@@ -198,12 +254,18 @@ mod tests {
         let mut gate = CaptureGate::new(true);
 
         gate.observe_playback(&state(PlaybackStateKind::Active, 1), now);
-        gate.observe_playback(&state(PlaybackStateKind::Active, 2), now + Duration::from_millis(80));
+        gate.observe_playback(
+            &state(PlaybackStateKind::Active, 2),
+            now + Duration::from_millis(80),
+        );
         gate.observe_playback(
             &state(PlaybackStateKind::Active, 3),
             now + Duration::from_millis(160),
         );
-        gate.observe_playback(&state(PlaybackStateKind::Idle, 4), now + Duration::from_millis(240));
+        gate.observe_playback(
+            &state(PlaybackStateKind::Idle, 4),
+            now + Duration::from_millis(240),
+        );
 
         assert_eq!(gate.metrics().suppression_entries, 1);
         assert_eq!(gate.metrics().tail_entries, 1);

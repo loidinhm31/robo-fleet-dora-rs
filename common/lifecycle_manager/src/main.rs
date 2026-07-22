@@ -4,10 +4,9 @@ use dora_node_api::{
     DoraNode, Event,
 };
 use eyre::Result;
-use lifecycle_manager::LifecycleManager;
+use lifecycle_manager::{remote_rover_capabilities, LifecycleManager};
 use robo_rover_lib::{
-    init_tracing, LifecycleCapability, LifecycleCommand, LifecycleCommandResult, LifecycleRole,
-    LifecycleTarget, LifecycleWakeLease,
+    init_tracing, LifecycleCapability, LifecycleCommand, LifecycleCommandResult, LifecycleWakeLease,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -26,34 +25,25 @@ fn main() -> Result<()> {
         .map(|value| serde_json::from_str::<Vec<LifecycleCapability>>(&value))
         .transpose()?
         .unwrap_or_default();
-    if let Ok(entities) = std::env::var("LIFECYCLE_REMOTE_ROVER_ENTITIES") {
-        for entity_id in entities
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
+    let remote_capabilities = std::env::var("LIFECYCLE_REMOTE_ROVER_ENTITIES")
+        .ok()
+        .map(|entities| remote_rover_capabilities(&entities))
+        .transpose()
+        .map_err(eyre::Report::msg)?
+        .unwrap_or_default();
+    for capability in &remote_capabilities {
+        if !capabilities
+            .iter()
+            .any(|current| current.target == capability.target)
         {
-            for node_id in ["gst-camera", "audio-capture"] {
-                let capability = LifecycleCapability {
-                    target: LifecycleTarget {
-                        role: LifecycleRole::Rover,
-                        entity_id: entity_id.to_owned(),
-                        node_id: node_id.into(),
-                    },
-                    // Phase 3 enables these only after adapter-backed release.
-                    supported: false,
-                    always_on: false,
-                };
-                if !capabilities
-                    .iter()
-                    .any(|current| current.target == capability.target)
-                {
-                    capabilities.push(capability);
-                }
-            }
+            capabilities.push(capability.clone());
         }
     }
     let mut manager =
         LifecycleManager::new(epoch, capabilities).map_err(|error| eyre::eyre!(error))?;
+    for capability in remote_capabilities {
+        manager.mark_remote_target_stale(&capability.target);
+    }
     let (mut node, mut events) = DoraNode::init_from_env()?;
     let result_output = DataId::from("lifecycle_command_result".to_owned());
     let status_output = DataId::from("lifecycle_status".to_owned());
@@ -72,6 +62,14 @@ fn main() -> Result<()> {
                     let result = parsed
                         .map(|command| manager.apply(command, now))
                         .unwrap_or_else(|error| invalid_result(epoch, error.to_string()));
+                    tracing::info!(
+                        origin = "local",
+                        request_id = %result.request_id,
+                        target = ?target,
+                        accepted = result.accepted,
+                        reason_code = ?result.reason_code,
+                        "lifecycle command evaluated"
+                    );
                     send(&mut node, &result_output, &result)?;
                     if let Some(status) = target
                         .as_ref()
@@ -93,6 +91,14 @@ fn main() -> Result<()> {
                     let result = parsed
                         .map(|command| manager.apply_relayed(command, now))
                         .unwrap_or_else(|error| invalid_result(epoch, error.to_string()));
+                    tracing::info!(
+                        origin = "orchestra_relay",
+                        request_id = %result.request_id,
+                        target = ?target,
+                        accepted = result.accepted,
+                        reason_code = ?result.reason_code,
+                        "lifecycle command evaluated"
+                    );
                     send(&mut node, &result_output, &result)?;
                     if let Some(status) = target
                         .as_ref()
@@ -114,7 +120,9 @@ fn main() -> Result<()> {
                     if let Ok(status) =
                         serde_json::from_slice::<robo_rover_lib::LifecycleStatus>(bytes)
                     {
-                        if manager.apply_component_status(&status) {
+                        let applied = manager.apply_component_status(&status);
+                        let remote_status = id.as_str() == "lifecycle_component_status";
+                        if applied || (remote_status && manager.mark_remote_status_stale(&status)) {
                             if let Some(updated) = manager.status(&status.target, now) {
                                 send(&mut node, &status_output, &updated)?;
                             }

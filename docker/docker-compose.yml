@@ -101,7 +101,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "test ! -e /recordings/.image-layer-recording-root-marker && test -d /recordings && test -w /recordings && test -x /usr/bin/ffmpeg && test -x /usr/bin/ffprobe && ffmpeg -hide_banner -encoders 2>/dev/null | grep -Eq '[[:space:]]libx264[[:space:]]' && ffmpeg -hide_banner -encoders 2>/dev/null | grep -Eq '[[:space:]]aac[[:space:]]' && ffmpeg -hide_banner -muxers 2>/dev/null | grep -Eq '[[:space:]]E[[:space:]]mp4[[:space:]]' && ffprobe -version >/dev/null 2>&1 && available_kb=$$(df -Pk /recordings | awk 'NR==2 {print $$4}') && test \"$$available_kb\" -ge \"$$((RECORDING_MIN_FREE_BYTES / 1024))\" && probe=$$(mktemp /recordings/.healthcheck.XXXXXX) && printf ready > \"$$probe\" && sync -f \"$$probe\" && mv \"$$probe\" \"$$probe.renamed\" && test \"$$(cat \"$$probe.renamed\")\" = ready && rm -f \"$$probe.renamed\" && grep -azq '/app/bin/central_speech_recognizer' /proc/*/cmdline && grep -azq '/app/bin/command_parser' /proc/*/cmdline && grep -azq '/app/bin/media_recorder' /proc/*/cmdline && grep -azq '/app/bin/orchestra_zenoh_bridge' /proc/*/cmdline && grep -azq '/app/bin/web_bridge' /proc/*/cmdline && { test \"$$RECORDING_SCHEDULER_ENABLED\" != true || grep -azq '/app/bin/recording_scheduler' /proc/*/cmdline; }",
+          "test ! -e /recordings/.image-layer-recording-root-marker && test -d /recordings && test -w /recordings && test -x /usr/bin/ffmpeg && test -x /usr/bin/ffprobe && ffmpeg -hide_banner -encoders 2>/dev/null | grep -Eq '[[:space:]]libx264[[:space:]]' && ffmpeg -hide_banner -encoders 2>/dev/null | grep -Eq '[[:space:]]aac[[:space:]]' && ffmpeg -hide_banner -muxers 2>/dev/null | grep -Eq '[[:space:]]E[[:space:]]mp4[[:space:]]' && ffprobe -version >/dev/null 2>&1 && available_kb=$$(df -Pk /recordings | awk 'NR==2 {print $$4}') && test \"$$available_kb\" -ge \"$$((RECORDING_MIN_FREE_BYTES / 1024))\" && probe=$$(mktemp /recordings/.healthcheck.XXXXXX) && printf ready > \"$$probe\" && sync -f \"$$probe\" && mv \"$$probe\" \"$$probe.renamed\" && test \"$$(cat \"$$probe.renamed\")\" = ready && rm -f \"$$probe.renamed\" && grep -azq '/app/bin/resource_monitor' /proc/*/cmdline && grep -azq '/app/bin/lifecycle_manager' /proc/*/cmdline && grep -azq '/app/bin/central_speech_recognizer' /proc/*/cmdline && grep -azq '/app/bin/command_parser' /proc/*/cmdline && grep -azq '/app/bin/media_recorder' /proc/*/cmdline && grep -azq '/app/bin/orchestra_zenoh_bridge' /proc/*/cmdline && grep -azq '/app/bin/web_bridge' /proc/*/cmdline && { test \"$$RECORDING_SCHEDULER_ENABLED\" != true || grep -azq '/app/bin/recording_scheduler' /proc/*/cmdline; }",
         ]
       interval: 30s
       timeout: 10s
@@ -193,7 +193,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "grep -azq '/app/bin/kornia_capture' /proc/*/cmdline && grep -azq '/app/bin/edge_voice' /proc/*/cmdline && grep -azq '/app/bin/audio_capture' /proc/*/cmdline && grep -azq '/app/bin/audio_playback' /proc/*/cmdline && grep -azq '/app/bin/rover_zenoh_bridge' /proc/*/cmdline",
+          "grep -azq '/app/bin/resource_monitor' /proc/*/cmdline && grep -azq '/app/bin/lifecycle_manager' /proc/*/cmdline && grep -azq '/app/bin/kornia_capture' /proc/*/cmdline && grep -azq '/app/bin/edge_voice' /proc/*/cmdline && grep -azq '/app/bin/audio_capture' /proc/*/cmdline && grep -azq '/app/bin/audio_playback' /proc/*/cmdline && grep -azq '/app/bin/rover_zenoh_bridge' /proc/*/cmdline",
         ]
       interval: 30s
       timeout: 10s

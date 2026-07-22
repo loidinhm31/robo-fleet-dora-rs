@@ -246,6 +246,51 @@ impl LifecycleManager {
         }
     }
 
+    /// A fresh Orchestra manager cannot accept a Rover status carrying the
+    /// Rover's previous authority epoch.  Mark that target explicitly stale
+    /// instead of continuing to publish Orchestra's default `Running` state.
+    /// A later command relayed from Orchestra establishes a shared authority
+    /// epoch, after which normal component status application resumes.
+    pub fn mark_remote_status_stale(&mut self, status: &LifecycleStatus) -> bool {
+        if status.validate().is_err() {
+            return false;
+        }
+        let Some(item) = self.targets.get_mut(&status.target) else {
+            return false;
+        };
+        if item.authority_epoch == status.manager_epoch && item.revision == status.revision {
+            return false;
+        }
+        // Only a fresh Orchestra target has no authoritative history. An
+        // out-of-order remote report must never replace a completed state,
+        // erase an active deadline, or change a terminal timeout authority.
+        if item.revision != 0
+            || item.transition_deadline_ms.is_some()
+            || item.timed_out_authority.is_some()
+        {
+            return false;
+        }
+        item.effective_state = LifecycleEffectiveState::Superseded;
+        true
+    }
+
+    /// Orchestra has no authoritative observation for a configured Rover at
+    /// startup. Publish it as stale until a shared-authority command and its
+    /// matching component report establish the current state.
+    pub fn mark_remote_target_stale(&mut self, target: &LifecycleTarget) -> bool {
+        let Some(item) = self.targets.get_mut(target) else {
+            return false;
+        };
+        if item.revision != 0
+            || item.transition_deadline_ms.is_some()
+            || item.timed_out_authority.is_some()
+        {
+            return false;
+        }
+        item.effective_state = LifecycleEffectiveState::Superseded;
+        true
+    }
+
     pub fn acquire_wake_lease(
         &mut self,
         lease_id: String,
@@ -465,9 +510,8 @@ impl LifecycleManager {
             LifecycleEffectiveState::Quiesced => LifecycleComponentState::Quiesced,
             LifecycleEffectiveState::Resuming => LifecycleComponentState::Resuming,
             LifecycleEffectiveState::Degraded => LifecycleComponentState::Degraded,
-            LifecycleEffectiveState::Failed | LifecycleEffectiveState::Superseded => {
-                LifecycleComponentState::Failed
-            }
+            LifecycleEffectiveState::Failed => LifecycleComponentState::Failed,
+            LifecycleEffectiveState::Superseded => LifecycleComponentState::Degraded,
         };
         LifecycleStatus {
             protocol_version: LIFECYCLE_PROTOCOL_VERSION,
@@ -479,7 +523,8 @@ impl LifecycleManager {
             components: vec![LifecycleComponentStatus {
                 node_id: target.node_id.clone(),
                 state: component_state,
-                reason_code: None,
+                reason_code: (item.effective_state == LifecycleEffectiveState::Superseded)
+                    .then_some(LifecycleReasonCode::StaleEpoch),
             }],
             updated_at_ms: now_ms,
         }
@@ -634,6 +679,133 @@ mod tests {
         assert_eq!(
             manager.status(&target(), 30_002).unwrap().effective_state,
             LifecycleEffectiveState::Failed
+        );
+    }
+
+    #[test]
+    fn mismatched_remote_status_is_explicitly_stale_not_default_running() {
+        let mut manager = LifecycleManager::new(
+            9,
+            vec![LifecycleCapability {
+                target: target(),
+                supported: true,
+                always_on: false,
+            }],
+        )
+        .unwrap();
+        let mut remote = manager.status(&target(), 2).unwrap();
+        remote.manager_epoch = 7;
+        remote.revision = 4;
+        remote.desired_state = LifecycleDesiredState::Quiesced;
+        remote.effective_state = LifecycleEffectiveState::Quiesced;
+        remote.components[0].state = LifecycleComponentState::Quiesced;
+
+        assert!(!manager.apply_component_status(&remote));
+        assert!(manager.mark_remote_status_stale(&remote));
+        let published = manager.status(&target(), 3).unwrap();
+        assert_eq!(published.manager_epoch, 9);
+        assert_eq!(published.revision, 0);
+        assert_eq!(
+            published.effective_state,
+            LifecycleEffectiveState::Superseded
+        );
+        assert_eq!(
+            published.components[0].state,
+            LifecycleComponentState::Degraded
+        );
+        assert_eq!(
+            published.components[0].reason_code,
+            Some(LifecycleReasonCode::StaleEpoch)
+        );
+    }
+
+    #[test]
+    fn mismatched_remote_status_cannot_erase_an_active_transition_timeout() {
+        let mut manager = LifecycleManager::new(
+            9,
+            vec![LifecycleCapability {
+                target: target(),
+                supported: true,
+                always_on: false,
+            }],
+        )
+        .unwrap();
+        assert!(
+            manager
+                .apply(command(9, 0, LifecycleDesiredState::Quiesced), 2)
+                .accepted
+        );
+        let mut delayed_remote = manager.status(&target(), 3).unwrap();
+        delayed_remote.manager_epoch = 7;
+        delayed_remote.revision = 0;
+        delayed_remote.components[0].state = LifecycleComponentState::Running;
+
+        assert!(!manager.mark_remote_status_stale(&delayed_remote));
+        manager.tick(30_002);
+        assert_eq!(
+            manager.status(&target(), 30_002).unwrap().effective_state,
+            LifecycleEffectiveState::Failed
+        );
+    }
+
+    #[test]
+    fn delayed_mismatched_status_cannot_overwrite_a_completed_transition() {
+        let mut manager = LifecycleManager::new(
+            9,
+            vec![LifecycleCapability {
+                target: target(),
+                supported: true,
+                always_on: false,
+            }],
+        )
+        .unwrap();
+        assert!(
+            manager
+                .apply(command(9, 0, LifecycleDesiredState::Quiesced), 2)
+                .accepted
+        );
+        let mut current = manager.status(&target(), 3).unwrap();
+        current.components[0].state = LifecycleComponentState::Quiesced;
+        assert!(manager.apply_component_status(&current));
+
+        let mut delayed_remote = current.clone();
+        delayed_remote.manager_epoch = 7;
+        delayed_remote.revision = 0;
+        delayed_remote.components[0].state = LifecycleComponentState::Running;
+        assert!(!manager.mark_remote_status_stale(&delayed_remote));
+        assert_eq!(
+            manager.status(&target(), 4).unwrap().effective_state,
+            LifecycleEffectiveState::Quiesced
+        );
+    }
+
+    #[test]
+    fn configured_remote_target_starts_stale_until_authority_is_established() {
+        let mut manager = LifecycleManager::new(
+            9,
+            vec![LifecycleCapability {
+                target: target(),
+                supported: true,
+                always_on: false,
+            }],
+        )
+        .unwrap();
+        assert!(manager.mark_remote_target_stale(&target()));
+        let initial = manager.status(&target(), 1).unwrap();
+        assert_eq!(initial.effective_state, LifecycleEffectiveState::Superseded);
+        assert_eq!(
+            initial.components[0].reason_code,
+            Some(LifecycleReasonCode::StaleEpoch)
+        );
+
+        assert!(
+            manager
+                .apply(command(9, 0, LifecycleDesiredState::Running), 2)
+                .accepted
+        );
+        assert_eq!(
+            manager.status(&target(), 2).unwrap().effective_state,
+            LifecycleEffectiveState::Resuming
         );
     }
 

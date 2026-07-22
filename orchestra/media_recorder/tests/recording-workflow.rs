@@ -9,14 +9,15 @@ use media_recorder::session_manager::{SessionManager, StartRequest};
 use robo_rover_lib::{AudioFrameMetadata, PcmSampleFormat, VideoFrameMetadata};
 use robo_rover_lib::{RecordingAudioCodec, RecordingClip, RecordingVideoCodec};
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tempfile::tempdir;
 use uuid::Uuid;
 
 fn jpeg_fixture_at(size: &str) -> Vec<u8> {
-    let output = Command::new("ffmpeg")
+    let child = Command::new("ffmpeg")
         .args([
             "-v",
             "error",
@@ -34,10 +35,31 @@ fn jpeg_fixture_at(size: &str) -> Vec<u8> {
             "3",
             "-",
         ])
-        .output()
-        .expect("ffmpeg fixture");
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn ffmpeg fixture");
+    let output = wait_for_fixture(child);
     assert!(output.status.success(), "fixture ffmpeg failed");
     output.stdout
+}
+
+fn wait_for_fixture(mut child: std::process::Child) -> Output {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if child.try_wait().expect("inspect ffmpeg fixture").is_some() {
+            return child.wait_with_output().expect("collect ffmpeg fixture");
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let output = child.wait_with_output().expect("collect timed-out fixture");
+            panic!(
+                "ffmpeg fixture exceeded five seconds: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn jpeg_fixture() -> Vec<u8> {
@@ -384,12 +406,12 @@ fn sessions_are_independent_and_duplicate_entity_start_is_rejected() {
         ));
     }
     let mut completed = Vec::new();
-    for _ in 0..100 {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while completed.len() < 2 && Instant::now() < deadline {
         completed.extend(manager.reap());
-        if completed.len() == 2 {
-            break;
+        if completed.len() < 2 {
+            std::thread::sleep(Duration::from_millis(20));
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert_eq!(completed.len(), 2);
     assert!(

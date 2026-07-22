@@ -47,6 +47,13 @@ impl LifecycleGate {
         self.last_desired_state
     }
 
+    /// Lifecycle commands are broadcast to every controllable workload in a
+    /// Dora dataflow. Consumers must ignore commands addressed to a sibling,
+    /// while still rejecting malformed or stale commands addressed to them.
+    pub fn accepts_target(&self, target: &LifecycleTarget) -> bool {
+        target == &self.target
+    }
+
     /// Returns `None` for a duplicate transition and rejects foreign or stale
     /// authority commands. Closing admission happens before node-owned cleanup.
     pub fn begin(
@@ -186,6 +193,15 @@ mod tests {
         assert!(gate
             .begin(&command(0, LifecycleDesiredState::Running))
             .is_err());
+    }
+
+    #[test]
+    fn identifies_commands_for_a_different_workload() {
+        let gate = LifecycleGate::new(command(0, LifecycleDesiredState::Running).target);
+        let mut sibling = command(0, LifecycleDesiredState::Quiesced);
+        sibling.target.node_id = "edge-voice".into();
+
+        assert!(!gate.accepts_target(&sibling.target));
     }
 
     #[test]

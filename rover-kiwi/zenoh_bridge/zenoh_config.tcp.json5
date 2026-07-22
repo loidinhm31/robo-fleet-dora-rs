@@ -1,0 +1,23 @@
+// Local native-Dora transport. Provisioned Docker deployments use the mTLS config.
+{
+  "mode": "peer",
+  "connect": {
+    "endpoints": ["tcp/100.91.26.60:7447"]
+  },
+  "transport": {
+    "link": {
+      "tx": {
+        "lease": 10000,
+        "keep_alive": 4,
+        "batch_size": 8192
+      }
+    }
+  },
+  "scouting": {
+    "multicast": {
+      "enabled": true,
+      "address": "224.0.0.224:7446",
+      "interface": "auto"
+    }
+  }
+}

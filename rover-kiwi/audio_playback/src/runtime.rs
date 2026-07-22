@@ -527,8 +527,7 @@ fn handle_lifecycle_command(
     available: &mut bool,
     volume: f32,
 ) -> Result<()> {
-    let command = serde_json::from_slice::<LifecycleCommand>(bytes)?;
-    let Some(transition) = gate.begin(&command).map_err(eyre::Report::msg)? else {
+    let Some(transition) = begin_lifecycle_transition(bytes, gate)? else {
         return Ok(());
     };
     emit_lifecycle_status(
@@ -609,6 +608,18 @@ fn handle_lifecycle_command(
     Ok(())
 }
 
+fn begin_lifecycle_transition(
+    bytes: &[u8],
+    gate: &mut LifecycleGate,
+) -> Result<Option<LifecycleTransition>> {
+    let command = serde_json::from_slice::<LifecycleCommand>(bytes)?;
+    if !gate.accepts_target(&command.target) {
+        tracing::trace!(target = ?command.target, "ignoring lifecycle command for another workload");
+        return Ok(None);
+    }
+    gate.begin(&command).map_err(eyre::Report::msg)
+}
+
 fn lifecycle_payload(data: &dyn Array) -> Result<&[u8]> {
     let array = data
         .as_any()
@@ -618,6 +629,47 @@ fn lifecycle_payload(data: &dyn Array) -> Result<&[u8]> {
         return Err(eyre::eyre!("lifecycle command must contain one payload"));
     }
     Ok(array.value(0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use robo_rover_lib::{LifecycleDesiredState, LIFECYCLE_PROTOCOL_VERSION};
+
+    fn sibling_command() -> LifecycleCommand {
+        LifecycleCommand {
+            protocol_version: LIFECYCLE_PROTOCOL_VERSION,
+            request_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            manager_epoch: 1,
+            target: LifecycleTarget {
+                role: LifecycleRole::Rover,
+                entity_id: "rover-kiwi".into(),
+                node_id: "edge-voice".into(),
+            },
+            desired_state: LifecycleDesiredState::Quiesced,
+            expected_revision: 0,
+            issued_at_ms: 1,
+            expires_at_ms: 2,
+        }
+    }
+
+    #[test]
+    fn sibling_lifecycle_command_leaves_audio_playback_running() {
+        let mut gate = LifecycleGate::new(LifecycleTarget {
+            role: LifecycleRole::Rover,
+            entity_id: "rover-kiwi".into(),
+            node_id: "audio-playback".into(),
+        });
+        let payload = serde_json::to_vec(&sibling_command()).unwrap();
+
+        assert_eq!(
+            begin_lifecycle_transition(&payload, &mut gate).unwrap(),
+            None
+        );
+        assert!(gate.admission_open());
+        assert_eq!(gate.authority(), (0, 0));
+        assert_eq!(gate.desired_state(), None);
+    }
 }
 
 fn emit_lifecycle_status(

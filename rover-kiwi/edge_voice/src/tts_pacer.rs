@@ -319,7 +319,9 @@ mod tests {
         clock.advance(Duration::from_millis(19));
         assert!(pacer.pop_due().is_none());
         clock.advance(Duration::from_millis(1));
-        let due = pacer.pop_due().expect("partial frame should emit exactly once");
+        let due = pacer
+            .pop_due()
+            .expect("partial frame should emit exactly once");
         assert_eq!(due.chunk.frame_id, 1);
         assert_eq!(due.chunk.samples.len(), 441);
         assert!(pacer.pop_due().is_none());

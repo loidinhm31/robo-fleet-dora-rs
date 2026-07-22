@@ -54,6 +54,10 @@ impl LifecycleSocketState {
             if !shared.command_rate_limiter.check_command(&socket_id) { log_rate_limit_exceeded(&socket_id, "node_lifecycle_command"); return; }
             let command = match serde_json::from_value::<LifecycleCommand>(data) { Ok(value) => value, Err(error) => { Self::reject(&socket, "00000000-0000-0000-0000-000000000000", LifecycleReasonCode::InvalidRequest, error.to_string()); return; } };
             if let Err(error) = command.validate() { Self::reject(&socket, &command.request_id, LifecycleReasonCode::InvalidRequest, error); return; }
+            if command_is_expired(&command, unix_now_ms().max(0) as u64) {
+                Self::reject(&socket, &command.request_id, LifecycleReasonCode::Expired, "lifecycle command expired");
+                return;
+            }
             let allowed = match command.target.role { LifecycleRole::Orchestra => command.target.entity_id == "orchestra", LifecycleRole::Rover => is_target_active(&shared, &command.target.entity_id) };
             if !allowed { Self::reject(&socket, &command.request_id, LifecycleReasonCode::InvalidTarget, "target is not active"); return; }
             let capability = state.capabilities.lock().ok().and_then(|capabilities| capabilities.iter().find(|capability| capability.target == command.target).cloned());
@@ -164,5 +168,36 @@ impl LifecycleSocketState {
                 },
             )
             .ok();
+    }
+}
+
+fn command_is_expired(command: &LifecycleCommand, now_ms: u64) -> bool {
+    command.expires_at_ms <= now_ms
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use robo_rover_lib::{LifecycleDesiredState, LifecycleRole, LifecycleTarget};
+
+    #[test]
+    fn expired_commands_are_rejected_before_pending_registration() {
+        let command = LifecycleCommand {
+            protocol_version: 1,
+            request_id: "request".into(),
+            manager_epoch: 1,
+            target: LifecycleTarget {
+                role: LifecycleRole::Rover,
+                entity_id: "rover-kiwi".into(),
+                node_id: "edge-voice".into(),
+            },
+            desired_state: LifecycleDesiredState::Quiesced,
+            expected_revision: 0,
+            issued_at_ms: 1,
+            expires_at_ms: 2,
+        };
+
+        assert!(command_is_expired(&command, 2));
+        assert!(!command_is_expired(&command, 1));
     }
 }

@@ -12,7 +12,7 @@ use robo_rover_lib::{
     PcmFramePacket, PcmSampleFormat, StreamCommand, StreamControl, TargetedMediaControl,
 };
 use serde_json;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -25,6 +25,10 @@ use walkie_audio::encode_walkie_packet;
 // Type alias for Zenoh subscriber (default handler)
 type ZenohSubscriber =
     zenoh::pubsub::Subscriber<zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>>;
+
+// 64 lifecycle status slots retain 15 × 4 remote safe-node reports plus four
+// local Orchestra reports. Keep bridge activation within the same bound.
+const MAX_ACTIVE_ROVERS: usize = 15;
 
 /// Subscriptions for a single rover
 struct RoverSubscriptions {
@@ -199,6 +203,30 @@ fn unsubscribe_from_rover(subs: RoverSubscriptions) {
     drop(subs);
 }
 
+fn active_rover_ids<I>(entity_ids: I) -> Result<Vec<String>, String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let entity_ids = entity_ids
+        .into_iter()
+        .map(|entity_id| entity_id.trim().to_owned())
+        .filter(|entity_id| !entity_id.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if entity_ids.len() > MAX_ACTIVE_ROVERS {
+        return Err(format!(
+            "active Rover count ({}) exceeds lifecycle status queue limit ({MAX_ACTIVE_ROVERS})",
+            entity_ids.len()
+        ));
+    }
+    Ok(entity_ids)
+}
+
+fn can_activate_rover(active_rover_count: usize) -> bool {
+    active_rover_count < MAX_ACTIVE_ROVERS
+}
+
 /// Handle fleet subscription commands (activate/deactivate rovers)
 async fn handle_fleet_subscription_command(
     active_rovers: &mut HashMap<String, RoverSubscriptions>,
@@ -213,7 +241,9 @@ async fn handle_fleet_subscription_command(
 
             match cmd {
                 FleetSubscriptionCommand::ActivateRover { entity_id, .. } => {
-                    if !active_rovers.contains_key(&entity_id) {
+                    if active_rovers.contains_key(&entity_id) {
+                        tracing::warn!("Rover {} already active", entity_id);
+                    } else if can_activate_rover(active_rovers.len()) {
                         tracing::info!("Activating rover: {}", entity_id);
                         let subs = subscribe_to_rover(session, &entity_id).await?;
                         if let Some(config) = latest_voice_config {
@@ -225,7 +255,7 @@ async fn handle_fleet_subscription_command(
                         }
                         active_rovers.insert(entity_id, subs);
                     } else {
-                        tracing::warn!("Rover {} already active", entity_id);
+                        tracing::warn!(%entity_id, max_active_rovers = MAX_ACTIVE_ROVERS, "rejected Rover activation beyond lifecycle status queue capacity");
                     }
                 }
 
@@ -239,6 +269,13 @@ async fn handle_fleet_subscription_command(
                 }
 
                 FleetSubscriptionCommand::SetActiveRovers { entity_ids, .. } => {
+                    let entity_ids = match active_rover_ids(entity_ids) {
+                        Ok(entity_ids) => entity_ids,
+                        Err(error) => {
+                            tracing::warn!(%error, "rejected active Rover set beyond lifecycle status queue capacity");
+                            return Ok(());
+                        }
+                    };
                     tracing::info!("Setting active rovers: {:?}", entity_ids);
 
                     // Remove rovers not in new list
@@ -296,11 +333,14 @@ async fn main() -> Result<()> {
     // Get initial active rovers from environment
     let active_rovers_env =
         std::env::var("ACTIVE_ROVERS").unwrap_or_else(|_| "rover-kiwi".to_string());
-    let initial_rovers: Vec<String> = active_rovers_env
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let initial_rovers = active_rover_ids(
+        active_rovers_env
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>(),
+    )
+    .map_err(eyre::Report::msg)?;
 
     tracing::info!("Initial active rovers: {:?}", initial_rovers);
 
@@ -504,7 +544,10 @@ async fn main() -> Result<()> {
                                         match serde_json::from_slice::<LifecycleCommand>(bytes) {
                                             Ok(command) if command.validate().is_ok() && command.target.role == LifecycleRole::Rover && active_rovers.contains_key(&command.target.entity_id) => {
                                                 let topic = format!("rover/{}/cmd/lifecycle/v1", command.target.entity_id);
-                                                if let Err(error) = session.put(topic, bytes).await { tracing::warn!(%error, "failed to publish lifecycle command"); }
+                                                match session.put(topic, bytes).await {
+                                                    Ok(_) => tracing::info!(request_id = %command.request_id, target = ?command.target, "published authorized lifecycle command to Rover"),
+                                                    Err(error) => tracing::warn!(%error, request_id = %command.request_id, target = ?command.target, "failed to publish authorized lifecycle command"),
+                                                }
                                             }
                                             _ => tracing::warn!("rejected lifecycle command with invalid target"),
                                         }
@@ -1641,5 +1684,32 @@ mod routing_tests {
         let stream = serde_json::from_slice::<StreamControl>(&commands[1].1).unwrap();
         assert!(matches!(stream.command, StreamCommand::Stop));
         assert!(!stream.video_enabled);
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_capacity_tests {
+    use super::*;
+
+    #[test]
+    fn active_rover_configuration_is_bounded_by_status_queue_capacity() {
+        let supported = (0..MAX_ACTIVE_ROVERS)
+            .map(|index| format!("rover-{index}"))
+            .collect::<Vec<_>>();
+        let overflow = (0..=MAX_ACTIVE_ROVERS)
+            .map(|index| format!("rover-{index}"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            active_rover_ids(supported).unwrap().len(),
+            MAX_ACTIVE_ROVERS
+        );
+        assert!(active_rover_ids(overflow).is_err());
+    }
+
+    #[test]
+    fn activation_rejects_the_first_rover_beyond_capacity() {
+        assert!(can_activate_rover(MAX_ACTIVE_ROVERS - 1));
+        assert!(!can_activate_rover(MAX_ACTIVE_ROVERS));
     }
 }
