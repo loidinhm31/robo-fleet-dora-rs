@@ -16,6 +16,7 @@ members = [
     "orchestra/command_parser",
     "orchestra/media_recorder",
     "orchestra/recording_scheduler",
+    "orchestra/power-event-projector",
     "orchestra/zenoh_bridge",
 
     # Rover-kiwi - On-robot nodes

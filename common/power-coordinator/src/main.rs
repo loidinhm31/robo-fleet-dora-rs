@@ -4,7 +4,9 @@ use dora_node_api::{
     DoraNode, Event,
 };
 use eyre::Result;
-use power_coordinator::{CoordinatorConfig, CoordinatorTime, PowerCoordinator};
+use power_coordinator::{
+    CoordinatorConfig, CoordinatorTime, DurablePowerCoordinator, JournalAcknowledgement,
+};
 use robo_rover_lib::{
     init_tracing, LifecycleCommandResult, LifecycleStatus, PowerCommand, ResourceSnapshot,
 };
@@ -14,7 +16,8 @@ fn main() -> Result<()> {
     let _guard = init_tracing();
     let config = CoordinatorConfig::from_env().map_err(eyre::Report::msg)?;
     let started = Instant::now();
-    let mut coordinator = PowerCoordinator::new(config, wall_ms()).map_err(eyre::Report::msg)?;
+    let mut coordinator =
+        DurablePowerCoordinator::open(config, wall_ms()).map_err(eyre::Report::msg)?;
     let (mut node, mut events) = DoraNode::init_from_env()?;
     while let Some(event) = events.recv() {
         let poll_lifecycle = matches!(&event, Event::Input { id, .. } if id.as_str() == "tick");
@@ -55,10 +58,20 @@ fn main() -> Result<()> {
                     }
                 }
             }
+            Event::Input { id, data, .. } if id.as_str() == "power_event_ack" => {
+                if let Some(bytes) = binary(&data) {
+                    if let Ok(ack) = serde_json::from_slice::<JournalAcknowledgement>(bytes) {
+                        coordinator
+                            .acknowledge(&ack.event_id)
+                            .map_err(eyre::Report::msg)?;
+                        coordinator.compact().map_err(eyre::Report::msg)?;
+                    }
+                }
+            }
             Event::Stop { .. } => break,
             _ => {}
         }
-        let effects = coordinator.tick(now);
+        let effects = coordinator.tick(now).map_err(eyre::Report::msg)?;
         send(&mut node, "power_status", &effects.status)?;
         if poll_lifecycle {
             send(&mut node, "lifecycle_status_query", &serde_json::json!({}))?;
@@ -66,6 +79,14 @@ fn main() -> Result<()> {
         if let Some(transition) = effects.transition {
             send(&mut node, "power_transition", &transition)?;
         }
+        for record in coordinator.pending_records() {
+            send(&mut node, "power_journal_record", &record)?;
+        }
+        send(
+            &mut node,
+            "power_journal_health",
+            &coordinator.journal_health(),
+        )?;
         for command in effects.lifecycle_commands {
             send(&mut node, "lifecycle_command", &command)?;
         }

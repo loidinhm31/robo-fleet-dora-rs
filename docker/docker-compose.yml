@@ -34,6 +34,7 @@ services:
     volumes:
       - ${HOST_WORKSPACE:-..}/models/.cache/sherpa-onnx:/models/sherpa-onnx:ro
       - ${HOST_WORKSPACE:-..}/orchestra/zenoh_bridge/zenoh_config.json5:/app/config/zenoh_config.json5:ro
+      - orchestra-power-journal:/var/lib/robo-fleet/power-journal
       - type: bind
         source: ${HOST_RECORDING_PATH:?HOST_RECORDING_PATH must point to an existing dedicated directory below /home}
         target: /recordings
@@ -96,6 +97,11 @@ services:
       RECORDING_SCHEDULE_QUEUE_CAPACITY: ${RECORDING_SCHEDULE_QUEUE_CAPACITY:-64}
       RECORDING_SCHEDULE_REQUEST_TIMEOUT_SECONDS: ${RECORDING_SCHEDULE_REQUEST_TIMEOUT_SECONDS:-15}
       RECORDING_SCHEDULER_READY_LEASE_SECONDS: ${RECORDING_SCHEDULER_READY_LEASE_SECONDS:-90}
+      POWER_JOURNAL_DIR: /var/lib/robo-fleet/power-journal/orchestra
+      POWER_JOURNAL_MAX_BYTES: ${POWER_JOURNAL_MAX_BYTES:-16777216}
+      POWER_JOURNAL_MAX_RECORDS: ${POWER_JOURNAL_MAX_RECORDS:-10000}
+      POWER_JOURNAL_WAKE_RESERVE_BYTES: ${POWER_JOURNAL_WAKE_RESERVE_BYTES:-1048576}
+      POWER_JOURNAL_WAKE_RESERVE_RECORDS: ${POWER_JOURNAL_WAKE_RESERVE_RECORDS:-10}
     restart: unless-stopped
     healthcheck:
       test:
@@ -132,6 +138,7 @@ services:
       - ${HOST_WORKSPACE:-..}/rover-kiwi/config:/app/config/rover:ro
       - ${HOST_WORKSPACE:-..}/rover-kiwi/rover-kiwi-dataflow.yml:/app/dataflow/rover-kiwi-dataflow.yml:ro
       - ${HOST_WORKSPACE:-..}/rover-kiwi/rover-kiwi-direct-dataflow.yml:/app/dataflow/rover-kiwi-direct-dataflow.yml:ro
+      - rover-power-journal:/var/lib/robo-fleet/power-journal
       - /run/user/${PULSE_UID:-1000}/pulse:/run/user/${PULSE_UID:-1000}/pulse
     environment:
       RUST_LOG: info
@@ -188,6 +195,11 @@ services:
       TTS_DEFAULT_SPEED: "1.0"
       LD_LIBRARY_PATH: "/usr/local/lib:/app/bin"
       ARM_CONFIG: /app/config/rover/arm_6dof.toml
+      POWER_JOURNAL_DIR: /var/lib/robo-fleet/power-journal/rover-kiwi
+      POWER_JOURNAL_MAX_BYTES: ${POWER_JOURNAL_MAX_BYTES:-16777216}
+      POWER_JOURNAL_MAX_RECORDS: ${POWER_JOURNAL_MAX_RECORDS:-10000}
+      POWER_JOURNAL_WAKE_RESERVE_BYTES: ${POWER_JOURNAL_WAKE_RESERVE_BYTES:-1048576}
+      POWER_JOURNAL_WAKE_RESERVE_RECORDS: ${POWER_JOURNAL_WAKE_RESERVE_RECORDS:-10}
     restart: unless-stopped
     healthcheck:
       test:
@@ -202,3 +214,5 @@ services:
 
 volumes:
   mongodb-dev-data:
+  orchestra-power-journal:
+  rover-power-journal:

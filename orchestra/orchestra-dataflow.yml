@@ -264,6 +264,7 @@ nodes:
         source: lifecycle-manager/lifecycle_status
         queue_size: 64
       lifecycle_command_result: lifecycle-manager/lifecycle_command_result
+      power_event_ack: power-event-projector/power_event_ack
       tick: dora/timer/millis/1000
     outputs:
       - lifecycle_command
@@ -271,10 +272,27 @@ nodes:
       - power_status
       - power_transition
       - power_command_result
+      - power_journal_record
+      - power_journal_health
     env:
       RUST_LOG: info
       ENTITY_ID: "orchestra"
       POWER_COORDINATOR_ROLE: "orchestra"
+      POWER_JOURNAL_DIR: "${POWER_JOURNAL_DIR:-/var/lib/robo-fleet/power-journal/orchestra}"
+      POWER_JOURNAL_WAKE_RESERVE_RECORDS: "${POWER_JOURNAL_WAKE_RESERVE_RECORDS:-10}"
+
+  - id: power-event-projector
+    build: cargo build --release -p power_event_projector
+    path: ../target/release/power_event_projector
+    inputs:
+      power_journal_record: power-coordinator/power_journal_record
+    outputs:
+      - power_event_ack
+    env:
+      RUST_LOG: info
+      POWER_DEPLOYMENT_ID: "${POWER_DEPLOYMENT_ID:-default}"
+      MONGODB_URI: "${MONGODB_URI:-mongodb://127.0.0.1:27017}"
+      MONGODB_DATABASE: "${MONGODB_DATABASE:-gleanOak}"
 
   - id: lifecycle-manager
     build: cargo build --release -p lifecycle_manager

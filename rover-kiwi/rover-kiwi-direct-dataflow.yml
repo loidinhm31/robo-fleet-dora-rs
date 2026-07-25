@@ -125,10 +125,14 @@ nodes:
       - power_status
       - power_transition
       - power_command_result
+      - power_journal_record
+      - power_journal_health
     env:
       RUST_LOG: info
       ENTITY_ID: "rover-kiwi"
       POWER_COORDINATOR_ROLE: "rover"
+      POWER_JOURNAL_DIR: "${POWER_JOURNAL_DIR:-/var/lib/robo-fleet/power-journal/rover-kiwi}"
+      POWER_JOURNAL_WAKE_RESERVE_RECORDS: "${POWER_JOURNAL_WAKE_RESERVE_RECORDS:-10}"
 
   # Always-on authority for validated, acknowledged lifecycle transitions.
   - id: lifecycle-manager

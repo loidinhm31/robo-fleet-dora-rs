@@ -33,6 +33,7 @@ COPY orchestra/central_speech_recognizer/Cargo.toml orchestra/central_speech_rec
 COPY orchestra/command_parser/Cargo.toml orchestra/command_parser/
 COPY orchestra/media_recorder/Cargo.toml orchestra/media_recorder/
 COPY orchestra/recording_scheduler/Cargo.toml orchestra/recording_scheduler/
+COPY orchestra/power-event-projector/Cargo.toml orchestra/power-event-projector/
 COPY orchestra/zenoh_bridge/Cargo.toml orchestra/zenoh_bridge/
 
 # Copy actual source code
@@ -50,6 +51,7 @@ RUN cargo build --release \
     -p command_parser \
     -p media_recorder \
     -p recording_scheduler \
+    -p power_event_projector \
     -p orchestra_zenoh_bridge
 
 # =============================================================================
@@ -93,6 +95,7 @@ COPY --from=builder /build/target/release/central_speech_recognizer ./bin/
 COPY --from=builder /build/target/release/command_parser ./bin/
 COPY --from=builder /build/target/release/media_recorder ./bin/
 COPY --from=builder /build/target/release/recording_scheduler ./bin/
+COPY --from=builder /build/target/release/power_event_projector ./bin/
 COPY --from=builder /build/target/release/orchestra_zenoh_bridge ./bin/
 COPY --from=builder /usr/local/cargo/bin/dora ./bin/
 
@@ -106,8 +109,9 @@ COPY docker/scripts/sherpa-stt-profile-files.sh ./scripts/sherpa-stt-profile-fil
 # recording bind mount fail closed instead of silently writing to the image.
 RUN mkdir -p /models/sherpa-onnx/asr && \
     mkdir -p /recordings && \
+    mkdir -p /var/lib/robo-fleet/power-journal && \
     touch /recordings/.image-layer-recording-root-marker && \
-    chown -R dora:dora /app
+    chown -R dora:dora /app /var/lib/robo-fleet
 
 # Add entrypoint script
 COPY docker/scripts/entrypoint-orchestra.sh /entrypoint.sh

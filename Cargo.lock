@@ -4913,11 +4913,30 @@ dependencies = [
 name = "power_coordinator"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
  "dora-node-api",
  "eyre",
  "robo_rover_lib",
  "serde",
  "serde_json",
+ "tempfile",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "power_event_projector"
+version = "0.1.0"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+ "futures-util",
+ "mongodb",
+ "power_coordinator",
+ "robo_rover_lib",
+ "serde",
+ "serde_json",
+ "tokio",
  "tracing",
  "uuid",
 ]

@@ -391,6 +391,30 @@ Local journal is bounded. Capacity policy must never discard an unapplied
 safety intent silently. Prolonged outage surfaces degraded observability and
 backpressure status.
 
+### Phase 03 implementation
+
+The coordinator persists the journal under `POWER_JOURNAL_DIR` (default
+`/var/lib/robo-fleet/power-journal/{role}`) using two files:
+`power-events.log` and atomically replaced `power-journal.meta`. Records are
+framed as version-1 JSON payloads with a CRC32 checksum. Startup recovery
+truncates only a torn final frame; corruption before the final frame fails
+closed. Metadata tracks the next journal sequence, highest authority epoch,
+and projector acknowledgements. Acknowledged records are compacted only after
+the projector confirms persistence. Capacity limits are configurable with
+`POWER_JOURNAL_MAX_BYTES`, `POWER_JOURNAL_MAX_RECORDS`,
+`POWER_JOURNAL_WAKE_RESERVE_BYTES`, and `POWER_JOURNAL_WAKE_RESERVE_RECORDS`;
+the reserved slice keeps wake-to-safer intents appendable during an outage.
+
+On Orchestra, `power-event-projector` consumes the coordinator's
+`power_journal_record` Dora input and emits `power_event_ack` only after the
+Mongo write succeeds. It requires `MONGODB_URI` and `MONGODB_DATABASE`, with
+optional `POWER_DEPLOYMENT_ID` (default `default`). The projector initializes
+indexes at startup, upserts events by `(deployment_id, entity_id, event_id)`,
+and conditionally advances `power_current_state` by authority epoch then
+sequence. Duplicate delivery is therefore idempotent, and reordered or stale
+records cannot regress the current projection. History queries are bounded to
+the 90-day retention window and support a time/event cursor.
+
 ## Invariants
 
 - Policy, requested profile, and effective profile are distinct.

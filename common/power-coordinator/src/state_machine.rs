@@ -64,6 +64,7 @@ pub struct PowerCoordinator {
     protected_operation: bool,
     pending: Option<PendingTransition>,
     announced: Option<PowerTransition>,
+    journal_capacity_unsafe: bool,
 }
 
 impl PowerCoordinator {
@@ -93,6 +94,7 @@ impl PowerCoordinator {
             protected_operation: false,
             pending: None,
             announced: None,
+            journal_capacity_unsafe: false,
         })
     }
 
@@ -174,6 +176,70 @@ impl PowerCoordinator {
         self.protected_operation = active;
     }
 
+    pub fn set_journal_capacity_unsafe(&mut self, unsafe_capacity: bool) {
+        self.journal_capacity_unsafe = unsafe_capacity;
+    }
+
+    pub fn current_status(&self, now_ms: u64) -> PowerStatus {
+        self.status(now_ms)
+    }
+
+    pub fn next_authority(&self) -> PowerAuthority {
+        PowerAuthority {
+            epoch: self.authority.epoch,
+            sequence: self.authority.sequence.saturating_add(1),
+        }
+    }
+
+    pub fn command_will_apply(
+        &self,
+        command: &PowerCommand,
+        now: CoordinatorTime,
+    ) -> Result<(), String> {
+        command.validates_for(self.config.role, &self.config.entity_id)?;
+        if command.authority != self.authority {
+            return Err("power command authority is stale".into());
+        }
+        if command.expires_at_ms <= now.wall_ms || command.not_before_ms > now.wall_ms {
+            return Err("power command is not active".into());
+        }
+        let mut ledger = self.ledger.clone();
+        match &command.action {
+            PowerCommandAction::SetPolicy { policy }
+                if *policy == PowerPolicy::Sleep && self.journal_capacity_unsafe =>
+            {
+                Err("journal CapacityExceeded: sleep is inhibited".into())
+            }
+            PowerCommandAction::SetPolicy { .. } => Ok(()),
+            PowerCommandAction::RegisterDemand { demand }
+                if demand.authority != command.authority =>
+            {
+                Err("embedded demand authority differs".into())
+            }
+            PowerCommandAction::RegisterDemand { demand } => ledger
+                .apply(demand.clone(), now.wall_ms)
+                .map(|_| ())
+                .map_err(|reason| format!("{reason:?}")),
+            PowerCommandAction::ReleaseDemand { demand_id } => ledger
+                .release(&self.config.entity_id, demand_id)
+                .map(|_| ())
+                .map_err(|reason| format!("{reason:?}")),
+            PowerCommandAction::RegisterReservation { reservation }
+                if reservation.authority != command.authority =>
+            {
+                Err("embedded reservation authority differs".into())
+            }
+            PowerCommandAction::RegisterReservation { reservation } => ledger
+                .register_reservation(reservation.clone(), now.wall_ms)
+                .map(|_| ())
+                .map_err(|reason| format!("{reason:?}")),
+            PowerCommandAction::ReleaseReservation { reservation_id } => ledger
+                .release_reservation(reservation_id)
+                .map(|_| ())
+                .map_err(|reason| format!("{reason:?}")),
+        }
+    }
+
     pub fn apply_command(
         &mut self,
         command: PowerCommand,
@@ -193,6 +259,9 @@ impl PowerCoordinator {
                 }
                 match &command.action {
                     PowerCommandAction::SetPolicy { policy } => {
+                        if *policy == PowerPolicy::Sleep && self.journal_capacity_unsafe {
+                            return Err("journal CapacityExceeded: sleep is inhibited".into());
+                        }
                         self.policy = *policy;
                         Ok(())
                     }
@@ -233,7 +302,7 @@ impl PowerCoordinator {
                 protocol_version: POWER_PROTOCOL_VERSION,
                 command_id: command.command_id,
                 accepted: true,
-                authority: self.authority,
+                authority: self.bump_authority(),
                 reason_code: None,
                 detail: None,
             },
@@ -317,6 +386,11 @@ impl PowerCoordinator {
     }
 
     fn auto_target(&mut self, now: CoordinatorTime, normal: PowerProfile) -> PowerProfile {
+        if self.journal_capacity_unsafe {
+            self.cancel_idle();
+            self.state = PowerState::Active;
+            return normal;
+        }
         if now.monotonic_ms.saturating_sub(self.awake_since_ms) < self.config.min_awake_ms {
             self.state = PowerState::Active;
             return normal;
@@ -380,6 +454,7 @@ impl PowerCoordinator {
             return;
         }
         let id = Uuid::new_v4().hyphenated().to_string();
+        self.bump_authority();
         self.announced = Some(PowerTransition {
             protocol_version: POWER_PROTOCOL_VERSION,
             transition_id: id.clone(),
@@ -420,6 +495,7 @@ impl PowerCoordinator {
         }
         if pending.stage == pending.plan.stages.len() {
             self.effective = pending.target_profile;
+            self.bump_authority();
             if self.effective == normal_profile(self.config.role) {
                 self.awake_since_ms = now.monotonic_ms;
             }
@@ -553,6 +629,11 @@ impl PowerCoordinator {
             detail: None,
             updated_at_ms: now_ms,
         }
+    }
+
+    fn bump_authority(&mut self) -> PowerAuthority {
+        self.authority.sequence = self.authority.sequence.saturating_add(1);
+        self.authority
     }
 }
 

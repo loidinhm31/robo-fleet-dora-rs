@@ -1,0 +1,161 @@
+use power_coordinator::{
+    CoordinatorConfig, CoordinatorTime, DurablePowerCoordinator, EventJournal, JournalAppendClass,
+    JournalConfig, JournalIntent, JournalRecord,
+};
+use robo_rover_lib::{
+    LifecycleRole, PowerAuthority, PowerEvent, PowerEventType, PowerPolicy, PowerProfile,
+    PowerState, PowerStatus, POWER_PROTOCOL_VERSION,
+};
+use std::{fs::OpenOptions, io::Write};
+use tempfile::TempDir;
+use uuid::Uuid;
+
+fn record(epoch: u64) -> JournalRecord {
+    let authority = PowerAuthority { epoch, sequence: 1 };
+    JournalRecord {
+        format_version: 1,
+        sequence: 0,
+        intent: JournalIntent::Transition,
+        event: PowerEvent {
+            protocol_version: POWER_PROTOCOL_VERSION,
+            event_id: Uuid::new_v4().hyphenated().to_string(),
+            role: LifecycleRole::Rover,
+            entity_id: "rover-kiwi".into(),
+            authority,
+            transition_id: None,
+            event_type: PowerEventType::TransitionRequested,
+            reason_code: None,
+            detail: None,
+            occurred_at_ms: 100,
+        },
+        status: Some(PowerStatus {
+            protocol_version: POWER_PROTOCOL_VERSION,
+            role: LifecycleRole::Rover,
+            entity_id: "rover-kiwi".into(),
+            authority,
+            policy: PowerPolicy::Awake,
+            requested_profile: PowerProfile::NormalRover,
+            effective_profile: PowerProfile::Dormant,
+            state: PowerState::Waking,
+            transition_id: None,
+            reason_code: None,
+            detail: None,
+            updated_at_ms: 100,
+        }),
+    }
+}
+
+fn config(dir: &TempDir) -> JournalConfig {
+    JournalConfig {
+        directory: dir.path().into(),
+        max_bytes: 8 * 1024,
+        max_records: 10,
+        wake_reserve_bytes: 2 * 1024,
+        wake_reserve_records: 1,
+    }
+}
+
+#[test]
+fn recovers_a_torn_final_record_and_preserves_epoch_high_water() {
+    let dir = TempDir::new().unwrap();
+    let mut journal = EventJournal::open(config(&dir)).unwrap();
+    journal
+        .append(record(9), JournalAppendClass::Normal)
+        .unwrap();
+    drop(journal);
+    let path = dir.path().join("power-events.log");
+    let size = std::fs::metadata(&path).unwrap().len();
+    OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(b"RPCJ\x01")
+        .unwrap();
+    let recovered = EventJournal::open(config(&dir)).unwrap();
+    assert_eq!(recovered.pending().count(), 1);
+    assert_eq!(recovered.next_epoch(), 10);
+    assert_eq!(std::fs::metadata(path).unwrap().len(), size);
+}
+
+#[test]
+fn discards_a_corrupt_final_record_and_reports_it() {
+    let dir = TempDir::new().unwrap();
+    let mut journal = EventJournal::open(config(&dir)).unwrap();
+    journal
+        .append(record(1), JournalAppendClass::Normal)
+        .unwrap();
+    drop(journal);
+    let path = dir.path().join("power-events.log");
+    let mut bytes = std::fs::read(&path).unwrap();
+    *bytes.last_mut().unwrap() ^= 0xFF;
+    std::fs::write(&path, bytes).unwrap();
+    let recovered = EventJournal::open(config(&dir)).unwrap();
+    assert!(recovered.health().recovered_torn_tail);
+    assert_eq!(recovered.pending().count(), 0);
+}
+
+#[test]
+fn reserved_capacity_keeps_a_wake_record_admissible() {
+    let dir = TempDir::new().unwrap();
+    let mut journal = EventJournal::open(config(&dir)).unwrap();
+    while journal
+        .append(record(1), JournalAppendClass::Normal)
+        .is_ok()
+    {}
+    assert!(journal.capacity().unsafe_for_sleep);
+    journal
+        .append(record(1), JournalAppendClass::WakeToSafer)
+        .unwrap();
+}
+
+#[test]
+fn unacknowledged_outbox_records_survive_outage_and_interrupted_compaction() {
+    let dir = TempDir::new().unwrap();
+    let mut journal = EventJournal::open(config(&dir)).unwrap();
+    let outbox_record = record(4);
+    let event_id = outbox_record.event.event_id.clone();
+    journal
+        .append(outbox_record, JournalAppendClass::Normal)
+        .unwrap();
+    std::fs::write(dir.path().join("power-events.compacting"), b"interrupted").unwrap();
+    drop(journal);
+    let mut recovered = EventJournal::open(config(&dir)).unwrap();
+    assert_eq!(recovered.pending().count(), 1);
+    recovered.acknowledge(&event_id).unwrap();
+    recovered.compact().unwrap();
+    drop(recovered);
+    let compacted = EventJournal::open(config(&dir)).unwrap();
+    assert_eq!(compacted.pending().count(), 0);
+    assert_eq!(compacted.next_epoch(), 5);
+}
+
+#[test]
+fn transition_intent_is_durable_before_effects_are_returned() {
+    let dir = TempDir::new().unwrap();
+    let mut config = CoordinatorConfig::for_test(LifecycleRole::Rover, "rover-kiwi");
+    config.journal_dir = dir.path().display().to_string();
+    let mut coordinator = DurablePowerCoordinator::open(config, 100).unwrap();
+    let effects = coordinator
+        .tick(CoordinatorTime {
+            wall_ms: 101,
+            monotonic_ms: 1,
+        })
+        .unwrap();
+    assert!(effects.transition.is_some());
+    assert!(coordinator
+        .pending_records()
+        .iter()
+        .any(|item| item.event.event_type == PowerEventType::TransitionRequested));
+}
+
+#[test]
+fn restart_appends_a_fresh_awake_intent_with_a_new_epoch() {
+    let dir = TempDir::new().unwrap();
+    let mut config = CoordinatorConfig::for_test(LifecycleRole::Rover, "rover-kiwi");
+    config.journal_dir = dir.path().display().to_string();
+    drop(DurablePowerCoordinator::open(config.clone(), 100).unwrap());
+    let restarted = DurablePowerCoordinator::open(config, 200).unwrap();
+    let records = restarted.pending_records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].event.authority.epoch, 2);
+}

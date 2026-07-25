@@ -212,8 +212,8 @@ COPY rover-kiwi/zenoh_bridge/zenoh_config.json5 ./config/zenoh_config.json5
 COPY rover-kiwi/config ./config/rover/
 
 # Create model directories
-RUN mkdir -p /models/yolo /models/reid /models/sherpa-onnx && \
-    chown -R dora:dora /app /models
+RUN mkdir -p /models/yolo /models/reid /models/sherpa-onnx /var/lib/robo-fleet/power-journal && \
+    chown -R dora:dora /app /models /var/lib/robo-fleet
 
 # Add entrypoint script
 COPY docker/scripts/entrypoint-rover.sh /entrypoint.sh

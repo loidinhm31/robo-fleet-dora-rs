@@ -15,7 +15,7 @@ struct DemandEntry {
     active: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct DemandLedger {
     demands: BTreeMap<(String, String), DemandEntry>,
     reservations: BTreeMap<String, PowerReservation>,

@@ -12,6 +12,11 @@ pub struct CoordinatorConfig {
     pub transition_timeout_ms: u64,
     pub max_transition_retries: u8,
     pub retry_backoff_ms: u64,
+    pub journal_dir: String,
+    pub journal_max_bytes: u64,
+    pub journal_max_records: usize,
+    pub journal_wake_reserve_bytes: u64,
+    pub journal_wake_reserve_records: usize,
 }
 
 impl CoordinatorConfig {
@@ -32,6 +37,16 @@ impl CoordinatorConfig {
             transition_timeout_ms: number("POWER_TRANSITION_TIMEOUT_MS", 30_000)?,
             max_transition_retries: number("POWER_MAX_TRANSITION_RETRIES", 2)?,
             retry_backoff_ms: number("POWER_RETRY_BACKOFF_MS", 1_000)?,
+            journal_dir: std::env::var("POWER_JOURNAL_DIR").unwrap_or_else(|_| {
+                format!("/var/lib/robo-fleet/power-journal/{role:?}").to_lowercase()
+            }),
+            journal_max_bytes: number("POWER_JOURNAL_MAX_BYTES", 16 * 1024 * 1024)?,
+            journal_max_records: number("POWER_JOURNAL_MAX_RECORDS", 10_000)?,
+            journal_wake_reserve_bytes: number(
+                "POWER_JOURNAL_WAKE_RESERVE_BYTES",
+                1 * 1024 * 1024,
+            )?,
+            journal_wake_reserve_records: number("POWER_JOURNAL_WAKE_RESERVE_RECORDS", 10)?,
         };
         config.validate()?;
         Ok(config)
@@ -49,6 +64,14 @@ impl CoordinatorConfig {
             transition_timeout_ms: 1_000,
             max_transition_retries: 1,
             retry_backoff_ms: 10,
+            journal_dir: std::env::temp_dir()
+                .join(format!("power-coordinator-test-{}", uuid::Uuid::new_v4()))
+                .display()
+                .to_string(),
+            journal_max_bytes: 1024 * 1024,
+            journal_max_records: 100,
+            journal_wake_reserve_bytes: 1024,
+            journal_wake_reserve_records: 1,
         }
     }
 
@@ -59,6 +82,10 @@ impl CoordinatorConfig {
             || self.resource_freshness_ms == 0
             || self.required_low_samples == 0
             || self.transition_timeout_ms == 0
+            || self.journal_max_bytes == 0
+            || self.journal_max_records == 0
+            || self.journal_wake_reserve_bytes >= self.journal_max_bytes
+            || self.journal_wake_reserve_records >= self.journal_max_records
             || !self.max_domain_cpu_percent.is_finite()
             || !(0.0..=100.0).contains(&self.max_domain_cpu_percent)
         {
