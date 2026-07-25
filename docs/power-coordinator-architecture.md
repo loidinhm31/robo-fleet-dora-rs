@@ -1,6 +1,6 @@
 # Power Coordinator Architecture
 
-Status: planned, revalidated 2026-07-26
+Status: implemented, revalidated 2026-07-26
 Decision source:
 [brainstorm report](../plans/reports/brainstorm-260723-1442-rover-power-coordinator-sleep-wake.md)
 
@@ -233,12 +233,30 @@ Each aggregate profile change creates one UUID `transition_id` in a
 `PowerTransition`; the ID is copied into status/events and into every
 coordinator-originated `LifecycleCommand`. Lifecycle managers require that
 ID for coordinator commands and bind asynchronous component status to the
-same transition. A target's terminal acknowledgment is fenced by the exact
-target, manager epoch, expected revision, request/transition ID, and command
-deadline. Late, duplicate, or superseded acknowledgments cannot advance a new
-transition, and progress reports do not extend the deadline. A transition is
-terminal only after every required target reports its fenced terminal state;
-partial readiness is not aggregate readiness.
+same transition. The coordinator keeps an issued-request fence containing the
+request ID, exact node, manager epoch, expected revision, and transition ID.
+It accepts a `LifecycleCommandResult` only when the request is still issued,
+`accepted` is true, the manager epoch matches, and the returned revision is
+exactly `expected_revision + 1`. Unknown, rejected, duplicate, stale, or
+future-revision results are ignored.
+
+If a result arrives after its transition has been superseded, the accepted
+result still advances that node's revision fence, clears the superseded stage's
+issued flag, and causes an immediate command reissue for the current
+transition using the newer revision. A timeout is not required for this
+supersession path. Lifecycle status is itself monotonic per node: an
+observation with an older `(manager_epoch, revision)` is discarded, so delayed
+status cannot regress coordinator state. A transition is terminal only after
+every required target reports its fenced terminal state; partial readiness is
+not aggregate readiness.
+
+When a pending transition is cancelled by a newer requested profile, the
+requested profile and transition plan change immediately, but
+`effective_profile` remains the last converged/applied profile until the
+replacement transition reaches its terminal state. Cancellation therefore
+does not falsely report the replacement as already applied; its transition
+plan may use a safe `Dormant` origin while lifecycle commands reconcile from
+the fenced node revisions.
 
 Scheduled wake leases use `LifecycleWakeLease` with a monotonically increasing
 per-lease `generation`. Acquire and release messages carrying an older or

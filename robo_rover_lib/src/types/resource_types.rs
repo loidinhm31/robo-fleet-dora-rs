@@ -48,6 +48,20 @@ pub struct NodeResourceUsage {
     pub sampled_at_ms: i64,
 }
 
+/// Measured resource evidence for one configured workload domain. Domains are
+/// built only from the process identities in the monitor manifest; an absent
+/// CPU value is therefore evidence that Auto must not infer a zero load.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DomainResourceUsage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_usage_percent: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_rss_bytes: Option<u64>,
+    pub process_count: u32,
+    pub configured_node_count: u32,
+    pub sampled_at_ms: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResourceSnapshot {
     pub schema_version: u16,
@@ -69,6 +83,8 @@ pub struct ResourceSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_limit_bytes: Option<u64>,
     pub nodes: BTreeMap<String, NodeResourceUsage>,
+    #[serde(default)]
+    pub domains: BTreeMap<String, DomainResourceUsage>,
 }
 
 impl ResourceSnapshot {
@@ -122,6 +138,21 @@ impl ResourceSnapshot {
                     return Err("ambiguous resource node needs multiple processes".into())
                 }
                 _ => {}
+            }
+        }
+        if self.domains.len() > MAX_RESOURCE_NODES {
+            return Err("too many resource domains".into());
+        }
+        for (domain_id, usage) in &self.domains {
+            if !valid_id(domain_id) || usage.configured_node_count == 0 {
+                return Err("invalid resource domain".into());
+            }
+            valid_percent(usage.cpu_usage_percent, "domain cpu usage")?;
+            if usage.sampled_at_ms != self.sampled_at_ms {
+                return Err("domain resource sample time must match its snapshot".into());
+            }
+            if usage.cpu_usage_percent.is_none() && usage.memory_rss_bytes.is_some() {
+                return Err("incomplete resource domain has memory evidence".into());
             }
         }
         Ok(())

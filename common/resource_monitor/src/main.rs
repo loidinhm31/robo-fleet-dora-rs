@@ -8,7 +8,7 @@ use eyre::Result;
 use robo_rover_lib::{init_tracing, ResourceSnapshot, RESOURCE_SCHEMA_VERSION};
 
 use config::MonitorConfig;
-use process_resolver::resolve_nodes;
+use process_resolver::{resolve_domains, resolve_nodes};
 use resource_sampler::ResourceSampler;
 
 fn main() -> Result<()> {
@@ -25,6 +25,12 @@ fn main() -> Result<()> {
                 sequence = sequence.saturating_add(1);
                 let sampled_at_ms = chrono::Utc::now().timestamp_millis();
                 let usage = sampler.sample();
+                let nodes = resolve_nodes(
+                    &config.nodes,
+                    &sampler.processes(),
+                    usage.cpu_capacity_cores,
+                    sampled_at_ms,
+                );
                 let snapshot = ResourceSnapshot {
                     schema_version: RESOURCE_SCHEMA_VERSION,
                     role: config.role,
@@ -39,12 +45,8 @@ fn main() -> Result<()> {
                     memory_used_bytes: usage.memory_used_bytes,
                     memory_available_bytes: usage.memory_available_bytes,
                     memory_limit_bytes: usage.memory_limit_bytes,
-                    nodes: resolve_nodes(
-                        &config.nodes,
-                        &sampler.processes(),
-                        usage.cpu_capacity_cores,
-                        sampled_at_ms,
-                    ),
+                    domains: resolve_domains(&config.nodes, &nodes, sampled_at_ms),
+                    nodes,
                 };
                 if let Err(error) = snapshot.validate() {
                     tracing::error!(%error, "resource monitor rejected its invalid snapshot");

@@ -901,40 +901,63 @@ that an allocator returns all released memory to the OS. Guaranteed memory
 reclamation through process exit/restart is a separate supervised hard-stop
 concern.
 
+The planned workload power layer is specified in
+[`docs/power-coordinator-architecture.md`](docs/power-coordinator-architecture.md).
+It adds deployment-local power coordinators above lifecycle managers. The
+coordinator owns Awake/Auto/Sleep policy, demand/reference ownership, minimal
+dependency-aware profiles, scheduled prewarm, local KWS wake, aggregate
+readiness, and durable transition events. Lifecycle managers remain
+exact-target fenced executors.
+
 ```mermaid
 flowchart LR
     UI["Fleet Resources UI"]
 
     subgraph Orchestra["Orchestra"]
         Web["web-bridge<br/>auth, target pinning, rate limit"]
+        Scheduler["recording-scheduler<br/>future wake reservations"]
+        OPower["power-coordinator<br/>fleet policy authority"]
         OManager["lifecycle-manager<br/>desired and applied state"]
         OWork["allowlisted workloads<br/>STT and cancellable media"]
         OMonitor["resource-monitor<br/>always on"]
         OBridge["orchestra-bridge<br/>always on"]
+        History["event projector<br/>Mongo history and current projection"]
     end
 
     subgraph Rover["Selected rover"]
         RBridge["rover zenoh-bridge<br/>always on"]
+        RPower["power-coordinator<br/>local profile authority"]
         RManager["lifecycle-manager<br/>always on"]
+        KWS["voice-wake<br/>IdleListening only"]
         RWork["allowlisted workloads<br/>vision, capture, voice"]
         Safety["controllers and emergency path<br/>always on"]
         RMonitor["resource-monitor<br/>always on"]
     end
 
-    UI -->|"authenticated lifecycle command"| Web
-    Web --> OManager
+    UI -->|"authenticated policy or Wake Rover"| Web
+    Web --> OPower
+    Scheduler -->|"future wake reservation"| OPower
+    OPower --> OManager
     OManager -->|"local control"| OWork
-    OManager -->|"targeted remote control"| OBridge
-    OBridge -->|"rover entity lifecycle v1"| RBridge
-    RBridge --> RManager
+    OPower -->|"targeted remote profile"| OBridge
+    OBridge <-->|"rover power v1"| RBridge
+    RBridge --> RPower
+    KWS -->|"bounded local wake demand"| RPower
+    RMonitor -->|"fresh per-domain usage"| RPower
+    RPower --> RManager
     RManager -->|"safe ordered quiesce or resume"| RWork
-    RManager -.->|"safety stop before quiesce"| Safety
+    RPower -.->|"safety stop before quiesce"| Safety
     RWork -->|"applied status"| RManager
-    RManager --> RBridge
+    RManager --> RPower
+    RPower --> RBridge
     RBridge --> OBridge
-    OBridge --> OManager
+    OBridge --> OPower
     OWork -->|"applied status"| OManager
-    OManager -->|"authoritative status"| Web
+    OManager --> OPower
+    OPower -->|"authoritative live status"| Web
+    OPower --> History
+    OBridge --> History
+    History -->|"history and cold projection"| Web
     Web --> UI
     OMonitor -->|"resource snapshot"| Web
     RMonitor -->|"resource snapshot"| RBridge
@@ -975,6 +998,14 @@ Lifecycle invariants:
 - Soft-stop desired state is runtime state, not durable configuration. A full
   dataflow/process restart returns to normal startup defaults; a live link loss
   preserves the last applied state until reconciliation.
+- Auto sleep is demand-first. Fresh, sustained per-domain low CPU only confirms
+  five-minute semantic idleness; CPU alone never pauses a workload.
+- Recording scheduler registers a deterministic future reservation. The
+  coordinator prewarms only `ScheduledCapture` from measured p95 readiness plus
+  margin and reports Ready before scheduler starts recording.
+- Every applied power transition has a preceding local journal intent. MongoDB
+  stores 90-day append-only history and a sequence-guarded current projection,
+  but database/network availability never gates local Rover safety or wake.
 
 ## References
 

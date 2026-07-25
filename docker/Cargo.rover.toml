@@ -4,6 +4,7 @@ members = [
     # Shared library
     "robo_rover_lib",
     "common/lifecycle_manager",
+    "common/power-coordinator",
     "common/resource_monitor",
 
     # Rover-kiwi - On-robot nodes

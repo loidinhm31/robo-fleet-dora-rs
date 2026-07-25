@@ -32,6 +32,7 @@ pub enum PowerState {
     Prewarming,
     Waking,
     Degraded,
+    Failed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

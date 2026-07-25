@@ -1,4 +1,4 @@
-use robo_rover_lib::{NodeResourceState, NodeResourceUsage};
+use robo_rover_lib::{DomainResourceUsage, NodeResourceState, NodeResourceUsage};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 pub struct NodeManifest {
     pub node_id: String,
     pub executable: String,
+    #[serde(default)]
+    pub domain_id: Option<String>,
 }
 
 impl NodeManifest {
@@ -15,11 +17,66 @@ impl NodeManifest {
             || self.node_id.len() > 128
             || self.executable.len() > 128
             || self.executable.contains('/')
+            || self
+                .domain_id
+                .as_ref()
+                .is_some_and(|value| value.is_empty() || value.len() > 128)
         {
             return Err("resource node manifest must use bounded basename executables".into());
         }
         Ok(())
     }
+}
+
+pub fn resolve_domains(
+    manifests: &[NodeManifest],
+    nodes: &BTreeMap<String, NodeResourceUsage>,
+    sampled_at_ms: i64,
+) -> BTreeMap<String, DomainResourceUsage> {
+    let mut grouped: BTreeMap<String, Vec<&NodeResourceUsage>> = BTreeMap::new();
+    for manifest in manifests {
+        if let Some(usage) = nodes.get(&manifest.node_id) {
+            grouped
+                .entry(
+                    manifest
+                        .domain_id
+                        .as_deref()
+                        .unwrap_or(&manifest.node_id)
+                        .into(),
+                )
+                .or_default()
+                .push(usage);
+        }
+    }
+    grouped
+        .into_iter()
+        .map(|(domain_id, usages)| {
+            let complete = usages.iter().all(|usage| usage.cpu_usage_percent.is_some());
+            let cpu_usage_percent = complete.then(|| {
+                usages
+                    .iter()
+                    .filter_map(|usage| usage.cpu_usage_percent)
+                    .sum()
+            });
+            let memory_rss_bytes = complete.then(|| {
+                usages
+                    .iter()
+                    .filter_map(|usage| usage.memory_rss_bytes)
+                    .sum()
+            });
+            let process_count = usages.iter().map(|usage| usage.process_count).sum();
+            (
+                domain_id,
+                DomainResourceUsage {
+                    cpu_usage_percent,
+                    memory_rss_bytes,
+                    process_count,
+                    configured_node_count: usages.len() as u32,
+                    sampled_at_ms,
+                },
+            )
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +143,7 @@ mod tests {
             &[NodeManifest {
                 node_id: "camera".into(),
                 executable: "kornia_capture".into(),
+                domain_id: None,
             }],
             &[
                 ProcessRecord {
@@ -120,6 +178,7 @@ mod tests {
             &[NodeManifest {
                 node_id: "camera".into(),
                 executable: "kornia_capture".into(),
+                domain_id: None,
             }],
             &[],
             Some(4.0),
@@ -129,5 +188,17 @@ mod tests {
         assert_eq!(camera.state, NodeResourceState::NotFound);
         assert_eq!(camera.cpu_usage_percent, None);
         assert_eq!(camera.memory_rss_bytes, None);
+    }
+
+    #[test]
+    fn domain_aggregation_never_converts_missing_process_to_zero() {
+        let manifests = vec![NodeManifest {
+            node_id: "camera".into(),
+            executable: "camera".into(),
+            domain_id: Some("vision".into()),
+        }];
+        let nodes = resolve_nodes(&manifests, &[], Some(1.0), 10);
+        let domains = resolve_domains(&manifests, &nodes, 10);
+        assert_eq!(domains["vision"].cpu_usage_percent, None);
     }
 }

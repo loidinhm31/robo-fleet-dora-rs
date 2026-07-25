@@ -26,6 +26,7 @@ COPY Cargo.lock ./
 # Copy shared library Cargo.toml
 COPY robo_rover_lib/Cargo.toml robo_rover_lib/
 COPY common/lifecycle_manager/Cargo.toml common/lifecycle_manager/
+COPY common/power-coordinator/Cargo.toml common/power-coordinator/
 COPY common/resource_monitor/Cargo.toml common/resource_monitor/
 
 # Copy rover-kiwi node Cargo.toml files
@@ -80,6 +81,9 @@ RUN mkdir -p rover-kiwi/kornia_capture/src && \
     mkdir -p common/lifecycle_manager/src && \
     echo "pub fn dummy() {}" > common/lifecycle_manager/src/lib.rs && \
     echo "fn main() {}" > common/lifecycle_manager/src/main.rs && \
+    mkdir -p common/power-coordinator/src && \
+    echo "pub fn dummy() {}" > common/power-coordinator/src/lib.rs && \
+    echo "fn main() {}" > common/power-coordinator/src/main.rs && \
     mkdir -p common/resource_monitor/src && \
     echo "fn main() {}" > common/resource_monitor/src/main.rs && \
     mkdir -p rover-kiwi/zenoh_bridge/src && \
@@ -117,6 +121,7 @@ RUN cargo build --release \
     -p arm_controller \
     -p rover_controller \
     -p lifecycle_manager \
+    -p power_coordinator \
     -p resource_monitor \
     -p rover_zenoh_bridge \
     -p sim_interface \
@@ -187,6 +192,7 @@ COPY --from=builder /build/target/release/edge_voice ./bin/
 COPY --from=builder /build/target/release/arm_controller ./bin/
 COPY --from=builder /build/target/release/rover_controller ./bin/
 COPY --from=builder /build/target/release/lifecycle_manager ./bin/
+COPY --from=builder /build/target/release/power_coordinator ./bin/
 COPY --from=builder /build/target/release/resource_monitor ./bin/
 COPY --from=builder /build/target/release/rover_zenoh_bridge ./bin/
 COPY --from=builder /build/target/release/sim_interface ./bin/

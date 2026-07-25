@@ -130,12 +130,36 @@ nodes:
       ENTITY_ID: "rover-kiwi"
       RESOURCE_MONITOR_ROLE: "rover"
       RESOURCE_MONITOR_SCOPE: "${RESOURCE_MONITOR_SCOPE:-}"
-      RESOURCE_MONITOR_NODES: '[{"node_id":"audio-capture","executable":"audio_capture"},{"node_id":"audio-converter","executable":"audio_converter"},{"node_id":"edge-voice","executable":"edge_voice"},{"node_id":"audio-playback","executable":"audio_playback"},{"node_id":"gst-camera","executable":"kornia_capture"},{"node_id":"video-encoder","executable":"video_encoder"},{"node_id":"visual-servo-controller","executable":"visual_servo_controller"},{"node_id":"arm-controller","executable":"arm_controller"},{"node_id":"rover-controller","executable":"rover_controller"},{"node_id":"zenoh-bridge","executable":"rover_zenoh_bridge"}]'
+      RESOURCE_MONITOR_NODES: '[{"node_id":"audio-capture","executable":"audio_capture","domain_id":"audio-capture"},{"node_id":"audio-converter","executable":"audio_converter"},{"node_id":"edge-voice","executable":"edge_voice","domain_id":"edge-voice"},{"node_id":"audio-playback","executable":"audio_playback","domain_id":"audio-playback"},{"node_id":"gst-camera","executable":"kornia_capture","domain_id":"gst-camera"},{"node_id":"video-encoder","executable":"video_encoder"},{"node_id":"visual-servo-controller","executable":"visual_servo_controller"},{"node_id":"arm-controller","executable":"arm_controller"},{"node_id":"rover-controller","executable":"rover_controller"},{"node_id":"zenoh-bridge","executable":"rover_zenoh_bridge"}]'
+
+  # Transient local policy layer. Authority routing and external commands arrive in later phases.
+  - id: power-coordinator
+    build: cargo build --release -p power_coordinator
+    path: ../target/release/power_coordinator
+    inputs:
+      resource_snapshot: resource-monitor/resource_snapshot
+      lifecycle_status:
+        source: lifecycle-manager/lifecycle_status
+        queue_size: 64
+      lifecycle_command_result: lifecycle-manager/lifecycle_command_result
+      tick: dora/timer/millis/1000
+    outputs:
+      - lifecycle_command
+      - lifecycle_status_query
+      - power_status
+      - power_transition
+      - power_command_result
+    env:
+      RUST_LOG: info
+      ENTITY_ID: "rover-kiwi"
+      POWER_COORDINATOR_ROLE: "rover"
 
   - id: lifecycle-manager
     build: cargo build --release -p lifecycle_manager
     path: ../target/release/lifecycle_manager
     inputs:
+      power_lifecycle_command: power-coordinator/lifecycle_command
+      lifecycle_status_query_power: power-coordinator/lifecycle_status_query
       lifecycle_command_relay: zenoh-bridge/lifecycle_command_relay
       lifecycle_wake_lease_relay: zenoh-bridge/lifecycle_wake_lease_relay
       lifecycle_status_query: zenoh-bridge/lifecycle_status_query

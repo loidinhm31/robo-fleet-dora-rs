@@ -1,6 +1,6 @@
 use super::{
-    NodeResourceState, NodeResourceUsage, ResourceRole, ResourceScope, ResourceSnapshot,
-    ResourceSource, RESOURCE_SCHEMA_VERSION,
+    DomainResourceUsage, NodeResourceState, NodeResourceUsage, ResourceRole, ResourceScope,
+    ResourceSnapshot, ResourceSource, RESOURCE_SCHEMA_VERSION,
 };
 use std::collections::BTreeMap;
 
@@ -29,7 +29,29 @@ fn snapshot() -> ResourceSnapshot {
                 sampled_at_ms: 1_784_599_200_000,
             },
         )]),
+        domains: BTreeMap::from([(
+            "camera".into(),
+            DomainResourceUsage {
+                cpu_usage_percent: Some(0.0),
+                memory_rss_bytes: Some(0),
+                process_count: 1,
+                configured_node_count: 1,
+                sampled_at_ms: 1_784_599_200_000,
+            },
+        )]),
     }
+}
+
+#[test]
+fn domain_requires_fresh_complete_cpu_evidence() {
+    let mut snapshot = snapshot();
+    snapshot.domains.get_mut("camera").unwrap().sampled_at_ms -= 1;
+    assert!(snapshot.validate().is_err());
+    let usage = snapshot.domains.get_mut("camera").unwrap();
+    usage.sampled_at_ms += 1;
+    usage.cpu_usage_percent = None;
+    usage.memory_rss_bytes = Some(1);
+    assert!(snapshot.validate().is_err());
 }
 
 #[test]

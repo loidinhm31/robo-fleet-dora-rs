@@ -7,6 +7,7 @@ members = [
     # Common - Multi-target nodes (orchestra + rover)
     "common/web_bridge",
     "common/lifecycle_manager",
+    "common/power-coordinator",
     "common/resource_monitor",
 
     # Orchestra (Workstation) - Fleet control hub

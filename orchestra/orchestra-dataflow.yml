@@ -253,12 +253,35 @@ nodes:
       ENTITY_ID: "orchestra"
       RESOURCE_MONITOR_ROLE: "orchestra"
       RESOURCE_MONITOR_SCOPE: "${RESOURCE_MONITOR_SCOPE:-}"
-      RESOURCE_MONITOR_NODES: '[{"node_id":"orchestra-bridge","executable":"orchestra_zenoh_bridge"},{"node_id":"central-speech-recognizer","executable":"central_speech_recognizer"},{"node_id":"command-parser","executable":"command_parser"},{"node_id":"recording-scheduler","executable":"recording_scheduler"},{"node_id":"media-recorder","executable":"media_recorder"},{"node_id":"web-bridge","executable":"web_bridge"}]'
+      RESOURCE_MONITOR_NODES: '[{"node_id":"orchestra-bridge","executable":"orchestra_zenoh_bridge"},{"node_id":"central-speech-recognizer","executable":"central_speech_recognizer","domain_id":"central-speech-recognizer"},{"node_id":"command-parser","executable":"command_parser"},{"node_id":"recording-scheduler","executable":"recording_scheduler"},{"node_id":"media-recorder","executable":"media_recorder"},{"node_id":"web-bridge","executable":"web_bridge"}]'
+
+  - id: power-coordinator
+    build: cargo build --release -p power_coordinator
+    path: ../target/release/power_coordinator
+    inputs:
+      resource_snapshot: resource-monitor/resource_snapshot
+      lifecycle_status:
+        source: lifecycle-manager/lifecycle_status
+        queue_size: 64
+      lifecycle_command_result: lifecycle-manager/lifecycle_command_result
+      tick: dora/timer/millis/1000
+    outputs:
+      - lifecycle_command
+      - lifecycle_status_query
+      - power_status
+      - power_transition
+      - power_command_result
+    env:
+      RUST_LOG: info
+      ENTITY_ID: "orchestra"
+      POWER_COORDINATOR_ROLE: "orchestra"
 
   - id: lifecycle-manager
     build: cargo build --release -p lifecycle_manager
     path: ../target/release/lifecycle_manager
     inputs:
+      power_lifecycle_command: power-coordinator/lifecycle_command
+      lifecycle_status_query_power: power-coordinator/lifecycle_status_query
       lifecycle_command: web-bridge/lifecycle_command
       # The bridge relays every safe Rover node status in one manager tick.
       # Retain the full remote snapshot before the manager merges it locally.

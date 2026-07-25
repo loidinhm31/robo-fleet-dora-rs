@@ -30,7 +30,7 @@ Add one policy layer above lifecycle managers. Scheduler, UI, media, and KWS pro
 | # | Phase | Status | Progress | Effort | Dependency |
 |---|---|---|---:|---:|---|
 | 1 | [Contracts and lifecycle hardening](./phase-01-contracts-and-lifecycle-hardening.md) | Complete | 100% | 32h | — |
-| 2 | [Coordinator core, profiles, and Auto](./phase-02-coordinator-core-profiles-and-auto.md) | Pending | 0% | 48h | 1 |
+| 2 | [Coordinator core, profiles, and Auto](./phase-02-coordinator-core-profiles-and-auto.md) | Complete | 100% | 48h | 1 |
 | 3 | [Local journal and Mongo projection](./phase-03-local-journal-and-mongo-projection.md) | Pending | 0% | 40h | 1–2 |
 | 4 | [Authority, Zenoh, and direct routing](./phase-04-authority-zenoh-and-direct-routing.md) | Pending | 0% | 36h | 1–3 |
 | 5 | [Scheduler reservations and measured prewarm](./phase-05-scheduler-reservations-and-measured-prewarm.md) | Pending | 0% | 32h | 1–4 |
@@ -47,7 +47,7 @@ Add one policy layer above lifecycle managers. Scheduler, UI, media, and KWS pro
 
 ## Validation Summary
 
-**Validated:** 2026-07-24
+**Validated:** 2026-07-26
 **Questions asked:** 8
 
 ### Confirmed Decisions
@@ -59,7 +59,7 @@ Add one policy layer above lifecycle managers. Scheduler, UI, media, and KWS pro
 - Schedule edit/delete/supersession releases immediately; still-valid occurrences retry transient recorder/storage failures only inside a bounded start window.
 
 ### Action Items
-- [ ] Reflect these decisions in Phases 2, 4, 5, 6, and 7 before implementation.
+- [ ] Reflect these decisions in each remaining Phase 4, 5, 6, and 7 before implementation.
 - [ ] Derive KWS error limits, Auto thresholds, and timeout/capacity values from physical-target evidence in Phase 8.
 
 ## Out of scope

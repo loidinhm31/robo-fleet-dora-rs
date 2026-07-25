@@ -25,5 +25,14 @@
       "process_count": 0,
       "sampled_at_ms": 1784599200000
     }
+  },
+  "domains": {
+    "edge-voice": {
+      "cpu_usage_percent": 4.0,
+      "memory_rss_bytes": 52428800,
+      "process_count": 1,
+      "configured_node_count": 1,
+      "sampled_at_ms": 1784599200000
+    }
   }
 }

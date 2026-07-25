@@ -55,7 +55,10 @@ fn main() -> Result<()> {
         let now = now_ms();
         manager.tick(now);
         match event {
-            Event::Input { id, data, .. } if id.as_str() == "lifecycle_command" => {
+            Event::Input { id, data, .. }
+                if id.as_str() == "lifecycle_command"
+                    || id.as_str() == "power_lifecycle_command" =>
+            {
                 if let Some(bytes) = binary(&data) {
                     let parsed = serde_json::from_slice::<LifecycleCommand>(bytes);
                     let target = parsed.as_ref().ok().map(|command| command.target.clone());
@@ -148,7 +151,10 @@ fn main() -> Result<()> {
                     }
                 }
             }
-            Event::Input { id, .. } if id.as_str() == "lifecycle_status_query" => {
+            Event::Input { id, .. }
+                if id.as_str() == "lifecycle_status_query"
+                    || id.as_str() == "lifecycle_status_query_power" =>
+            {
                 for status in manager.statuses(now) {
                     send(&mut node, &status_output, &status)?;
                 }
