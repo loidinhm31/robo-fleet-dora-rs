@@ -13,6 +13,7 @@ pub struct LifecycleGate {
     last_epoch: u64,
     last_revision: u64,
     last_desired_state: Option<LifecycleDesiredState>,
+    last_transition_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +30,7 @@ impl LifecycleGate {
             last_epoch: 0,
             last_revision: 0,
             last_desired_state: None,
+            last_transition_id: None,
         }
     }
 
@@ -73,7 +75,9 @@ impl LifecycleGate {
             return Err("lifecycle command authority is stale".into());
         }
         if version == last {
-            return if self.last_desired_state == Some(command.desired_state) {
+            return if self.last_desired_state == Some(command.desired_state)
+                && self.last_transition_id == command.transition_id
+            {
                 Ok(None)
             } else {
                 Err("lifecycle command payload changed at the same authority revision".into())
@@ -82,6 +86,7 @@ impl LifecycleGate {
         self.last_epoch = version.0;
         self.last_revision = version.1;
         self.last_desired_state = Some(command.desired_state);
+        self.last_transition_id = command.transition_id.clone();
         let transition = match command.desired_state {
             LifecycleDesiredState::Quiesced => {
                 self.admission_open = false;
@@ -125,6 +130,7 @@ impl LifecycleGate {
                     LifecycleEffectiveState::Failed
                 }
             },
+            transition_id: self.last_transition_id.clone(),
             components: vec![LifecycleComponentStatus {
                 node_id: self.target.node_id.clone(),
                 state,
@@ -154,6 +160,8 @@ mod tests {
             expected_revision: revision,
             issued_at_ms: 100,
             expires_at_ms: 1_000,
+            origin: Default::default(),
+            transition_id: None,
         }
     }
 

@@ -8,6 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const TRANSITION_TIMEOUT_MS: u64 = 30_000;
 const MAX_CACHED_REQUESTS: usize = 1_024;
+const MAX_REVOKED_WAKE_GENERATIONS: usize = 1_024;
+
+type LifecycleFence = (u64, u64, Option<String>);
 
 #[derive(Debug, Clone)]
 struct CachedRequest {
@@ -23,17 +26,24 @@ struct ManagedTarget {
     effective_state: LifecycleEffectiveState,
     transition_deadline_ms: Option<u64>,
     authority_epoch: u64,
-    /// A deadline-expired transition cannot accept a late success status at
-    /// the same authority version.
-    timed_out_authority: Option<(u64, u64)>,
+    /// A terminal acknowledgement is final until a newer authority revision.
+    terminal_fence: Option<LifecycleFence>,
+    transition_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct WakeLeaseState {
+    generation: u64,
+    expires_at_ms: u64,
 }
 
 pub struct LifecycleManager {
     epoch: u64,
     targets: BTreeMap<LifecycleTarget, ManagedTarget>,
     requests: BTreeMap<String, CachedRequest>,
-    wake_leases: BTreeMap<LifecycleTarget, BTreeMap<String, u64>>,
-    revoked_wake_leases: BTreeSet<(LifecycleTarget, String)>,
+    wake_leases: BTreeMap<LifecycleTarget, BTreeMap<String, WakeLeaseState>>,
+    revoked_wake_leases: BTreeMap<(LifecycleTarget, String), WakeLeaseState>,
+    revoked_wake_generations: BTreeMap<(LifecycleTarget, String), u64>,
 }
 
 impl LifecycleManager {
@@ -56,7 +66,8 @@ impl LifecycleManager {
                     effective_state: LifecycleEffectiveState::Running,
                     transition_deadline_ms: None,
                     authority_epoch: epoch,
-                    timed_out_authority: None,
+                    terminal_fence: None,
+                    transition_id: None,
                 },
             );
         }
@@ -65,7 +76,8 @@ impl LifecycleManager {
             targets,
             requests: BTreeMap::new(),
             wake_leases: BTreeMap::new(),
-            revoked_wake_leases: BTreeSet::new(),
+            revoked_wake_leases: BTreeMap::new(),
+            revoked_wake_generations: BTreeMap::new(),
         })
     }
 
@@ -190,7 +202,8 @@ impl LifecycleManager {
         // this local reporter forward after restart without creating a second CAS authority.
         target.authority_epoch = command.manager_epoch;
         target.revision = command.expected_revision.saturating_add(1);
-        target.timed_out_authority = None;
+        target.terminal_fence = None;
+        target.transition_id = command.transition_id.clone();
         target.desired_state = command.desired_state;
         if command.desired_state == LifecycleDesiredState::Quiesced {
             self.revoke_wake_leases(&command.target);
@@ -230,7 +243,15 @@ impl LifecycleManager {
         if target.desired_state != status.desired_state {
             return false;
         }
-        if target.timed_out_authority == Some((status.manager_epoch, status.revision)) {
+        if target.transition_id != status.transition_id {
+            return false;
+        }
+        let fence = (
+            status.manager_epoch,
+            status.revision,
+            status.transition_id.clone(),
+        );
+        if target.terminal_fence.as_ref() == Some(&fence) {
             return false;
         }
         let state = status
@@ -239,8 +260,7 @@ impl LifecycleManager {
             .find(|component| component.node_id == status.target.node_id)
             .map(|component| component.state);
         if let Some(state) = state {
-            self.component_applied(&status.target, state, status.updated_at_ms);
-            true
+            self.component_applied(&status.target, state, status.updated_at_ms)
         } else {
             false
         }
@@ -266,7 +286,7 @@ impl LifecycleManager {
         // erase an active deadline, or change a terminal timeout authority.
         if item.revision != 0
             || item.transition_deadline_ms.is_some()
-            || item.timed_out_authority.is_some()
+            || item.terminal_fence.is_some()
         {
             return false;
         }
@@ -283,7 +303,7 @@ impl LifecycleManager {
         };
         if item.revision != 0
             || item.transition_deadline_ms.is_some()
-            || item.timed_out_authority.is_some()
+            || item.terminal_fence.is_some()
         {
             return false;
         }
@@ -298,20 +318,66 @@ impl LifecycleManager {
         expires_at_ms: u64,
         now_ms: u64,
     ) -> Result<(), String> {
-        if lease_id.is_empty() || lease_id.len() > 128 || expires_at_ms <= now_ms {
+        self.acquire_wake_lease_generation(lease_id, target, expires_at_ms, 1, now_ms)
+    }
+
+    fn acquire_wake_lease_generation(
+        &mut self,
+        lease_id: String,
+        target: &LifecycleTarget,
+        expires_at_ms: u64,
+        generation: u64,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        if lease_id.is_empty() || lease_id.len() > 128 || expires_at_ms <= now_ms || generation == 0
+        {
             return Err("invalid lifecycle wake lease".into());
         }
         self.targets.get(target).ok_or("unknown lifecycle target")?;
+        let key = (target.clone(), lease_id.clone());
+        if self
+            .revoked_wake_generations
+            .get(&key)
+            .is_some_and(|revoked_generation| *revoked_generation >= generation)
+        {
+            return Err("wake lease generation was revoked".into());
+        }
+        if let Some(revoked) = self.revoked_wake_leases.get(&key) {
+            if revoked.expires_at_ms > now_ms && revoked.generation >= generation {
+                return Err("wake lease generation was revoked".into());
+            }
+        }
         if self
             .revoked_wake_leases
-            .contains(&(target.clone(), lease_id.clone()))
+            .get(&key)
+            .is_some_and(|lease| lease.expires_at_ms <= now_ms)
         {
-            return Err("wake lease was revoked by a user pause".into());
+            self.revoked_wake_leases.remove(&key);
         }
-        self.wake_leases
-            .entry(target.clone())
-            .or_default()
-            .insert(lease_id, expires_at_ms);
+        if let Some(active) = self
+            .wake_leases
+            .get(target)
+            .and_then(|leases| leases.get(&lease_id))
+        {
+            if active.generation > generation
+                || (active.generation == generation && active.expires_at_ms != expires_at_ms)
+            {
+                return Err("wake lease generation conflicts with active lease".into());
+            }
+            if active.generation == generation {
+                return Ok(());
+            }
+        }
+        if self.known_wake_lease_count() >= MAX_REVOKED_WAKE_GENERATIONS {
+            return Err("lifecycle wake lease generation cache is full".into());
+        }
+        self.wake_leases.entry(target.clone()).or_default().insert(
+            lease_id,
+            WakeLeaseState {
+                generation,
+                expires_at_ms,
+            },
+        );
         self.reconcile_target(target, now_ms);
         Ok(())
     }
@@ -325,26 +391,114 @@ impl LifecycleManager {
     ) -> Result<(), String> {
         lease.validate()?;
         match lease.action {
-            LifecycleWakeLeaseAction::Acquire => {
-                self.acquire_wake_lease(lease.lease_id, &lease.target, lease.expires_at_ms, now_ms)
-            }
+            LifecycleWakeLeaseAction::Acquire => self.acquire_wake_lease_generation(
+                lease.lease_id,
+                &lease.target,
+                lease.expires_at_ms,
+                lease.generation,
+                now_ms,
+            ),
             LifecycleWakeLeaseAction::Release => {
                 if !self.targets.contains_key(&lease.target) {
                     return Err("unknown lifecycle target".into());
                 }
-                self.release_wake_lease(&lease.lease_id, &lease.target, now_ms);
-                Ok(())
+                self.release_wake_lease_generation(
+                    &lease.lease_id,
+                    &lease.target,
+                    lease.expires_at_ms,
+                    lease.generation,
+                    now_ms,
+                )
             }
         }
     }
 
     pub fn release_wake_lease(&mut self, lease_id: &str, target: &LifecycleTarget, now_ms: u64) {
-        self.revoked_wake_leases
-            .remove(&(target.clone(), lease_id.to_owned()));
-        if let Some(leases) = self.wake_leases.get_mut(target) {
-            leases.remove(lease_id);
+        let active = self
+            .wake_leases
+            .get(target)
+            .and_then(|leases| leases.get(lease_id))
+            .cloned();
+        let generation = active.as_ref().map_or(1, |lease| lease.generation);
+        let expires_at_ms = active.as_ref().map_or(now_ms, |lease| lease.expires_at_ms);
+        let _ =
+            self.release_wake_lease_generation(lease_id, target, expires_at_ms, generation, now_ms);
+    }
+
+    fn release_wake_lease_generation(
+        &mut self,
+        lease_id: &str,
+        target: &LifecycleTarget,
+        expires_at_ms: u64,
+        generation: u64,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        let key = (target.clone(), lease_id.to_owned());
+        let active = self
+            .wake_leases
+            .get(target)
+            .and_then(|leases| leases.get(lease_id))
+            .cloned();
+        let known_generation = self.revoked_wake_generations.get(&key).copied();
+        if active.is_none() && known_generation.is_none() {
+            return Err("unknown lifecycle wake lease release".into());
         }
+        if active
+            .as_ref()
+            .is_some_and(|lease| lease.generation != generation)
+        {
+            return Err(
+                "lifecycle wake lease release generation conflicts with active lease".into(),
+            );
+        }
+        if active.is_none() {
+            return if known_generation == Some(generation) {
+                Ok(())
+            } else {
+                Err("lifecycle wake lease release generation is unknown".into())
+            };
+        }
+        if active
+            .as_ref()
+            .is_some_and(|lease| lease.generation <= generation)
+        {
+            self.wake_leases
+                .entry(target.clone())
+                .or_default()
+                .remove(lease_id);
+        }
+        let entry = self
+            .revoked_wake_leases
+            .entry(key.clone())
+            .or_insert(WakeLeaseState {
+                generation,
+                expires_at_ms,
+            });
+        entry.generation = entry.generation.max(generation);
+        entry.expires_at_ms = entry
+            .expires_at_ms
+            .max(expires_at_ms)
+            .max(active.map_or(0, |lease| lease.expires_at_ms));
+        self.revoked_wake_generations
+            .entry(key)
+            .and_modify(|known_generation| *known_generation = (*known_generation).max(generation))
+            .or_insert(generation);
         self.reconcile_target(target, now_ms);
+        Ok(())
+    }
+
+    fn known_wake_lease_count(&self) -> usize {
+        let active_without_fence = self
+            .wake_leases
+            .iter()
+            .flat_map(|(target, leases)| leases.keys().map(move |lease_id| (target, lease_id)))
+            .filter(|(target, lease_id)| {
+                !self
+                    .revoked_wake_generations
+                    .contains_key(&((*target).clone(), (*lease_id).clone()))
+            })
+            .count();
+        self.revoked_wake_generations.len() + active_without_fence
     }
 
     pub fn component_applied(
@@ -352,22 +506,67 @@ impl LifecycleManager {
         target: &LifecycleTarget,
         state: LifecycleComponentState,
         now_ms: u64,
-    ) {
+    ) -> bool {
         let Some(item) = self.targets.get_mut(target) else {
-            return;
+            return false;
         };
+        if item.terminal_fence.as_ref().is_some_and(|fence| {
+            fence.0 == item.authority_epoch
+                && fence.1 == item.revision
+                && fence.2 == item.transition_id
+        }) {
+            return false;
+        }
+        let terminal = matches!(
+            (item.desired_state, state),
+            (
+                LifecycleDesiredState::Running,
+                LifecycleComponentState::Running
+            ) | (
+                LifecycleDesiredState::Quiesced,
+                LifecycleComponentState::Quiesced
+            )
+        );
+        let failed = matches!(
+            state,
+            LifecycleComponentState::Failed
+                | LifecycleComponentState::Degraded
+                | LifecycleComponentState::Unsupported
+        );
+        let progressing = matches!(
+            (item.desired_state, state),
+            (
+                LifecycleDesiredState::Running,
+                LifecycleComponentState::Resuming
+            ) | (
+                LifecycleDesiredState::Quiesced,
+                LifecycleComponentState::Cancelling | LifecycleComponentState::Quiescing
+            )
+        );
+        if !terminal && !failed && !progressing {
+            return false;
+        }
         item.effective_state = match state {
             LifecycleComponentState::Running => LifecycleEffectiveState::Running,
             LifecycleComponentState::Quiesced => LifecycleEffectiveState::Quiesced,
-            LifecycleComponentState::Failed => LifecycleEffectiveState::Failed,
+            LifecycleComponentState::Failed | LifecycleComponentState::Unsupported => {
+                LifecycleEffectiveState::Failed
+            }
             LifecycleComponentState::Degraded => LifecycleEffectiveState::Degraded,
             LifecycleComponentState::Cancelling => LifecycleEffectiveState::Cancelling,
             LifecycleComponentState::Quiescing => LifecycleEffectiveState::Quiescing,
             LifecycleComponentState::Resuming => LifecycleEffectiveState::Resuming,
-            LifecycleComponentState::Unsupported => LifecycleEffectiveState::Failed,
         };
-        item.transition_deadline_ms = None;
+        if terminal || failed {
+            item.transition_deadline_ms = None;
+            item.terminal_fence = Some((
+                item.authority_epoch,
+                item.revision,
+                item.transition_id.clone(),
+            ));
+        }
         let _ = now_ms;
+        true
     }
 
     pub fn tick(&mut self, now_ms: u64) {
@@ -375,10 +574,12 @@ impl LifecycleManager {
             .wake_leases
             .iter_mut()
             .filter_map(|(target, leases)| {
-                leases.retain(|_, expiry| *expiry > now_ms);
+                leases.retain(|_, lease| lease.expires_at_ms > now_ms);
                 Some(target.clone())
             })
             .collect();
+        self.revoked_wake_leases
+            .retain(|_, lease| lease.expires_at_ms > now_ms);
         for target in affected {
             self.reconcile_target(&target, now_ms);
         }
@@ -389,7 +590,11 @@ impl LifecycleManager {
             {
                 item.effective_state = LifecycleEffectiveState::Failed;
                 item.transition_deadline_ms = None;
-                item.timed_out_authority = Some((item.authority_epoch, item.revision));
+                item.terminal_fence = Some((
+                    item.authority_epoch,
+                    item.revision,
+                    item.transition_id.clone(),
+                ));
             }
         }
     }
@@ -436,7 +641,8 @@ impl LifecycleManager {
                 .expect("target checked above");
             item.desired_state = command.desired_state;
             item.revision = item.revision.saturating_add(1);
-            item.timed_out_authority = None;
+            item.terminal_fence = None;
+            item.transition_id = command.transition_id.clone();
             item.revision
         };
         if command.desired_state == LifecycleDesiredState::Quiesced {
@@ -456,11 +662,14 @@ impl LifecycleManager {
 
     fn revoke_wake_leases(&mut self, target: &LifecycleTarget) {
         if let Some(leases) = self.wake_leases.remove(target) {
-            self.revoked_wake_leases.extend(
-                leases
-                    .into_keys()
-                    .map(|lease_id| (target.clone(), lease_id)),
-            );
+            for (lease_id, lease) in leases {
+                self.revoked_wake_generations
+                    .entry((target.clone(), lease_id.clone()))
+                    .and_modify(|generation| *generation = (*generation).max(lease.generation))
+                    .or_insert(lease.generation);
+                self.revoked_wake_leases
+                    .insert((target.clone(), lease_id), lease);
+            }
         }
     }
 
@@ -472,7 +681,11 @@ impl LifecycleManager {
         let Some(item) = self.targets.get_mut(target) else {
             return;
         };
-        if item.timed_out_authority == Some((item.authority_epoch, item.revision)) {
+        if item
+            .terminal_fence
+            .as_ref()
+            .is_some_and(|fence| fence.0 == item.authority_epoch && fence.1 == item.revision)
+        {
             return;
         }
         let desired = if has_wake_lease {
@@ -520,6 +733,7 @@ impl LifecycleManager {
             revision: item.revision,
             desired_state: item.desired_state,
             effective_state: item.effective_state,
+            transition_id: item.transition_id.clone(),
             components: vec![LifecycleComponentStatus {
                 node_id: target.node_id.clone(),
                 state: component_state,
@@ -577,6 +791,8 @@ mod tests {
             expected_revision: revision,
             issued_at_ms: 1,
             expires_at_ms: 10_000,
+            origin: Default::default(),
+            transition_id: None,
         }
     }
 
@@ -847,6 +1063,197 @@ mod tests {
             manager.status(&target(), 30_003).unwrap().effective_state,
             LifecycleEffectiveState::Running
         );
+    }
+
+    #[test]
+    fn coordinator_status_requires_transition_id_and_progress_never_refreshes_deadline() {
+        let mut manager = LifecycleManager::new(
+            9,
+            vec![LifecycleCapability {
+                target: target(),
+                supported: true,
+                always_on: false,
+            }],
+        )
+        .unwrap();
+        let mut command = command(9, 0, LifecycleDesiredState::Quiesced);
+        command.origin = robo_rover_lib::LifecycleCommandOrigin::Coordinator;
+        command.transition_id = Some("f4f3e2d1-c0b9-48a7-9615-141312111099".into());
+        assert!(manager.apply(command, 2).accepted);
+
+        let mut missing_transition = manager.status(&target(), 3).unwrap();
+        missing_transition.transition_id = None;
+        missing_transition.components[0].state = LifecycleComponentState::Quiescing;
+        assert!(!manager.apply_component_status(&missing_transition));
+
+        let mut progress = manager.status(&target(), 3).unwrap();
+        progress.components[0].state = LifecycleComponentState::Quiescing;
+        assert!(manager.apply_component_status(&progress));
+        manager.tick(30_002);
+        assert_eq!(
+            manager.status(&target(), 30_002).unwrap().effective_state,
+            LifecycleEffectiveState::Failed
+        );
+    }
+
+    #[test]
+    fn released_lease_generation_cannot_be_revived_by_a_delayed_acquire() {
+        let mut manager = LifecycleManager::new(
+            9,
+            vec![LifecycleCapability {
+                target: target(),
+                supported: true,
+                always_on: false,
+            }],
+        )
+        .unwrap();
+        let acquire = LifecycleWakeLease {
+            protocol_version: LIFECYCLE_PROTOCOL_VERSION,
+            lease_id: "occurrence-a".into(),
+            target: target(),
+            expires_at_ms: 100,
+            generation: 4,
+            action: LifecycleWakeLeaseAction::Acquire,
+        };
+        assert!(manager.apply_wake_lease(acquire.clone(), 2).is_ok());
+        let release = LifecycleWakeLease {
+            action: LifecycleWakeLeaseAction::Release,
+            ..acquire.clone()
+        };
+        assert!(manager.apply_wake_lease(release, 3).is_ok());
+        assert!(manager.apply_wake_lease(acquire, 4).is_err());
+
+        let next_generation = LifecycleWakeLease {
+            generation: 5,
+            ..LifecycleWakeLease {
+                protocol_version: LIFECYCLE_PROTOCOL_VERSION,
+                lease_id: "occurrence-a".into(),
+                target: target(),
+                expires_at_ms: 100,
+                generation: 4,
+                action: LifecycleWakeLeaseAction::Acquire,
+            }
+        };
+        assert!(manager.apply_wake_lease(next_generation, 5).is_ok());
+    }
+
+    #[test]
+    fn future_release_generation_cannot_fence_a_known_lease() {
+        let mut manager = LifecycleManager::new(
+            9,
+            vec![LifecycleCapability {
+                target: target(),
+                supported: true,
+                always_on: false,
+            }],
+        )
+        .unwrap();
+        let lease = LifecycleWakeLease {
+            protocol_version: LIFECYCLE_PROTOCOL_VERSION,
+            lease_id: "occurrence-future".into(),
+            target: target(),
+            expires_at_ms: 100,
+            generation: 1,
+            action: LifecycleWakeLeaseAction::Acquire,
+        };
+        assert!(manager.apply_wake_lease(lease.clone(), 2).is_ok());
+        assert!(manager
+            .apply_wake_lease(
+                LifecycleWakeLease {
+                    generation: u64::MAX,
+                    action: LifecycleWakeLeaseAction::Release,
+                    ..lease.clone()
+                },
+                3,
+            )
+            .is_err());
+        assert!(manager.apply_wake_lease(lease, 3).is_ok());
+    }
+
+    #[test]
+    fn component_applied_cannot_regress_a_terminal_transition() {
+        let mut manager = LifecycleManager::new(
+            9,
+            vec![LifecycleCapability {
+                target: target(),
+                supported: true,
+                always_on: false,
+            }],
+        )
+        .unwrap();
+        assert!(
+            manager
+                .apply(command(9, 0, LifecycleDesiredState::Quiesced), 2)
+                .accepted
+        );
+        assert!(manager.component_applied(&target(), LifecycleComponentState::Quiesced, 3));
+        assert!(!manager.component_applied(&target(), LifecycleComponentState::Quiescing, 4));
+    }
+
+    #[test]
+    fn terminal_status_latches_until_a_newer_revision() {
+        let mut manager = LifecycleManager::new(
+            9,
+            vec![LifecycleCapability {
+                target: target(),
+                supported: true,
+                always_on: false,
+            }],
+        )
+        .unwrap();
+        assert!(
+            manager
+                .apply(command(9, 0, LifecycleDesiredState::Quiesced), 2)
+                .accepted
+        );
+        let mut terminal = manager.status(&target(), 3).unwrap();
+        terminal.components[0].state = LifecycleComponentState::Quiesced;
+        assert!(manager.apply_component_status(&terminal));
+
+        let mut delayed_progress = terminal;
+        delayed_progress.components[0].state = LifecycleComponentState::Quiescing;
+        assert!(!manager.apply_component_status(&delayed_progress));
+        assert_eq!(
+            manager.status(&target(), 4).unwrap().effective_state,
+            LifecycleEffectiveState::Quiesced
+        );
+    }
+
+    #[test]
+    fn expired_tombstone_keeps_generation_fence_against_changed_replay() {
+        let mut manager = LifecycleManager::new(
+            9,
+            vec![LifecycleCapability {
+                target: target(),
+                supported: true,
+                always_on: false,
+            }],
+        )
+        .unwrap();
+        let lease = LifecycleWakeLease {
+            protocol_version: LIFECYCLE_PROTOCOL_VERSION,
+            lease_id: "occurrence-b".into(),
+            target: target(),
+            expires_at_ms: 10,
+            generation: 1,
+            action: LifecycleWakeLeaseAction::Acquire,
+        };
+        assert!(manager.apply_wake_lease(lease.clone(), 2).is_ok());
+        assert!(manager
+            .apply_wake_lease(
+                LifecycleWakeLease {
+                    action: LifecycleWakeLeaseAction::Release,
+                    ..lease.clone()
+                },
+                3,
+            )
+            .is_ok());
+        manager.tick(11);
+        let replay = LifecycleWakeLease {
+            expires_at_ms: 100,
+            ..lease
+        };
+        assert!(manager.apply_wake_lease(replay, 12).is_err());
     }
 
     #[test]

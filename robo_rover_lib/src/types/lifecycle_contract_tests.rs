@@ -19,6 +19,8 @@ fn lifecycle_command_rejects_expired_or_oversized_ttl() {
         expected_revision: 0,
         issued_at_ms: 100,
         expires_at_ms: 60_101,
+        origin: Default::default(),
+        transition_id: None,
     };
     assert!(command.validate().is_err());
     command.expires_at_ms = 101;
@@ -34,6 +36,7 @@ fn lifecycle_status_round_trips_as_versioned_contract() {
         revision: 3,
         desired_state: LifecycleDesiredState::Quiesced,
         effective_state: LifecycleEffectiveState::Quiescing,
+        transition_id: None,
         components: vec![LifecycleComponentStatus {
             node_id: "gst-camera".into(),
             state: LifecycleComponentState::Quiescing,

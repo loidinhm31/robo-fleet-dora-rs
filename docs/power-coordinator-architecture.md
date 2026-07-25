@@ -1,0 +1,421 @@
+# Power Coordinator Architecture
+
+Status: planned, revalidated 2026-07-26
+Decision source:
+[brainstorm report](../plans/reports/brainstorm-260723-1442-rover-power-coordinator-sleep-wake.md)
+
+## Purpose and Scope
+
+Coordinate workload-level sleep/wake across Orchestra and Rover-Kiwi while
+keeping safety, networking, lifecycle authority, scheduling, and observability
+available.
+
+V1 includes:
+
+- `Awake`, `Auto`, and `Sleep` policy;
+- minimal dependency-aware workload profiles;
+- UI, scheduler, voice, media, and safety demands;
+- Rover-local continuous keyword spotting;
+- offline Rover wake plus snapshot-first Orchestra reconciliation on reconnect;
+- local write-ahead event journal and MongoDB history/projection;
+- CPU-confirmed automatic idle after a five-minute demand-free grace.
+
+V1 excludes OS suspend, Wake-on-LAN, GPIO wake, process/container kill, local
+general STT/NLU, and ML-based policy scoring.
+
+## Ownership
+
+| Component | Authority |
+|---|---|
+| recording scheduler | schedules, occurrences, deterministic reservation IDs |
+| power coordinator | policy, demands, profiles, dependency barriers, aggregate state |
+| lifecycle manager | exact-target fenced quiesce/resume execution |
+| workload node | admission close, cancellation, device/model release, readiness |
+| resource monitor | measured CPU/RSS freshness; never policy authority |
+| web bridge | authenticated admission and live/history transport |
+| MongoDB | durable history and materialized projection; never live safety authority |
+
+`common/power-coordinator` runs on Orchestra and Rover. Orchestra is fleet
+authority while connected. Rover may create bounded local KWS wake demand while
+partitioned. Orchestra consumes Rover status before issuing a newer authority
+epoch on reconnect. If the snapshot is unavailable or stale, Orchestra reports
+`AuthorityUnknown`, retries observation, and issues no profile command or forced
+takeover.
+
+## Component Flow
+
+```mermaid
+flowchart LR
+    UI["Web UI<br/>policy, Wake Rover, live state, history"]
+
+    subgraph Orchestra["Orchestra"]
+        Web["web-bridge<br/>auth, rate limit, exact target"]
+        Scheduler["recording-scheduler<br/>future reservation authority"]
+        OPower["power-coordinator<br/>fleet policy authority"]
+        OLife["lifecycle-manager<br/>exact-target executor"]
+        OWork["STT and recorder workloads"]
+        OJournal["local event journal/outbox"]
+        Projector["Mongo event projector"]
+        Mongo[("MongoDB<br/>90-day events + current projection")]
+        OBridge["orchestra Zenoh bridge"]
+    end
+
+    subgraph Rover["Rover-Kiwi"]
+        RBridge["rover Zenoh bridge"]
+        RPower["power-coordinator<br/>local profile authority"]
+        RLife["lifecycle-manager<br/>exact-target executor"]
+        KWS["voice-wake<br/>continuous KWS"]
+        RWork["camera, capture, voice, playback"]
+        Safety["controllers, watchdog, emergency"]
+        RMonitor["resource-monitor"]
+        RJournal["local event journal/outbox"]
+    end
+
+    UI -->|"Socket.IO policy/wake"| Web
+    Web --> OPower
+    Scheduler -->|"future wake reservation"| OPower
+    OPower --> OLife
+    OLife --> OWork
+    OPower -->|"targeted power command"| OBridge
+    OBridge <-->|"Zenoh power v1"| RBridge
+    RBridge --> RPower
+    KWS -->|"bounded local wake demand"| RPower
+    RMonitor -->|"fresh per-domain usage"| RPower
+    RPower --> RLife
+    RLife --> RWork
+    RPower -.->|"safety barrier"| Safety
+
+    OPower --> OJournal
+    RPower --> RJournal
+    RJournal -->|"replicate after reconnect"| RBridge
+    OJournal --> Projector
+    OBridge --> Projector
+    Projector --> Mongo
+    OPower -->|"live authoritative status"| Web
+    Mongo -->|"history/cold projection"| Web
+    Web --> UI
+```
+
+Direct Rover mode uses the same Socket.IO contracts. Its local web bridge routes
+directly to Rover power coordinator and omits both Zenoh bridge hops.
+
+## Policy and Effective State
+
+Policy is operator intent:
+
+- `Awake`: hold normal workload profile active.
+- `Auto`: compute minimum profile from active demands.
+- `Sleep`: quiesce normal workloads; allow authenticated UI Wake and accepted
+  scheduler reservation only.
+
+Policy never changes merely because effective state changes. `Wake Rover`
+changes `Sleep` to `Auto`; it does not hold `Awake`.
+
+After the Auto idle gate succeeds, Auto rests in `IdleListening`, not
+`Dormant`, so Rover-local `Hey Kiwi` remains available. Only explicit `Sleep`
+enters `Dormant` and disables KWS.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Active: fresh restart / Awake
+    Active --> AuthorityUnknown: Rover reconnect without fresh snapshot
+    AuthorityUnknown --> Active: snapshot reconciled
+    AuthorityUnknown --> AuthorityUnknown: retry observation; no profile command
+    Active --> IdlePending: Auto + no demand
+    IdlePending --> Active: new demand or CPU above threshold
+    IdlePending --> Quiescing: five-minute grace + fresh low CPU
+    Quiescing --> IdleListening: Auto
+    Quiescing --> Dormant: explicit Sleep
+    IdleListening --> Waking: UI, KWS, or schedule demand
+    Dormant --> Prewarming: schedule reservation due
+    Dormant --> Waking: authenticated UI Wake
+    Prewarming --> Active: ScheduledCapture ready
+    Waking --> Active: requested profile ready
+    Active --> Quiescing: final bounded demand released
+    Quiescing --> Degraded: target timeout/failure
+    Waking --> Degraded: target timeout/failure
+    Prewarming --> Degraded: readiness deadline missed
+    Degraded --> Waking: bounded retry/reconcile
+    Degraded --> Quiescing: policy requires low power
+```
+
+Fresh process/dataflow restart clears runtime policy and transient demands, then
+boots normal workloads into `Awake`. Scheduler reconstructs future reservations
+from its durable occurrence state.
+
+## Profiles
+
+| Profile | Required workloads |
+|---|---|
+| `Dormant` | control spine only |
+| `IdleListening` | control spine, microphone capture, continuous KWS |
+| `ScheduledCapture` | exact camera/audio/encoder/bridge/recorder dependencies |
+| `NormalRover` | normal camera/audio/voice stack; ML remains lazy |
+| `OrchestraSpeech` | central STT and command parser path |
+
+Always-on control spine:
+
+- both web/Zenoh bridges;
+- both power/lifecycle coordinators;
+- recording scheduler;
+- resource monitors;
+- rover/arm controllers;
+- watchdog and emergency path.
+
+Profiles use a static reviewed dependency graph. Sleep closes dependents before
+prerequisites. Wake starts prerequisites and waits for authoritative readiness
+before dependents.
+
+## Demand and Reservation Contract
+
+### Power V1 wire contract
+
+The implementation uses the versioned `power-v1` JSON contract in
+`robo_rover_lib`. Every command, result, snapshot, transition, status, and
+event carries `protocol_version: 1`, an explicit lifecycle `role`, and an
+`entity_id`. Unknown fields are rejected. IDs are canonical UUIDs where the
+contract calls for them; timestamps are millisecond windows with bounded TTLs
+(`PowerCommand` at most 60 seconds, demands at most one hour, and reservations
+at most seven days). Optional `detail` is bounded and sanitized.
+
+The authority stamp is `{ epoch, sequence }`. Epoch changes fence an authority
+generation; sequence orders messages within that generation. A command is
+accepted only for the addressed role/entity and authority, and its result
+returns the same `command_id` plus either `accepted: true` or a typed
+`reason_code` (never both). Demand sources are constrained to compatible
+profiles (for example, scheduler → `ScheduledCapture`, KWS → `NormalRover`),
+and demand/reservation IDs are idempotent: reusing an ID with a different
+immutable payload is rejected.
+
+Conceptual contract:
+
+```text
+PowerDemand {
+  protocol_version,
+  demand_id,
+  authority_epoch,
+  source,
+  entity_id,
+  required_profile,
+  priority,
+  issued_at_ms,
+  not_before_ms,
+  expires_at_ms,
+  renew_sequence
+}
+```
+
+Duplicate ID with identical payload is idempotent. Duplicate ID with changed
+payload is rejected. Demand capacity and TTL are bounded. Expired or final
+demands never replay after restart.
+
+Sources:
+
+- authenticated UI interaction;
+- recording scheduler reservation;
+- local KWS;
+- manual recording/media use;
+- safety/maintenance.
+
+Safety may veto a transition. KWS wake never carries or executes an actuator
+command.
+
+The concrete reservation form is a separate `PowerReservation` carrying a
+`reservation_id`, `required_profile: ScheduledCapture`, target role/entity,
+authority, and its validity window. Policy changes and demand/reservation
+operations are transported as `PowerCommandAction` values (`SetPolicy`,
+`RegisterDemand`, `ReleaseDemand`, `RegisterReservation`, or
+`ReleaseReservation`).
+
+## Transition identity and lifecycle fencing
+
+Each aggregate profile change creates one UUID `transition_id` in a
+`PowerTransition`; the ID is copied into status/events and into every
+coordinator-originated `LifecycleCommand`. Lifecycle managers require that
+ID for coordinator commands and bind asynchronous component status to the
+same transition. A target's terminal acknowledgment is fenced by the exact
+target, manager epoch, expected revision, request/transition ID, and command
+deadline. Late, duplicate, or superseded acknowledgments cannot advance a new
+transition, and progress reports do not extend the deadline. A transition is
+terminal only after every required target reports its fenced terminal state;
+partial readiness is not aggregate readiness.
+
+Scheduled wake leases use `LifecycleWakeLease` with a monotonically increasing
+per-lease `generation`. Acquire and release messages carrying an older or
+revoked generation are rejected, so delayed network packets cannot revive a
+released lease or fence a newer lease. Lease expiry is bounded and leases
+temporarily affect effective state without mutating operator policy.
+
+## Auto Algorithm
+
+Auto enters low power only when:
+
+```text
+no active demand
+AND no protected operation/session
+AND required targets report idle/quiesce-capable
+AND resource samples are fresh
+AND each affected domain stays below configured CPU threshold
+AND five-minute idle grace expires
+```
+
+CPU confirms semantic idleness; it never defines idleness alone. Memory is
+outcome telemetry only. A new demand, protected operation, stale sample, or CPU
+threshold breach cancels `IdlePending`.
+
+Thresholds and consecutive-sample counts are benchmark-derived per domain.
+One transition per domain may run at a time. Minimum awake hold and retry
+backoff prevent churn.
+
+## Scheduled Wake Sequence
+
+```mermaid
+sequenceDiagram
+    participant S as recording-scheduler
+    participant P as Orchestra power-coordinator
+    participant J as local journal
+    participant R as Rover power-coordinator
+    participant L as lifecycle managers
+    participant W as required workloads
+    participant M as media-recorder
+
+    S->>P: register reservation(deterministic ID, start, expiry)
+    P->>J: append ReservationAccepted
+    J-->>P: durable
+    P-->>S: accepted
+    Note over P: wait until start - measured p95 - safety margin
+    P->>J: append PrewarmRequested
+    J-->>P: durable
+    P->>R: request ScheduledCapture(epoch, revision)
+    P->>L: resume Orchestra prerequisites
+    R->>L: resume Rover prerequisites
+    L->>W: fenced exact-target commands
+    W-->>L: authoritative Running/ready
+    L-->>R: Rover profile ready
+    R-->>P: ScheduledCapture ready
+    L-->>P: Orchestra prerequisites ready
+    P-->>S: reservation ready
+    S->>S: revalidate revision, window, rover, recorder, storage, authority
+    alt valid occurrence
+        S->>M: start occurrence
+        M-->>S: terminal recording feedback
+        S->>P: release reservation
+    else edit/delete/supersession or terminal failure
+        S->>P: release reservation immediately
+    else transient recorder or storage failure before window closes
+        S->>S: bounded retry within occurrence window
+    end
+    P->>L: reconcile to current policy
+    P->>R: reconcile to current policy
+```
+
+Accepted is not ready. Scheduler starts only after aggregate ready and rechecks
+the occurrence window/revision. Missed readiness gets a distinct terminal
+reason.
+
+## UI and Local Voice Wake
+
+UI Wake:
+
+1. any authenticated browser session submits an exact-Rover command;
+2. coordinator journals intent;
+3. policy changes from Sleep to Auto;
+4. bounded two-minute UI demand activates `NormalRover`;
+5. live activity renews the two-minute demand;
+6. demand expiry returns to five-minute Auto evaluation.
+
+Local voice:
+
+1. KWS runs only in `IdleListening`;
+2. exact phrase `Hey Kiwi` creates bounded local wake demand;
+3. Rover activates `NormalRover`;
+4. actuator state remains stopped;
+5. after playback readiness, bundled PCM WakeAck says “I am on” once;
+6. general command requires direct UI or Orchestra STT in v1.
+
+KWS benchmark starts at one CPU thread. VAD gating remains a later optimization
+only if continuous KWS misses idle CPU budget.
+
+## Event Journal, Mongo Projection, and UI History
+
+Every policy, demand, transition, phase, target, reconciliation, and terminal
+change emits a versioned event.
+
+Required order:
+
+```text
+append local transition intent
+→ apply transition
+→ emit live status
+→ replicate event idempotently
+→ advance Mongo current-state projection conditionally
+```
+
+Event identity includes entity, authority epoch, monotonic sequence, event ID,
+transition ID, type, policy/profile, demand/source, exact target/revision,
+timestamps, bounded reason, and sanitized detail.
+
+MongoDB:
+
+- `power_lifecycle_events`: append-only, unique event identity, 90-day TTL;
+- `power_current_state`: one non-TTL projection per entity;
+- indexes for entity/time, transition, demand, type, and reason.
+
+TTL cleanup is asynchronous. Queries still enforce retention bounds.
+Projection updates require newer epoch/sequence; reordered replication cannot
+regress current state.
+
+Live coordinator status is authoritative in the UI. Mongo history provides
+timeline/filter/reconnect context. Cold projection is marked historical/stale
+until live status arrives.
+
+Local journal is bounded. Capacity policy must never discard an unapplied
+safety intent silently. Prolonged outage surfaces degraded observability and
+backpressure status.
+
+## Invariants
+
+- Policy, requested profile, and effective profile are distinct.
+- Auto's demand-free resting profile is `IdleListening`; only explicit Sleep
+  enters `Dormant`.
+- Scheduler owns schedule truth; coordinator owns power truth.
+- Lifecycle manager executes exact target transitions; it does not choose
+  global policy.
+- Admission acknowledgment is never rendered as applied state.
+- Dormant/ready requires every required target terminal acknowledgment.
+- Voice wake never executes motion, arm, recording, or tracking commands.
+- No pre-sleep actuator/media command replays after wake.
+- Stale epoch/revision cannot regress local or Mongo current state.
+- Orchestra never force-takes authority or issues a profile command until it
+  consumes a fresh Rover snapshot.
+- MongoDB/network outage cannot block local safety or wake.
+- Fresh restart starts Awake and discards transient demands.
+- Resource staleness blocks automatic sleep.
+- Event detail never stores wake audio, secrets, filesystem paths, or
+  unbounded native errors.
+
+## Acceptance Targets
+
+- prerecorded wake acknowledgment under 1.5 s p95;
+- `NormalRover` ready under 5 s p95;
+- schedule prewarm from measured p95 plus safety margin;
+- Auto idle grace five minutes;
+- CPU reduction measured against active profile on target hardware;
+- deterministic device/model/worker release;
+- RSS is evidence, not a hard success gate;
+- continuous KWS false accept/reject and noisy-environment benchmark;
+- offline local wake and snapshot-first Orchestra reconciliation;
+- no stale replay under restart, reordering, or partition injection;
+- every applied transition has a preceding local journal intent;
+- 90-day history query and projection cannot regress from old replication.
+
+## Deferred Decisions
+
+- exact checksum-pinned KWS model and false-accept/false-reject limits for
+  `Hey Kiwi`;
+- benchmark-derived per-domain CPU thresholds and consecutive sample count;
+- minimum awake hold;
+- local journal capacity and full-outage policy;
+- Rover snapshot retry/staleness thresholds;
+- Grafana export and aggregates beyond raw 90-day events;
+- GPIO wake, local bounded STT/NLU, and OS suspend.

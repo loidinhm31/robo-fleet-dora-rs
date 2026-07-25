@@ -650,6 +650,8 @@ mod tests {
             expected_revision: 0,
             issued_at_ms: 1,
             expires_at_ms: 2,
+            origin: Default::default(),
+            transition_id: None,
         }
     }
 

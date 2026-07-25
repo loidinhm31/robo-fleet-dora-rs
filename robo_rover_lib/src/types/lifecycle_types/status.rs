@@ -1,4 +1,7 @@
-use super::{validation::validate_id, LIFECYCLE_PROTOCOL_VERSION};
+use super::{
+    validation::{validate_id, validate_uuid},
+    LIFECYCLE_PROTOCOL_VERSION,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -86,6 +89,8 @@ pub struct LifecycleStatus {
     pub revision: u64,
     pub desired_state: LifecycleDesiredState,
     pub effective_state: LifecycleEffectiveState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition_id: Option<String>,
     pub components: Vec<LifecycleComponentStatus>,
     pub updated_at_ms: u64,
 }
@@ -106,6 +111,9 @@ impl LifecycleStatus {
             return Err("invalid lifecycle status version, epoch, or timestamp".into());
         }
         self.target.validate()?;
+        if let Some(transition_id) = self.transition_id.as_deref() {
+            validate_uuid("transition_id", transition_id)?;
+        }
         if self.components.len() > 128 {
             return Err("too many lifecycle components".into());
         }
