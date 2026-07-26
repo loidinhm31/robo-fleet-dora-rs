@@ -1,7 +1,7 @@
 ---
 title: "Rover Power Coordinator Sleep/Wake"
 description: "Add workload-level Awake/Auto/Sleep orchestration, scheduled prewarm, local voice wake, and durable power history."
-status: in-progress
+status: superseded
 priority: P1
 effort: 272h
 branch: main
@@ -10,6 +10,12 @@ created: 2026-07-24
 ---
 
 # Rover Power Coordinator Sleep/Wake
+
+> Superseded on 2026-07-26 by
+> [Revalidated Rover Power Coordinator](../260726-0212-rover-power-coordinator-revalidated-revision/plan.md).
+> Do not continue Phase 04 from this plan. The prior Phase 01–03 completion
+> claims are retained as historical claims only; the cutover audit found
+> unmet revalidated acceptance criteria.
 
 ## Overview
 
@@ -29,14 +35,14 @@ Add one policy layer above lifecycle managers. Scheduler, UI, media, and KWS pro
 
 | # | Phase | Status | Progress | Effort | Dependency |
 |---|---|---|---:|---:|---|
-| 1 | [Contracts and lifecycle hardening](./phase-01-contracts-and-lifecycle-hardening.md) | Complete | 100% | 32h | — |
-| 2 | [Coordinator core, profiles, and Auto](./phase-02-coordinator-core-profiles-and-auto.md) | Complete | 100% | 48h | 1 |
-| 3 | [Local journal and Mongo projection](./phase-03-local-journal-and-mongo-projection.md) | Complete | 100% | 40h | 1–2 |
-| 4 | [Authority, Zenoh, and direct routing](./phase-04-authority-zenoh-and-direct-routing.md) | Pending | 0% | 36h | 1–3 |
-| 5 | [Scheduler reservations and measured prewarm](./phase-05-scheduler-reservations-and-measured-prewarm.md) | Pending | 0% | 32h | 1–4 |
-| 6 | [Rover continuous KWS and WakeAck](./phase-06-rover-continuous-kws-and-wake-ack.md) | Pending | 0% | 36h | 1–4 |
-| 7 | [Authenticated API and external power UI](./phase-07-authenticated-api-and-external-power-ui.md) | Pending | 0% | 28h | 1–5 |
-| 8 | [Fault validation, target benchmarks, and rollout](./phase-08-fault-validation-target-benchmarks-and-rollout.md) | Pending | 0% | 20h | 1–7 |
+| 1 | [Contracts and lifecycle hardening](./phase-01-contracts-and-lifecycle-hardening.md) | Superseded (claimed complete) | 100% | 32h | — |
+| 2 | [Coordinator core, profiles, and Auto](./phase-02-coordinator-core-profiles-and-auto.md) | Superseded (claimed complete) | 100% | 48h | 1 |
+| 3 | [Local journal and Mongo projection](./phase-03-local-journal-and-mongo-projection.md) | Superseded (claimed complete) | 100% | 40h | 1–2 |
+| 4 | [Authority, Zenoh, and direct routing](./phase-04-authority-zenoh-and-direct-routing.md) | Superseded | 0% | 36h | 1–3 |
+| 5 | [Scheduler reservations and measured prewarm](./phase-05-scheduler-reservations-and-measured-prewarm.md) | Superseded | 0% | 32h | 1–4 |
+| 6 | [Rover continuous KWS and WakeAck](./phase-06-rover-continuous-kws-and-wake-ack.md) | Superseded | 0% | 36h | 1–4 |
+| 7 | [Authenticated API and external power UI](./phase-07-authenticated-api-and-external-power-ui.md) | Superseded | 0% | 28h | 1–5 |
+| 8 | [Fault validation, target benchmarks, and rollout](./phase-08-fault-validation-target-benchmarks-and-rollout.md) | Superseded | 0% | 20h | 1–7 |
 
 ## Release gates
 

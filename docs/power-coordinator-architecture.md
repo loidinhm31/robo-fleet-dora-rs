@@ -1,10 +1,16 @@
 # Power Coordinator Architecture
 
-Status: implemented, revalidated 2026-07-26
+Status: partial implementation baseline; reacceptance in progress (2026-07-26)
 Decision source:
 [brainstorm report](../plans/reports/brainstorm-260723-1442-rover-power-coordinator-sleep-wake.md)
 
 ## Purpose and Scope
+
+This document is the target architecture. Commits through `a1cbc38` implement
+parts of Phases 01–03, but the revalidated plan has not accepted those phases.
+The plan cutoff audit is authoritative for current gaps.
+Revalidated Phase 01 remediation is the active boundary; Phases 02–03 remain
+blocked carryover, and Phase 04 is pending until Phases 01–03 are reaccepted.
 
 Coordinate workload-level sleep/wake across Orchestra and Rover-Kiwi while
 keeping safety, networking, lifecycle authority, scheduling, and observability
@@ -391,7 +397,7 @@ Local journal is bounded. Capacity policy must never discard an unapplied
 safety intent silently. Prolonged outage surfaces degraded observability and
 backpressure status.
 
-### Phase 03 implementation
+### Phase 03 partial baseline
 
 The coordinator persists the journal under `POWER_JOURNAL_DIR` (default
 `/var/lib/robo-fleet/power-journal/{role}`) using two files:
@@ -403,7 +409,9 @@ and projector acknowledgements. Acknowledged records are compacted only after
 the projector confirms persistence. Capacity limits are configurable with
 `POWER_JOURNAL_MAX_BYTES`, `POWER_JOURNAL_MAX_RECORDS`,
 `POWER_JOURNAL_WAKE_RESERVE_BYTES`, and `POWER_JOURNAL_WAKE_RESERVE_RECORDS`;
-the reserved slice keeps wake-to-safer intents appendable during an outage.
+the reserved slice exists, but current command classification does not yet let
+all wake-causing commands use it. Phase 03 reacceptance closes that gap and
+adds physical disk-pressure evidence.
 
 On Orchestra, `power-event-projector` consumes the coordinator's
 `power_journal_record` Dora input and emits `power_event_ack` only after the
@@ -414,6 +422,11 @@ and conditionally advances `power_current_state` by authority epoch then
 sequence. Duplicate delivery is therefore idempotent, and reordered or stale
 records cannot regress the current projection. History queries are bounded to
 the 90-day retention window and support a time/event cursor.
+
+This baseline is incomplete: command events omit required action/demand/target
+context, demand/source filters are absent, projector write failure lacks
+bounded retry, Rover record/ack transport remains Phase 04 work, and the
+Mongo-backed test is not enforced when its URI is unset.
 
 ## Invariants
 
