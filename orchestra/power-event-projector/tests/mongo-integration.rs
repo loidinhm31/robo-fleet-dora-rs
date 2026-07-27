@@ -43,6 +43,7 @@ fn record(epoch: u64, sequence: u64, at: u64) -> JournalRecord {
             transition_id: None,
             reason_code: None,
             detail: None,
+            active_reservations: vec![],
             updated_at_ms: at,
         }),
     }

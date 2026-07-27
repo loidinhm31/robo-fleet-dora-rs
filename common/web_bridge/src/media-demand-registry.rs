@@ -215,6 +215,21 @@ impl MediaDemandRegistry {
             .any(|demand| demand.consumer_id == consumer_id)
     }
 
+    pub fn consumer_owns_resources(
+        &self,
+        entity_id: &str,
+        consumer_id: &str,
+        resources: &[MediaResource],
+    ) -> bool {
+        resources.iter().all(|resource| {
+            self.demands.contains(&MediaDemand {
+                entity_id: entity_id.to_owned(),
+                consumer_id: consumer_id.to_owned(),
+                resource: *resource,
+            })
+        })
+    }
+
     fn has_demand(&self, entity_id: &str, resource: MediaResource) -> bool {
         self.demands
             .iter()
@@ -263,6 +278,36 @@ mod tests {
         registry.release_consumer("scheduled:group:7");
         assert!(registry.has_consumer("recording:manual"));
         assert!(!registry.has_consumer("scheduled:group:7"));
+    }
+
+    #[test]
+    fn scheduled_consumer_must_own_each_required_resource_on_the_pinned_entity() {
+        let mut registry = MediaDemandRegistry::default();
+        for resource in [
+            MediaResource::Camera,
+            MediaResource::Jpeg,
+            MediaResource::Microphone,
+        ] {
+            registry.acquire("rover-a", "scheduled:group:1", resource);
+        }
+        assert!(registry.consumer_owns_resources(
+            "rover-a",
+            "scheduled:group:1",
+            &[
+                MediaResource::Camera,
+                MediaResource::Jpeg,
+                MediaResource::Microphone
+            ],
+        ));
+        assert!(!registry.consumer_owns_resources(
+            "rover-b",
+            "scheduled:group:1",
+            &[
+                MediaResource::Camera,
+                MediaResource::Jpeg,
+                MediaResource::Microphone
+            ],
+        ));
     }
 
     #[test]

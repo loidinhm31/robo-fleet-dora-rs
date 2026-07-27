@@ -32,7 +32,7 @@ Implement the power coordinator specified in [the revalidated architecture](../.
 | 2 | [Coordinator profiles and Auto reducer](./phase-02-coordinator-profiles-and-auto-reducer.md) | Done — accepted 2026-07-27 | 100% accepted | 40h | 1 |
 | 3 | [Local journal and Mongo projection](./phase-03-local-journal-and-mongo-projection.md) | Done — accepted 2026-07-27 | 100% accepted | 34h | 1–2 |
 | 4 | [Zenoh authority and direct-mode routing](./phase-04-zenoh-authority-and-direct-routing.md) | Done — accepted 2026-07-27 | 100% accepted | 34h | 1–3 |
-| 5 | [Scheduler reservations and bounded prewarm](./phase-05-scheduler-reservations-and-bounded-prewarm.md) | Pending | 0% | 34h | 1–4 |
+| 5 | [Scheduler reservations and bounded prewarm](./phase-05-scheduler-reservations-and-bounded-prewarm.md) | Done — accepted 2026-07-27 | 100% accepted | 34h | 1–4 |
 | 6 | [Rover KWS and WakeAck](./phase-06-rover-kws-and-wake-ack.md) | Pending | 0% | 30h | 1–4 |
 | 7 | [Authenticated power API and UI](./phase-07-authenticated-power-api-and-ui.md) | Pending | 0% | 28h | 1–5 |
 | 8 | [Fault gates, target evidence, rollout](./phase-08-fault-gates-target-evidence-and-rollout.md) | Pending | 0% | 22h | 1–7 |
@@ -58,6 +58,12 @@ accepted until its revised success criteria pass.
 - Phase 04 acceptance completed 2026-07-27: Zenoh/direct routing, exact
   authority reconciliation, authenticated power snapshots and acknowledgements,
   and control/media isolation passed focused validation and final code review.
+- Phase 05 implementation attempt paused 2026-07-27 after independent review
+  scored it 3/10. Targeted tests passed, but acceptance is blocked pending a
+  durable reservation-command outbox and acknowledgement path, preserved
+  release work across schedule invalidation, activation-to-Ready p95 timing,
+  final recorder-admission validation, an explicit recorder/storage retry
+  allowlist, and fault coverage for these boundaries.
 
 Phase 01 owns the snapshot gate contract and coordinator state-machine
 behavior. Phase 04 owns Zenoh/direct ports, snapshot request/reply, and proof
@@ -89,3 +95,6 @@ inventory statements.
 - Derive CPU thresholds, sample count, minimum awake hold, journal capacity, and snapshot staleness from Phase 8 evidence.
 - Freeze the allowlist of recorder/storage reason codes that qualifies for bounded retry.
 - Decide the valid Orchestra low-power profile/mapping for explicit Sleep.
+- Define the signed, entity-scoped `PowerCommandResult` return route and its
+  acknowledgement semantics so the scheduler can durably reconcile remote
+  reservation register/release commands.

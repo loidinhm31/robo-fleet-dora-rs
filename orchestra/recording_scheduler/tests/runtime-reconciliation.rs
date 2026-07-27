@@ -6,11 +6,88 @@ use recording_scheduler::{
     runtime::SchedulerRuntime,
 };
 use robo_rover_lib::{
-    scheduled_intent_id, RecordingAttemptState, RecordingCoordinatorFeedback, RecordingLocalStart,
-    RecordingOccurrenceState, RecordingSchedule, RecordingScheduleDefinition,
+    scheduled_intent_id, LifecycleRole, PowerAuthority, PowerCommandResult, PowerPolicy,
+    PowerProfile, PowerState, PowerStatus, RecordingAttemptState, RecordingCoordinatorFeedback,
+    RecordingLocalStart, RecordingOccurrenceState, RecordingSchedule, RecordingScheduleDefinition,
     RecordingScheduleReasonCode, RecordingScheduleRecurrence, RecordingSessionState,
-    ScheduledRecordingIntentAction,
+    ScheduledRecordingIntentAction, POWER_PROTOCOL_VERSION,
 };
+
+#[test]
+fn reservation_is_deterministic_and_gates_due_admission_until_ready() {
+    let now_ms = epoch(2026, 1, 1, 0, 0);
+    let clock = FakeClock::new(now_ms);
+    let mut runtime = SchedulerRuntime::new(clock.clone());
+    runtime
+        .materialize(&schedule(), now_ms + 2 * 60 * 60 * 1_000)
+        .unwrap();
+    runtime.complete_reconciliation();
+
+    let group_id = runtime
+        .prepare_future_reservations(now_ms + 7 * 24 * 60 * 60 * 1_000)
+        .pop()
+        .unwrap();
+    let reservation_id = runtime.groups[&group_id]
+        .power_reservation
+        .as_ref()
+        .unwrap()
+        .reservation_id
+        .clone();
+    assert!(runtime
+        .prepare_future_reservations(now_ms + 7 * 24 * 60 * 60 * 1_000)
+        .is_empty());
+    assert_eq!(
+        runtime.groups[&group_id]
+            .power_reservation
+            .as_ref()
+            .unwrap()
+            .reservation_id,
+        reservation_id
+    );
+    let command_id = "00000000-0000-0000-0000-000000000201";
+    assert!(runtime.mark_reservation_registering(&group_id, command_id.into()));
+    assert_eq!(
+        runtime.apply_power_command_result(&accepted_result(command_id)),
+        Some(command_id.into())
+    );
+
+    clock.advance_ms(60 * 60 * 1_000);
+    let occurrence_id = runtime.due().pop().unwrap();
+    assert!(!runtime.reservation_ready_for(&occurrence_id));
+    let mut ready = ready_status(clock.now_ms());
+    ready
+        .active_reservations
+        .push(robo_rover_lib::PowerReservationReadiness {
+            reservation_id,
+            activation_started_at_ms: now_ms as u64,
+        });
+    assert!(!runtime.observe_power_status(&ready).is_empty());
+    assert!(runtime.reservation_ready_for(&occurrence_id));
+}
+
+#[test]
+fn failed_power_status_never_unlocks_a_reservation() {
+    let now_ms = epoch(2026, 1, 1, 0, 0);
+    let clock = FakeClock::new(now_ms);
+    let mut runtime = SchedulerRuntime::new(clock.clone());
+    runtime
+        .materialize(&schedule(), now_ms + 2 * 60 * 60 * 1_000)
+        .unwrap();
+    runtime.complete_reconciliation();
+    let group_id = runtime
+        .prepare_future_reservations(now_ms + 7 * 24 * 60 * 60 * 1_000)
+        .pop()
+        .unwrap();
+    let command_id = "00000000-0000-0000-0000-000000000202";
+    runtime.mark_reservation_registering(&group_id, command_id.into());
+    runtime.apply_power_command_result(&accepted_result(command_id));
+    clock.advance_ms(60 * 60 * 1_000);
+    let mut status = ready_status(clock.now_ms());
+    status.state = PowerState::Failed;
+    runtime.observe_power_status(&status);
+    let occurrence_id = runtime.due().pop().unwrap();
+    assert!(!runtime.reservation_ready_for(&occurrence_id));
+}
 
 #[test]
 fn reconciliation_blocks_then_deduplicates_transient_feedback() {
@@ -41,7 +118,7 @@ fn reconciliation_blocks_then_deduplicates_transient_feedback() {
         recorder_state: None,
         manual_suppression: false,
         reason_code: Some(RecordingScheduleReasonCode::Unavailable),
-        detail: None,
+        detail: Some("recorder temporarily unavailable".into()),
     };
     assert!(runtime.apply_feedback(feedback.clone()));
     assert_eq!(
@@ -615,7 +692,7 @@ fn feedback(
         recorder_state: None,
         manual_suppression: false,
         reason_code: retryable.then_some(RecordingScheduleReasonCode::Unavailable),
-        detail: None,
+        detail: retryable.then_some("recorder temporarily unavailable".into()),
     }
 }
 
@@ -648,12 +725,48 @@ fn intent_with_action(
         planned_start_ms: occurrence.planned_start_ms,
         planned_end_ms: occurrence.planned_end_ms,
         relative_directory: group.relative_directory.clone(),
+        reservation_id: None,
         action,
     }
 }
 
 fn schedule() -> RecordingSchedule {
     schedule_at("00000000-0000-0000-0000-000000000200", "01:00", "scheduled")
+}
+
+fn ready_status(now_ms: i64) -> PowerStatus {
+    PowerStatus {
+        protocol_version: POWER_PROTOCOL_VERSION,
+        role: LifecycleRole::Rover,
+        entity_id: "kiwi-1".into(),
+        authority: PowerAuthority {
+            epoch: 2,
+            sequence: 3,
+        },
+        policy: PowerPolicy::Sleep,
+        requested_profile: PowerProfile::ScheduledCapture,
+        effective_profile: PowerProfile::ScheduledCapture,
+        state: PowerState::Active,
+        transition_id: Some("00000000-0000-0000-0000-000000000299".into()),
+        reason_code: None,
+        detail: None,
+        active_reservations: vec![],
+        updated_at_ms: now_ms as u64,
+    }
+}
+
+fn accepted_result(command_id: &str) -> PowerCommandResult {
+    PowerCommandResult {
+        protocol_version: POWER_PROTOCOL_VERSION,
+        command_id: command_id.into(),
+        accepted: true,
+        authority: PowerAuthority {
+            epoch: 2,
+            sequence: 4,
+        },
+        reason_code: None,
+        detail: None,
+    }
 }
 
 fn schedule_at(id: &str, time: &str, directory: &str) -> RecordingSchedule {

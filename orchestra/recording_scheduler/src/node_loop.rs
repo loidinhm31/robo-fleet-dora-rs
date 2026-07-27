@@ -8,11 +8,15 @@ use dora_node_api::{
 use eyre::Result;
 use robo_rover_lib::{
     occurrence_requires_protection, scheduled_intent_id, AuthenticatedRecordingScheduleCommand,
-    ProtectedWorkSnapshot, ProtectedWorkSnapshotRequest, RecordingCoordinatorFeedback,
-    RecordingOccurrence, RecordingReconciliationRequest, RecordingReconciliationSnapshot,
-    RecordingScheduleQuery, RecordingScheduleSnapshot, RecordingSchedulerReadiness,
-    RecordingSchedulerStatus, ScheduledRecordingIntentAction, RECORDING_SCHEDULE_PROTOCOL_VERSION,
+    LifecycleRole, PowerCommand, PowerCommandAction, PowerCommandResult, PowerProfile,
+    PowerReservation, PowerStatus, ProtectedWorkSnapshot, ProtectedWorkSnapshotRequest,
+    RecordingCoordinatorFeedback, RecordingOccurrence, RecordingReconciliationRequest,
+    RecordingReconciliationSnapshot, RecordingScheduleQuery, RecordingScheduleSnapshot,
+    RecordingSchedulerReadiness, RecordingSchedulerStatus, ScheduledRecordingIntentAction,
+    POWER_PROTOCOL_VERSION, RECORDING_SCHEDULE_PROTOCOL_VERSION,
 };
+use std::collections::BTreeMap;
+use uuid::Uuid;
 
 use crate::{
     clock::{Clock, SystemClock},
@@ -21,6 +25,7 @@ use crate::{
     mongo_repository::OutboxRecord,
     node_intents::build_intent,
     node_persistence::{adopt, persist},
+    reservation_command_outbox::{ReservationCommandAction, ReservationCommandOutboxRecord},
     runtime::SchedulerRuntime,
     service::ScheduleService,
 };
@@ -138,6 +143,8 @@ fn run_ready_session(
     let occurrence_status = DataId::from("recording_occurrence_status".to_owned());
     let protected_work_snapshot = DataId::from("protected_work_snapshot".to_owned());
     let intent = DataId::from("scheduled_recording_intent".to_owned());
+    let power_command = DataId::from("scheduled_power_command".to_owned());
+    let prewarm_metrics = DataId::from("recording_prewarm_metrics".to_owned());
     let reconcile = DataId::from("recording_reconciliation_request".to_owned());
     let manual_suppression_ack =
         DataId::from("recording_scheduler_manual_suppression_ack".to_owned());
@@ -155,6 +162,8 @@ fn run_ready_session(
     let mut next_refresh_ms = 0;
     let mut next_snapshot_ms = now_ms + reconcile_interval_ms;
     let mut initial_reconciliation_complete = false;
+    let mut rover_power_statuses = BTreeMap::<String, PowerStatus>::new();
+    replay_reservation_commands(tokio, &repository, node, &power_command, &mut scheduler)?;
     tracing::info!(
         scheduler_ready = false,
         horizon_days = config.horizon_days,
@@ -283,6 +292,14 @@ fn run_ready_session(
                                     "scheduled recording transition failed"
                                 );
                             }
+                            emit_power_releases(
+                                tokio,
+                                &repository,
+                                node,
+                                &power_command,
+                                &rover_power_statuses,
+                                &mut scheduler,
+                            )?;
                         } else if scheduler.has_handled_intent(&value.intent_id) {
                             tokio
                                 .block_on(repository.acknowledge_intent(&value.intent_id))
@@ -374,6 +391,41 @@ fn run_ready_session(
                         )?;
                     }
                 }
+                "rover_power_status" => {
+                    if let Some(status) = decode::<PowerStatus>(&*data) {
+                        if status
+                            .validates_for(LifecycleRole::Rover, &status.entity_id)
+                            .is_ok()
+                        {
+                            rover_power_statuses.insert(status.entity_id.clone(), status.clone());
+                            let changed = scheduler.observe_power_status(&status);
+                            let state_changed = !changed.is_empty();
+                            for group_id in changed {
+                                if let Some(metrics) = scheduler.prewarm_metrics(&group_id) {
+                                    send(&mut node, &prewarm_metrics, &metrics)?;
+                                }
+                            }
+                            if state_changed {
+                                persist(&tokio, &repository, &mut scheduler)?;
+                            }
+                        }
+                    }
+                }
+                "rover_power_command_result" => {
+                    if let Some(result) = decode::<PowerCommandResult>(&*data) {
+                        if result.validate().is_err() {
+                            tracing::warn!(command_id = %result.command_id, "rejected invalid rover power command result");
+                            continue;
+                        }
+                        if let Some(command_id) = scheduler.apply_power_command_result(&result) {
+                            scheduler.prune_released_reservation_tombstones();
+                            persist(&tokio, &repository, &mut scheduler)?;
+                            tokio
+                                .block_on(repository.acknowledge_reservation_command(&command_id))
+                                .map_err(eyre::Report::msg)?;
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -402,6 +454,20 @@ fn run_ready_session(
             log_metrics(&scheduler, "refresh");
             next_refresh_ms = now_ms + config.reconcile_seconds as i64 * 1_000;
         }
+        if !scheduler
+            .prepare_future_reservations(now_ms.saturating_add(7 * 24 * 60 * 60 * 1_000))
+            .is_empty()
+        {
+            persist(&tokio, &repository, &mut scheduler)?;
+        }
+        emit_power_reservations(
+            tokio,
+            &repository,
+            node,
+            &power_command,
+            &rover_power_statuses,
+            &mut scheduler,
+        )?;
         if now_ms >= next_snapshot_ms {
             let request = reconciliation.next_request(now_ms);
             send(&mut node, &reconcile, &request)?;
@@ -413,6 +479,14 @@ fn run_ready_session(
             node,
             &intent,
             &occurrence_status,
+            &mut scheduler,
+        )?;
+        emit_power_releases(
+            tokio,
+            &repository,
+            node,
+            &power_command,
+            &rover_power_statuses,
             &mut scheduler,
         )?;
         emit_stops(
@@ -443,6 +517,11 @@ fn load_scheduler(
         .map_err(eyre::Report::msg)?;
     let mut scheduler = SchedulerRuntime::from_persisted(SystemClock, occurrences, groups)
         .map_err(eyre::Report::msg)?;
+    scheduler.restore_prewarm_estimators(
+        tokio
+            .block_on(repository.load_prewarm_estimators())
+            .map_err(eyre::Report::msg)?,
+    );
     let schedules = tokio
         .block_on(repository.load_schedules())
         .map_err(eyre::Report::msg)?;
@@ -478,6 +557,21 @@ fn emit_due(
     scheduler: &mut SchedulerRuntime<SystemClock>,
 ) -> Result<()> {
     for occurrence_id in scheduler.due() {
+        if !scheduler.reservation_ready_for(&occurrence_id) {
+            continue;
+        }
+        let Some(current_occurrence) = scheduler.occurrences.get(&occurrence_id) else {
+            continue;
+        };
+        if !tokio
+            .block_on(
+                repository.validates_recorder_admission(current_occurrence, SystemClock.now_ms()),
+            )
+            .map_err(eyre::Report::msg)?
+        {
+            tracing::warn!(occurrence_id = %occurrence_id, "rejected stale scheduler admission before recorder acquire");
+            continue;
+        }
         let Some(transition) = scheduler.begin_start(&occurrence_id) else {
             continue;
         };
@@ -513,6 +607,146 @@ fn emit_due(
         send(node, occurrence_output, &occurrence_status)?;
     }
     Ok(())
+}
+
+fn emit_power_reservations(
+    tokio: &tokio::runtime::Runtime,
+    repository: &MongoRepository,
+    node: &mut DoraNode,
+    output: &DataId,
+    statuses: &BTreeMap<String, PowerStatus>,
+    scheduler: &mut SchedulerRuntime<SystemClock>,
+) -> Result<()> {
+    for group_id in scheduler.pending_reservations() {
+        let Some(group) = scheduler.groups.get(&group_id) else {
+            continue;
+        };
+        let Some(status) = statuses.get(&group.entity_id) else {
+            continue;
+        };
+        let Some(command) = reservation_command(group, status, false, SystemClock.now_ms()) else {
+            continue;
+        };
+        let record = ReservationCommandOutboxRecord {
+            group_id: group_id.clone(),
+            reservation_id: group
+                .power_reservation
+                .as_ref()
+                .expect("reservation checked")
+                .reservation_id
+                .clone(),
+            action: ReservationCommandAction::Register,
+            command: command.clone(),
+            created_at_ms: SystemClock.now_ms(),
+        };
+        if !scheduler.mark_reservation_registering(&group_id, command.command_id.clone()) {
+            continue;
+        }
+        persist(tokio, repository, scheduler)?;
+        tokio
+            .block_on(repository.persist_reservation_command(&record))
+            .map_err(eyre::Report::msg)?;
+        send(node, output, &command)?;
+    }
+    Ok(())
+}
+
+fn emit_power_releases(
+    tokio: &tokio::runtime::Runtime,
+    repository: &MongoRepository,
+    node: &mut DoraNode,
+    output: &DataId,
+    statuses: &BTreeMap<String, PowerStatus>,
+    scheduler: &mut SchedulerRuntime<SystemClock>,
+) -> Result<()> {
+    for group_id in scheduler.reservations_to_release() {
+        let Some(group) = scheduler.groups.get(&group_id) else {
+            continue;
+        };
+        let Some(status) = statuses.get(&group.entity_id) else {
+            continue;
+        };
+        let Some(command) = reservation_command(group, status, true, SystemClock.now_ms()) else {
+            continue;
+        };
+        let record = ReservationCommandOutboxRecord {
+            group_id: group_id.clone(),
+            reservation_id: group
+                .power_reservation
+                .as_ref()
+                .expect("reservation checked")
+                .reservation_id
+                .clone(),
+            action: ReservationCommandAction::Release,
+            command: command.clone(),
+            created_at_ms: SystemClock.now_ms(),
+        };
+        if !scheduler.mark_reservation_releasing(&group_id, command.command_id.clone()) {
+            continue;
+        }
+        persist(tokio, repository, scheduler)?;
+        tokio
+            .block_on(repository.persist_reservation_command(&record))
+            .map_err(eyre::Report::msg)?;
+        send(node, output, &command)?;
+    }
+    Ok(())
+}
+
+fn reservation_command(
+    group: &crate::domain::RecordingGroup,
+    status: &PowerStatus,
+    release: bool,
+    now_ms: i64,
+) -> Option<PowerCommand> {
+    let reservation = group.power_reservation.as_ref()?;
+    let now_ms = u64::try_from(now_ms).ok()?;
+    let command_id = Uuid::new_v5(
+        &Uuid::parse_str(&reservation.reservation_id).ok()?,
+        format!(
+            "{}:{}",
+            if release { "release" } else { "register" },
+            reservation.command_attempt.saturating_add(1)
+        )
+        .as_bytes(),
+    )
+    .to_string();
+    let action = if release {
+        PowerCommandAction::ReleaseReservation {
+            reservation_id: reservation.reservation_id.clone(),
+        }
+    } else {
+        let not_before_ms = u64::try_from(reservation.prewarm_at_ms.max(now_ms as i64)).ok()?;
+        let expires_at_ms = u64::try_from(reservation.expires_at_ms).ok()?;
+        if expires_at_ms <= not_before_ms || expires_at_ms.saturating_sub(now_ms) > 604_800_000 {
+            return None;
+        }
+        PowerCommandAction::RegisterReservation {
+            reservation: PowerReservation {
+                protocol_version: POWER_PROTOCOL_VERSION,
+                reservation_id: reservation.reservation_id.clone(),
+                role: LifecycleRole::Rover,
+                entity_id: group.entity_id.clone(),
+                authority: status.authority,
+                required_profile: PowerProfile::ScheduledCapture,
+                issued_at_ms: now_ms,
+                not_before_ms,
+                expires_at_ms,
+            },
+        }
+    };
+    Some(PowerCommand {
+        protocol_version: POWER_PROTOCOL_VERSION,
+        command_id,
+        role: LifecycleRole::Rover,
+        entity_id: group.entity_id.clone(),
+        authority: status.authority,
+        action,
+        issued_at_ms: now_ms,
+        not_before_ms: now_ms,
+        expires_at_ms: now_ms.saturating_add(60_000),
+        detail: None,
+    })
 }
 
 fn emit_stops(
@@ -580,6 +814,39 @@ fn replay_pending(
     }
     for intent in recovery.replay {
         send(node, output, &intent)?;
+    }
+    Ok(())
+}
+
+fn replay_reservation_commands(
+    tokio: &tokio::runtime::Runtime,
+    repository: &MongoRepository,
+    node: &mut DoraNode,
+    output: &DataId,
+    scheduler: &mut SchedulerRuntime<SystemClock>,
+) -> Result<()> {
+    let records = tokio
+        .block_on(repository.pending_reservation_commands())
+        .map_err(eyre::Report::msg)?;
+    let command_ids = records
+        .iter()
+        .map(|record| record.command.command_id.clone())
+        .collect::<Vec<_>>();
+    if scheduler.repair_reservation_outbox(&command_ids) {
+        persist(tokio, repository, scheduler)?;
+    }
+    let now_ms = SystemClock.now_ms();
+    for record in records {
+        if record.is_expired(now_ms) {
+            if scheduler.expire_reservation_command(record.command_id()) {
+                persist(tokio, repository, scheduler)?;
+            }
+            tokio
+                .block_on(repository.acknowledge_reservation_command(record.command_id()))
+                .map_err(eyre::Report::msg)?;
+            continue;
+        }
+        send(node, output, &record.command)?;
     }
     Ok(())
 }

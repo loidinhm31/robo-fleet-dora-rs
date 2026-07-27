@@ -117,7 +117,18 @@ pub struct PowerStatus {
     pub reason_code: Option<PowerReasonCode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Reservation-specific evidence. Aggregate profile state never grants
+    /// scheduled-recorder admission without this exact reservation ID.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_reservations: Vec<PowerReservationReadiness>,
     pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PowerReservationReadiness {
+    pub reservation_id: String,
+    pub activation_started_at_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -304,6 +315,15 @@ impl PowerStatus {
         self.effective_profile.validate_for_role(self.role)?;
         validate_optional_uuid("transition_id", self.transition_id.as_deref())?;
         validate_detail(self.detail.as_ref())?;
+        if self.active_reservations.len() > 128 {
+            return Err("too many active reservation readiness records".into());
+        }
+        for readiness in &self.active_reservations {
+            validate_uuid("reservation_id", &readiness.reservation_id)?;
+            if readiness.activation_started_at_ms == 0 {
+                return Err("invalid reservation activation timestamp".into());
+            }
+        }
         if self.updated_at_ms == 0
             || (self.state == PowerState::AuthorityUnknown && self.transition_id.is_some())
         {

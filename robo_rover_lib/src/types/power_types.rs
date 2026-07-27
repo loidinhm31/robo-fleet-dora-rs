@@ -18,6 +18,7 @@ pub const MAX_POWER_DEMANDS: usize = 128;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerTopic {
     Command,
+    CommandResult,
     Status,
     Snapshot,
     SnapshotRequest,
@@ -28,6 +29,7 @@ pub enum PowerTopic {
 pub fn power_v1_topic(entity_id: &str, topic: PowerTopic) -> String {
     let suffix = match topic {
         PowerTopic::Command => "command",
+        PowerTopic::CommandResult => "command-result",
         PowerTopic::Status => "status",
         PowerTopic::Snapshot => "snapshot",
         PowerTopic::SnapshotRequest => "snapshot-request",

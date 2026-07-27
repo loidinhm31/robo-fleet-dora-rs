@@ -7,6 +7,10 @@ fn power_v1_topics_are_entity_scoped_and_versioned() {
         "rover/rover-kiwi/power/v1/command"
     );
     assert_eq!(
+        power_v1_topic("rover-kiwi", PowerTopic::CommandResult),
+        "rover/rover-kiwi/power/v1/command-result"
+    );
+    assert_eq!(
         power_v1_topic("rover-kiwi", PowerTopic::Snapshot),
         "rover/rover-kiwi/power/v1/snapshot"
     );
@@ -85,6 +89,46 @@ fn signed_power_command_rejects_tampering_and_expiry() {
     let mut tampered = signed;
     tampered.target_entity_id = "rover-other".into();
     assert!(tampered.verify(key, 101).is_err());
+}
+
+#[test]
+fn signed_command_result_is_entity_scoped_and_cannot_be_retyped() {
+    let key = b"0123456789abcdef0123456789abcdef";
+    let result = PowerCommandResult {
+        protocol_version: POWER_PROTOCOL_VERSION,
+        command_id: "11111111-1111-4111-8111-111111111111".into(),
+        accepted: true,
+        authority: PowerAuthority {
+            epoch: 7,
+            sequence: 3,
+        },
+        reason_code: None,
+        detail: None,
+    };
+    let signed = SignedPowerEnvelope::new(
+        SignedPowerEnvelopeKind::CommandResult,
+        LifecycleRole::Rover,
+        "rover-kiwi".into(),
+        100,
+        result,
+    )
+    .sign(key)
+    .unwrap();
+    assert!(signed.verify(key, 101).is_ok());
+    assert!(signed
+        .validates_for(
+            SignedPowerEnvelopeKind::CommandResult,
+            LifecycleRole::Rover,
+            "rover-kiwi",
+        )
+        .is_ok());
+    assert!(signed
+        .validates_for(
+            SignedPowerEnvelopeKind::Command,
+            LifecycleRole::Rover,
+            "rover-kiwi",
+        )
+        .is_err());
 }
 
 #[test]

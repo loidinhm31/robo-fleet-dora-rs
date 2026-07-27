@@ -1,15 +1,17 @@
 use std::collections::BTreeMap;
 
 use robo_rover_lib::{
-    occurrence_id, scheduled_intent_id, RecordingAttemptState, RecordingClipAttempt,
-    RecordingCoordinatorFeedback, RecordingOccurrence, RecordingOccurrenceState, RecordingSchedule,
-    ScheduledRecordingIntent, ScheduledRecordingIntentAction,
+    occurrence_id, scheduled_intent_id, PowerCommandResult, PowerProfile, PowerState, PowerStatus,
+    RecordingAttemptState, RecordingClipAttempt, RecordingCoordinatorFeedback, RecordingOccurrence,
+    RecordingOccurrenceState, RecordingSchedule, ScheduledRecordingIntent,
+    ScheduledRecordingIntentAction,
 };
 
 use crate::mongo_repository::{OutboxRecord, Stored};
 use crate::{
     clock::Clock,
-    domain::{is_transient_reason, RecordingGroup},
+    domain::{is_transient_recorder_storage_failure, RecordingGroup, ReservationState},
+    prewarm::{PersistedPrewarmEstimator, PrewarmEstimator, PrewarmMetrics},
     recurrence::candidates,
     runtime_groups::occurrence,
     state_machine::{retry_at, transition},
@@ -23,6 +25,7 @@ pub struct SchedulerRuntime<C> {
     pub group_revisions: BTreeMap<String, u64>,
     pub removed_group_revisions: BTreeMap<String, u64>,
     pub(crate) reconciliation_complete: bool,
+    prewarm_estimators: BTreeMap<String, PrewarmEstimator>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +50,7 @@ impl<C: Clock> SchedulerRuntime<C> {
             group_revisions: BTreeMap::new(),
             removed_group_revisions: BTreeMap::new(),
             reconciliation_complete: false,
+            prewarm_estimators: BTreeMap::new(),
         }
     }
 
@@ -95,6 +99,50 @@ impl<C: Clock> SchedulerRuntime<C> {
 
     pub fn complete_reconciliation(&mut self) {
         self.reconciliation_complete = true;
+    }
+
+    pub fn restore_prewarm_estimators(
+        &mut self,
+        estimators: impl IntoIterator<Item = PersistedPrewarmEstimator>,
+    ) {
+        self.prewarm_estimators = estimators
+            .into_iter()
+            .map(|item| {
+                (
+                    item.entity_id,
+                    PrewarmEstimator::from_samples(item.samples, item.miss_count),
+                )
+            })
+            .collect();
+    }
+
+    pub fn prewarm_estimators(&self) -> Vec<PersistedPrewarmEstimator> {
+        self.prewarm_estimators
+            .iter()
+            .map(|(entity_id, estimator)| PersistedPrewarmEstimator {
+                entity_id: entity_id.clone(),
+                samples: estimator.samples(),
+                miss_count: estimator.miss_count(),
+            })
+            .collect()
+    }
+
+    pub fn prewarm_metrics(&self, group_id: &str) -> Option<PrewarmMetrics> {
+        let group = self.groups.get(group_id)?;
+        let reservation = group.power_reservation.as_ref()?;
+        let estimator = self.prewarm_estimators.get(&group.entity_id);
+        Some(PrewarmMetrics {
+            entity_id: group.entity_id.clone(),
+            reservation_id: reservation.reservation_id.clone(),
+            sample_count: reservation.sample_count,
+            estimate_ms: reservation.prewarm_estimate_ms,
+            actual_ready_ms: reservation.actual_ready_ms,
+            bootstrap_active: reservation.bootstrap_active,
+            missed: reservation.prewarm_missed,
+            miss_count: estimator
+                .map(PrewarmEstimator::miss_count)
+                .unwrap_or_default(),
+        })
     }
 
     pub fn has_handled_intent(&self, intent_id: &str) -> bool {
@@ -214,8 +262,9 @@ impl<C: Clock> SchedulerRuntime<C> {
         self.occurrences
             .values_mut()
             .filter_map(|occurrence| {
-                let due = (occurrence.state == RecordingOccurrenceState::Planned
-                    && occurrence.planned_start_ms <= now_ms)
+                let due = occurrence.state == RecordingOccurrenceState::Due
+                    || (occurrence.state == RecordingOccurrenceState::Planned
+                        && occurrence.planned_start_ms <= now_ms)
                     || (occurrence.state == RecordingOccurrenceState::StartPending
                         && occurrence
                             .next_retry_at_ms
@@ -229,7 +278,9 @@ impl<C: Clock> SchedulerRuntime<C> {
                 } else {
                     RecordingOccurrenceState::Due
                 };
-                if !transition(occurrence, next, now_ms, None) {
+                if occurrence.state != RecordingOccurrenceState::Due
+                    && !transition(occurrence, next, now_ms, None)
+                {
                     return None;
                 }
                 if missed {
@@ -245,6 +296,366 @@ impl<C: Clock> SchedulerRuntime<C> {
                 }
             })
             .collect()
+    }
+
+    /// Materialize group-scoped reservations only inside the power contract's
+    /// bounded seven-day horizon. Persisting this state before command output
+    /// makes a restart replay the same deterministic reservation identity.
+    pub fn prepare_future_reservations(&mut self, horizon_ms: i64) -> Vec<String> {
+        let now_ms = self.clock.now_ms();
+        let group_ids = self
+            .groups
+            .values()
+            .filter(|group| {
+                group.start_ms > now_ms
+                    && group.start_ms <= horizon_ms
+                    && group.end_ms <= horizon_ms
+            })
+            .map(|group| group.group_id.clone())
+            .collect::<Vec<_>>();
+        let mut changed = Vec::new();
+        for group_id in group_ids {
+            let Some(group) = self.groups.get_mut(&group_id) else {
+                continue;
+            };
+            let estimate = self
+                .prewarm_estimators
+                .entry(group.entity_id.clone())
+                .or_default()
+                .estimate();
+            if group
+                .ensure_power_reservation(
+                    group.start_ms.saturating_sub(estimate.estimate_ms),
+                    now_ms,
+                )
+                .unwrap_or(false)
+            {
+                changed.push(group_id);
+            }
+            if let Some(reservation) = group.power_reservation.as_mut() {
+                reservation.sample_count = estimate.sample_count;
+                reservation.prewarm_estimate_ms = estimate.estimate_ms;
+                reservation.bootstrap_active = estimate.bootstrap_active;
+            }
+        }
+        changed
+    }
+
+    pub fn pending_reservations(&self) -> Vec<String> {
+        self.groups
+            .values()
+            .filter(|group| {
+                group.power_reservation.as_ref().is_some_and(|reservation| {
+                    reservation.state == ReservationState::Pending && !reservation.retired
+                })
+            })
+            .map(|group| group.group_id.clone())
+            .collect()
+    }
+
+    /// A local send is not a registration acknowledgement. Only the exact,
+    /// signed Rover command result advances a reservation out of Registering.
+    pub fn mark_reservation_registering(&mut self, group_id: &str, command_id: String) -> bool {
+        let Some(reservation) = self
+            .groups
+            .get_mut(group_id)
+            .and_then(|group| group.power_reservation.as_mut())
+        else {
+            return false;
+        };
+        if reservation.state != ReservationState::Pending || reservation.retired {
+            return false;
+        }
+        reservation.state = ReservationState::Registering;
+        reservation.command_id = Some(command_id);
+        reservation.command_attempt = reservation.command_attempt.saturating_add(1);
+        true
+    }
+
+    /// Correlate a remote acknowledgement by command id. Aggregate status may
+    /// inform readiness after this point but can never acknowledge delivery.
+    pub fn apply_power_command_result(&mut self, result: &PowerCommandResult) -> Option<String> {
+        let now_ms = self.clock.now_ms();
+        for group in self.groups.values_mut() {
+            let Some(reservation) = group.power_reservation.as_mut() else {
+                continue;
+            };
+            if reservation.command_id.as_deref() != Some(&result.command_id) {
+                continue;
+            }
+            match reservation.state {
+                ReservationState::Registering => {
+                    reservation.command_id = None;
+                    if result.accepted {
+                        reservation.state = ReservationState::Accepted;
+                        reservation.registered_at_ms = Some(now_ms);
+                        reservation.register_ack_command_id = Some(result.command_id.clone());
+                    } else {
+                        // A deleted/superseded owner still sends a release
+                        // fence even when register was rejected: a delayed
+                        // duplicate must not revive this reservation later.
+                        reservation.state = if reservation.retired {
+                            ReservationState::ReleasePending
+                        } else {
+                            ReservationState::Failed
+                        };
+                    }
+                    return Some(result.command_id.clone());
+                }
+                ReservationState::Releasing => {
+                    reservation.command_id = None;
+                    reservation.state = if result.accepted {
+                        ReservationState::Released
+                    } else {
+                        ReservationState::ReleasePending
+                    };
+                    return Some(result.command_id.clone());
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    /// A tombstone outlives deletion/edit/manual suppression only until the
+    /// exact release acknowledgement is durable. Then normal CAS persistence
+    /// removes its now-unneeded synthetic group record.
+    pub fn prune_released_reservation_tombstones(&mut self) {
+        let released = self
+            .groups
+            .iter()
+            .filter_map(|(group_id, group)| {
+                group
+                    .power_reservation
+                    .as_ref()
+                    .is_some_and(|reservation| {
+                        reservation.retired && reservation.state == ReservationState::Released
+                    })
+                    .then(|| group_id.clone())
+            })
+            .collect::<Vec<_>>();
+        for group_id in released {
+            self.groups.remove(&group_id);
+            if let Some(revision) = self.group_revisions.remove(&group_id) {
+                self.removed_group_revisions.insert(group_id, revision);
+            }
+        }
+    }
+
+    /// Repair a process boundary between group persistence and outbox insert.
+    /// No command was sent without an outbox row, so an in-flight state lacking
+    /// its exact command can safely return to a pending durable intent.
+    pub fn repair_reservation_outbox(&mut self, command_ids: &[String]) -> bool {
+        let mut changed = false;
+        for group in self.groups.values_mut() {
+            let Some(reservation) = group.power_reservation.as_mut() else {
+                continue;
+            };
+            if reservation
+                .command_id
+                .as_ref()
+                .is_some_and(|command_id| !command_ids.contains(command_id))
+            {
+                reservation.state = match reservation.state {
+                    ReservationState::Registering if reservation.retired => {
+                        ReservationState::ReleasePending
+                    }
+                    ReservationState::Registering => ReservationState::Pending,
+                    ReservationState::Releasing => ReservationState::ReleasePending,
+                    state => state,
+                };
+                reservation.command_id = None;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    pub fn expire_reservation_command(&mut self, command_id: &str) -> bool {
+        for group in self.groups.values_mut() {
+            let Some(reservation) = group.power_reservation.as_mut() else {
+                continue;
+            };
+            if reservation.command_id.as_deref() != Some(command_id) {
+                continue;
+            }
+            reservation.state = match reservation.state {
+                ReservationState::Registering if reservation.retired => {
+                    ReservationState::ReleasePending
+                }
+                ReservationState::Registering => ReservationState::Failed,
+                ReservationState::Releasing => ReservationState::ReleasePending,
+                state => state,
+            };
+            reservation.command_id = None;
+            return true;
+        }
+        false
+    }
+
+    /// Status is aggregate evidence, not an admission grant. It unlocks only
+    /// reservations for the exact rover after their prewarm boundary and only
+    /// once ScheduledCapture is effective and active.
+    pub fn observe_power_status(&mut self, status: &PowerStatus) -> Vec<String> {
+        let now_ms = self.clock.now_ms();
+        let mut changed = Vec::new();
+        for group in self
+            .groups
+            .values_mut()
+            .filter(|group| group.entity_id == status.entity_id)
+        {
+            let Some(reservation) = group.power_reservation.as_mut() else {
+                continue;
+            };
+            let readiness = status
+                .active_reservations
+                .iter()
+                .find(|item| item.reservation_id == reservation.reservation_id);
+            if !matches!(
+                reservation.state,
+                ReservationState::Accepted
+                    | ReservationState::Prewarming
+                    | ReservationState::Blocked
+                    | ReservationState::Failed
+                    | ReservationState::Ready
+            ) {
+                continue;
+            }
+            let Ok(status_updated_at_ms) = i64::try_from(status.updated_at_ms) else {
+                continue;
+            };
+            if reservation
+                .status_updated_at_ms
+                .is_some_and(|previous| status_updated_at_ms < previous)
+            {
+                continue;
+            }
+            reservation.status_updated_at_ms = Some(status_updated_at_ms);
+            // A newer, signed aggregate status that no longer names a
+            // reservation is negative readiness evidence. In particular, it
+            // must revoke a previously Ready admission immediately instead of
+            // leaving old evidence fresh by timestamp alone.
+            if readiness.is_none() && reservation.state == ReservationState::Ready {
+                reservation.state = ReservationState::Blocked;
+                reservation.ready_authority = None;
+                changed.push(group.group_id.clone());
+                continue;
+            }
+            let next = if matches!(status.state, PowerState::Failed | PowerState::Degraded) {
+                ReservationState::Failed
+            } else if status.reason_code.is_some() {
+                ReservationState::Blocked
+            } else if let Some(readiness) = readiness {
+                let Ok(activation_started_at_ms) =
+                    i64::try_from(readiness.activation_started_at_ms)
+                else {
+                    continue;
+                };
+                reservation.activation_started_at_ms = Some(activation_started_at_ms);
+                if now_ms >= reservation.prewarm_at_ms
+                    && status.effective_profile == PowerProfile::ScheduledCapture
+                    && status.state == PowerState::Active
+                {
+                    ReservationState::Ready
+                } else if now_ms >= reservation.prewarm_at_ms {
+                    ReservationState::Prewarming
+                } else {
+                    continue;
+                }
+            } else {
+                continue;
+            };
+            if reservation.state != next {
+                reservation.state = next;
+                reservation.transition_id = status.transition_id.clone();
+                if next == ReservationState::Ready {
+                    reservation.ready_at_ms = Some(now_ms);
+                    let activation_started_at_ms =
+                        reservation.activation_started_at_ms.get_or_insert(now_ms);
+                    let actual_ready_ms = now_ms.saturating_sub(*activation_started_at_ms);
+                    reservation.actual_ready_ms = Some(actual_ready_ms);
+                    reservation.prewarm_missed = now_ms > group.start_ms;
+                    let estimate = self
+                        .prewarm_estimators
+                        .entry(group.entity_id.clone())
+                        .or_default();
+                    estimate.observe(actual_ready_ms, reservation.prewarm_missed);
+                    let estimate = estimate.estimate();
+                    reservation.sample_count = estimate.sample_count;
+                    reservation.prewarm_estimate_ms = estimate.estimate_ms;
+                    reservation.bootstrap_active = estimate.bootstrap_active;
+                    reservation.ready_authority = Some(status.authority);
+                }
+                changed.push(group.group_id.clone());
+            }
+        }
+        changed
+    }
+
+    pub fn reservation_ready_for(&self, occurrence_id: &str) -> bool {
+        const STATUS_FRESHNESS_MS: i64 = 30_000;
+        let now_ms = self.clock.now_ms();
+        self.occurrences
+            .get(occurrence_id)
+            .and_then(|occurrence| occurrence.group_id.as_ref())
+            .and_then(|group_id| self.groups.get(group_id))
+            .is_some_and(|group| {
+                group.reservation_is_ready()
+                    && group.power_reservation.as_ref().is_some_and(|reservation| {
+                        reservation.register_ack_command_id.is_some()
+                            && reservation.ready_authority.is_some()
+                            && reservation
+                                .status_updated_at_ms
+                                .is_some_and(|updated_at_ms| {
+                                    updated_at_ms >= now_ms.saturating_sub(STATUS_FRESHNESS_MS)
+                                })
+                    })
+            })
+    }
+
+    pub fn reservations_to_release(&self) -> Vec<String> {
+        self.groups
+            .values()
+            .filter(|group| {
+                group.reservation_needs_release()
+                    && group.power_reservation.as_ref().is_some_and(|reservation| {
+                        reservation.state != ReservationState::Registering
+                    })
+                    && self
+                        .occurrences
+                        .values()
+                        .filter(|occurrence| {
+                            occurrence.group_id.as_deref() == Some(&group.group_id)
+                        })
+                        .all(|occurrence| occurrence.state.is_terminal())
+            })
+            .map(|group| group.group_id.clone())
+            .collect()
+    }
+
+    pub fn mark_reservation_releasing(&mut self, group_id: &str, command_id: String) -> bool {
+        let Some(reservation) = self
+            .groups
+            .get_mut(group_id)
+            .and_then(|group| group.power_reservation.as_mut())
+        else {
+            return false;
+        };
+        if matches!(
+            reservation.state,
+            ReservationState::Accepted
+                | ReservationState::Prewarming
+                | ReservationState::Ready
+                | ReservationState::Blocked
+                | ReservationState::Failed
+                | ReservationState::ReleasePending
+        ) {
+            reservation.state = ReservationState::Releasing;
+            reservation.command_id = Some(command_id);
+            reservation.command_attempt = reservation.command_attempt.saturating_add(1);
+            return true;
+        }
+        false
     }
 
     pub fn apply_feedback(&mut self, feedback: RecordingCoordinatorFeedback) -> bool {
@@ -423,7 +834,12 @@ impl<C: Clock> SchedulerRuntime<C> {
             group.finish_intent();
             return self.activate_pending_group_owners(&group_id, now_ms);
         }
-        if feedback.retryable && is_transient_reason(feedback.reason_code) {
+        if feedback.retryable
+            && is_transient_recorder_storage_failure(
+                feedback.reason_code,
+                feedback.detail.as_deref(),
+            )
+        {
             if action == ScheduledRecordingIntentAction::Acquire {
                 group.retry_acquire();
             } else {

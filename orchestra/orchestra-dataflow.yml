@@ -99,6 +99,7 @@ nodes:
       - lifecycle_capabilities
       - protected_work_snapshot_request
       - power_status
+      - power_command_result
       - power_authority_snapshot
       - power_journal_record
     env:
@@ -199,15 +200,25 @@ nodes:
       protected_work_snapshot_request:
         source: orchestra-bridge/protected_work_snapshot_request
         queue_size: 16
+      # Aggregate Rover status is readiness evidence only. The scheduler keeps
+      # reservation ownership; it never selects lifecycle targets itself.
+      rover_power_status:
+        source: orchestra-bridge/power_status
+        queue_size: 16
+      rover_power_command_result:
+        source: orchestra-bridge/power_command_result
+        queue_size: 16
     outputs:
       - recording_schedule_command_result
       - recording_schedule_snapshot
       - recording_occurrence_status
       - protected_work_snapshot
       - scheduled_recording_intent
+      - scheduled_power_command
       - recording_reconciliation_request
       - recording_scheduler_manual_suppression_ack
       - recording_scheduler_status
+      - recording_prewarm_metrics
     env:
       RUST_LOG: info
       MONGODB_URI: "${MONGODB_URI:-mongodb://localhost:27017}"
@@ -280,6 +291,12 @@ nodes:
     build: cargo build --release -p power_coordinator
     path: ../target/release/power_coordinator
     inputs:
+      # The scheduler may register/release only its deterministic future
+      # ScheduledCapture reservations. The coordinator remains policy and
+      # lifecycle authority and fences remote commands at the snapshot gate.
+      power_command:
+        source: recording-scheduler/scheduled_power_command
+        queue_size: 16
       resource_snapshot: resource-monitor/resource_snapshot
       lifecycle_status:
         source: lifecycle-manager/lifecycle_status
@@ -491,6 +508,10 @@ nodes:
       # Mode
       MODE: "orchestra"                  # Orchestra mode (no local Dora nodes)
       ZENOH_ENABLED: "false"             # Don't use Zenoh in web_bridge (orchestra-bridge handles it)
+      # Scheduled acquire verifies the same recorder storage mount before it
+      # obtains media authority; a missing/unusable mount fails closed.
+      RECORDING_ROOT: "${RECORDING_ROOT:-/home/robo-fleet-recordings}"
+      SCHEDULED_RECORDING_MIN_FREE_BYTES: "${SCHEDULED_RECORDING_MIN_FREE_BYTES:-67108864}"
 
       # Network Configuration
       BIND_ADDRESS: "0.0.0.0"

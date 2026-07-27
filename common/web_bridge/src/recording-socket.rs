@@ -196,6 +196,20 @@ impl RecordingState {
         Ok(())
     }
 
+    /// A non-mutating final recorder admission probe used immediately before a
+    /// scheduled acquire is enqueued. The later enqueue repeats this check
+    /// under the same mutex, so a concurrent producer cannot bypass it.
+    pub fn scheduled_admission_available(&self) -> Result<(), &'static str> {
+        let queue = self
+            .commands
+            .lock()
+            .map_err(|_| "recording command queue unavailable")?;
+        if queue.len() >= self.capacity {
+            return Err("recording command queue is full");
+        }
+        Ok(())
+    }
+
     pub fn next_command(&self) -> Option<QueuedRecordingCommand> {
         self.commands.lock().ok()?.pop_front()
     }

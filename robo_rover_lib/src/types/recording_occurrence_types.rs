@@ -97,6 +97,10 @@ pub struct ScheduledRecordingIntent {
     pub planned_start_ms: i64,
     pub planned_end_ms: i64,
     pub relative_directory: String,
+    /// Deterministic group-scoped power reservation that made this recorder
+    /// admission eligible. Older persisted intent rows deserialize without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reservation_id: Option<String>,
     pub action: ScheduledRecordingIntentAction,
 }
 
@@ -202,6 +206,17 @@ pub fn scheduled_intent_id(
         ScheduledRecordingIntentAction::Release => "release",
     };
     Ok(Uuid::new_v5(&occurrence, format!("{generation}:{action}").as_bytes()).to_string())
+}
+
+/// A reservation belongs to the overlap group rather than an individual
+/// recorder attempt. Reusing a released ID is deliberately fenced by the
+/// power coordinator, so a later group generation receives a different ID.
+pub fn scheduled_reservation_id(group_id: &str, generation: u64) -> Result<String, String> {
+    let group = Uuid::parse_str(group_id).map_err(|_| "invalid group_id")?;
+    if generation == 0 {
+        return Err("invalid reservation generation".into());
+    }
+    Ok(Uuid::new_v5(&group, format!("power-reservation:{generation}").as_bytes()).to_string())
 }
 
 /// Per-rover overlap groups are stable across scheduler restarts for one union-window start.

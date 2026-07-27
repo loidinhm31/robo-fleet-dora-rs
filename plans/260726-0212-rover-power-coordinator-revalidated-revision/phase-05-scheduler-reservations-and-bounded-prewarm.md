@@ -8,7 +8,7 @@
 
 ## Overview
 
-- Date: 2026-07-26; priority: P1; implementation/review: Pending.
+- Date: 2026-07-26; priority: P1; implementation/review: Accepted (2026-07-27).
 - Keep recording scheduler as occurrence authority while making it a deterministic future-demand producer with aggregate-Ready gating.
 
 ## Key Insights
@@ -45,9 +45,9 @@ Scheduler stores reservation state beside occurrence/outbox. Coordinator accepts
 
 ## Todo list
 
-- [ ] Add reservation occurrence/outbox lifecycle.
-- [ ] Add readiness estimator and final validation gate.
-- [ ] Add release/retry classifier and recovery tests.
+- [x] Add reservation occurrence/outbox lifecycle.
+- [x] Add readiness estimator and final validation gate.
+- [x] Add release/retry classifier and recovery tests.
 
 ## Success Criteria
 
@@ -67,3 +67,33 @@ Scheduler stores reservation state beside occurrence/outbox. Coordinator accepts
 ## Next steps
 
 Phase 07 exposes occurrence power status. Product wording may differ, but release behavior is fixed.
+
+## Implementation status — 2026-07-27
+
+An initial implementation added deterministic group reservation IDs, bounded
+bootstrap/p95 estimation, aggregate-Ready recorder gating, and Dora wiring.
+Focused validation passed (257 tests across scheduler, shared contract, power
+coordinator, and web bridge), but review scored it 3/10 and rejected it.
+
+Required before acceptance:
+
+- durable register/release command outbox, exact result correlation, and replay;
+- release tombstones that survive delete/edit/supersession until acknowledged;
+- activation/prewarm-to-Ready rather than registration-to-Ready p95 samples,
+  with sample/estimate/actual/miss observability;
+- final validation before acquire, including current revision/window/entity,
+  status freshness, and recorder/storage/media authority;
+- an explicit recorder/storage transient retry allowlist and boundary fault tests.
+
+The missing prerequisite is a signed, entity-scoped Rover-to-Orchestra
+`PowerCommandResult` transport path. Current aggregate `PowerStatus` cannot
+safely acknowledge an individual reservation command.
+
+## Acceptance — 2026-07-27
+
+Accepted after remediation and independent re-review (9/10, no critical
+blockers). The completed work includes a durable, idempotent reservation-command
+outbox; signed entity-scoped command-result transport; release tombstones;
+reservation-scoped Ready evidence; activation-to-Ready p95 metrics with misses;
+and final recorder, storage, and media-authority admission checks. Focused Rust
+formatting, compilation, scheduler/shared/coordinator/web/Zenoh tests passed.

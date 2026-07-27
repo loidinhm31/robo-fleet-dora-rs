@@ -12,9 +12,9 @@ use robo_rover_lib::{
     LifecycleCommandResult, LifecycleRole, LifecycleStatus, LifecycleWakeLease, MetricWindow,
     PcmFramePacket, PcmSampleFormat, PowerAuthoritySnapshot, PowerCommand, PowerStatus, PowerTopic,
     ProtectedWorkRelayBody, ProtectedWorkRelayEnvelope, ProtectedWorkSnapshot,
-    ProtectedWorkSnapshotRequest, RecordingOccurrence, SignedPowerEnvelope,
-    SignedPowerEnvelopeKind, SignedPowerSnapshot, StreamCommand, StreamControl,
-    TargetedMediaControl, PROTECTED_WORK_RELAY_TTL_MS,
+    ProtectedWorkSnapshotRequest, RecordingOccurrence, SignedPowerCommandResult,
+    SignedPowerEnvelope, SignedPowerEnvelopeKind, SignedPowerSnapshot, StreamCommand,
+    StreamControl, TargetedMediaControl, PROTECTED_WORK_RELAY_TTL_MS,
 };
 use serde_json;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -57,6 +57,7 @@ struct RoverSubscriptions {
     lifecycle_result_sub: ZenohSubscriber,
     lifecycle_capabilities_sub: ZenohSubscriber,
     power_status_sub: ZenohSubscriber,
+    power_command_result_sub: ZenohSubscriber,
     power_snapshot_sub: ZenohSubscriber,
     power_event_sub: ZenohSubscriber,
     protected_work_request_sub: ZenohSubscriber,
@@ -190,6 +191,17 @@ async fn subscribe_to_rover(
         .declare_subscriber(&power_status_topic)
         .await
         .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", power_status_topic, e))?;
+    let power_command_result_topic = power_v1_topic(entity_id, PowerTopic::CommandResult);
+    let power_command_result_sub = session
+        .declare_subscriber(&power_command_result_topic)
+        .await
+        .map_err(|e| {
+            eyre::eyre!(
+                "Failed to subscribe to {}: {}",
+                power_command_result_topic,
+                e
+            )
+        })?;
     let power_snapshot_topic = power_v1_topic(entity_id, PowerTopic::Snapshot);
     let power_snapshot_sub = session
         .declare_subscriber(&power_snapshot_topic)
@@ -236,6 +248,7 @@ async fn subscribe_to_rover(
         lifecycle_result_sub,
         lifecycle_capabilities_sub,
         power_status_sub,
+        power_command_result_sub,
         power_snapshot_sub,
         power_event_sub,
         protected_work_request_sub,
@@ -523,6 +536,7 @@ async fn main() -> Result<()> {
     let lifecycle_result_output = DataId::from("lifecycle_command_result".to_owned());
     let lifecycle_capabilities_output = DataId::from("lifecycle_capabilities".to_owned());
     let power_status_output = DataId::from("power_status".to_owned());
+    let power_command_result_output = DataId::from("power_command_result".to_owned());
     let power_authority_snapshot_output = DataId::from("power_authority_snapshot".to_owned());
     let power_journal_record_output = DataId::from("power_journal_record".to_owned());
     let protected_work_snapshot_request_output =
@@ -1302,6 +1316,41 @@ async fn main() -> Result<()> {
                         .is_ok_and(|status| status.validates_for(LifecycleRole::Rover, &entity_id).is_ok())
                     {
                         forward_binary_output(&mut node, &power_status_output, sample);
+                    }
+                }
+            }
+
+            // A command result is not interchangeable with aggregate status.
+            // Verify the signed, entity-scoped envelope before giving the local
+            // scheduler its exact command-id acknowledgement.
+            result = receive_from_rovers(&active_rovers, |subs| &subs.power_command_result_sub) => {
+                if let Some((entity_id, sample)) = result {
+                    let payload = sample.payload().to_bytes();
+                    let Some(key) = power_command_keys.get(&entity_id) else {
+                        tracing::warn!(%entity_id, "rejected rover power result without a configured transport key");
+                        continue;
+                    };
+                    let now_ms = current_time_ms().unwrap_or(u64::MAX);
+                    if let Ok(envelope) = serde_json::from_slice::<SignedPowerCommandResult>(&payload) {
+                        if envelope.verify(key, now_ms).is_ok()
+                            && envelope.validates_for(
+                                SignedPowerEnvelopeKind::CommandResult,
+                                LifecycleRole::Rover,
+                                &entity_id,
+                            ).is_ok()
+                            && envelope.payload.validate().is_ok()
+                        {
+                            let result = serde_json::to_vec(&envelope.payload)?;
+                            node.send_output(
+                                power_command_result_output.clone(),
+                                Default::default(),
+                                BinaryArray::from_vec(vec![result.as_slice()]),
+                            )?;
+                        } else {
+                            tracing::warn!(%entity_id, "rejected invalid or stale rover power command result");
+                        }
+                    } else {
+                        tracing::warn!(%entity_id, "rejected malformed rover power command result");
                     }
                 }
             }

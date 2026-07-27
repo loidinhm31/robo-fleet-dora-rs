@@ -6,14 +6,17 @@ use mongodb::{
     options::{ClientOptions, IndexOptions},
     Collection, Database, IndexModel,
 };
-use robo_rover_lib::{RecordingOccurrence, RecordingSchedule, ScheduledRecordingIntent};
+use robo_rover_lib::{
+    PowerCommand, RecordingOccurrence, RecordingSchedule, ScheduledRecordingIntent,
+};
 use serde::{Deserialize, Serialize};
 
-use crate::domain::RecordingGroup;
 use crate::mongo_documents::{
     document_revision, group_from_document, occurrence_document, occurrence_from_document,
     schedule_document, schedule_document_with_lifecycle, schedule_from_document,
 };
+use crate::reservation_command_outbox::ReservationCommandOutboxRecord;
+use crate::{domain::RecordingGroup, prewarm::PersistedPrewarmEstimator};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stored<T> {
@@ -38,6 +41,8 @@ pub struct MongoRepository {
     occurrences: Collection<Document>,
     groups: Collection<Document>,
     outbox: Collection<Document>,
+    reservation_command_outbox: Collection<Document>,
+    prewarm_estimators: Collection<Document>,
 }
 
 impl MongoRepository {
@@ -53,6 +58,8 @@ impl MongoRepository {
             occurrences: database.collection("recording_occurrences"),
             groups: database.collection("recording_scheduler_groups"),
             outbox: database.collection("recording_scheduler_outbox"),
+            reservation_command_outbox: database.collection("recording_scheduler_power_outbox"),
+            prewarm_estimators: database.collection("recording_scheduler_prewarm_metrics"),
         }
     }
 
@@ -92,6 +99,14 @@ impl MongoRepository {
             .map(|_| ())?;
         self.outbox
             .create_index(index(doc! {"intent_id": 1}, true), None)
+            .await
+            .map(|_| ())?;
+        self.reservation_command_outbox
+            .create_index(index(doc! {"command.command_id": 1}, true), None)
+            .await
+            .map(|_| ())?;
+        self.prewarm_estimators
+            .create_index(index(doc! {"entity_id": 1}, true), None)
             .await
             .map(|_| ())
     }
@@ -134,6 +149,23 @@ impl MongoRepository {
             .map_err(|error| error.to_string())?
             .map(schedule_from_document)
             .transpose()
+    }
+
+    pub async fn validates_recorder_admission(
+        &self,
+        occurrence: &RecordingOccurrence,
+        now_ms: i64,
+    ) -> Result<bool, String> {
+        Ok(self
+            .find_schedule(&occurrence.schedule_id)
+            .await?
+            .is_some_and(|schedule| {
+                schedule.definition.enabled
+                    && schedule.revision == occurrence.schedule_revision
+                    && schedule.definition.entity_id == occurrence.entity_id
+                    && occurrence.planned_start_ms <= now_ms
+                    && now_ms < occurrence.planned_end_ms
+            }))
     }
 
     pub async fn enabled_count(&self, entity_id: &str) -> Result<u64, String> {
@@ -288,6 +320,93 @@ impl MongoRepository {
     pub async fn acknowledge_intent(&self, intent_id: &str) -> Result<(), String> {
         self.outbox
             .delete_one(doc! {"intent_id": intent_id}, None)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn persist_reservation_command(
+        &self,
+        record: &ReservationCommandOutboxRecord,
+    ) -> Result<(), String> {
+        let mut document = mongodb::bson::to_document(record).map_err(|error| error.to_string())?;
+        document.insert("_id", record.command_id());
+        self.reservation_command_outbox
+            .insert_one(document, None)
+            .await
+            .map(|_| ())
+            .or_else(|error| {
+                if error.to_string().contains("E11000") {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn pending_reservation_commands(
+        &self,
+    ) -> Result<Vec<ReservationCommandOutboxRecord>, String> {
+        self.reservation_command_outbox
+            .find(None, None)
+            .await
+            .map_err(|error| error.to_string())?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|mut document| {
+                document.remove("_id");
+                mongodb::bson::from_document(document).map_err(|error| error.to_string())
+            })
+            .collect()
+    }
+
+    pub async fn acknowledge_reservation_command(&self, command_id: &str) -> Result<(), String> {
+        self.reservation_command_outbox
+            .delete_one(doc! {"command.command_id": command_id}, None)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn discard_reservation_command(&self, command: &PowerCommand) -> Result<(), String> {
+        self.acknowledge_reservation_command(&command.command_id)
+            .await
+    }
+
+    pub async fn load_prewarm_estimators(&self) -> Result<Vec<PersistedPrewarmEstimator>, String> {
+        self.prewarm_estimators
+            .find(None, None)
+            .await
+            .map_err(|error| error.to_string())?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|mut document| {
+                document.remove("_id");
+                mongodb::bson::from_document(document).map_err(|error| error.to_string())
+            })
+            .collect()
+    }
+
+    pub async fn save_prewarm_estimator(
+        &self,
+        estimator: &PersistedPrewarmEstimator,
+    ) -> Result<(), String> {
+        let mut document =
+            mongodb::bson::to_document(estimator).map_err(|error| error.to_string())?;
+        document.insert("_id", estimator.entity_id.clone());
+        self.prewarm_estimators
+            .replace_one(
+                doc! {"entity_id": &estimator.entity_id},
+                document,
+                mongodb::options::ReplaceOptions::builder()
+                    .upsert(true)
+                    .build(),
+            )
             .await
             .map(|_| ())
             .map_err(|error| error.to_string())

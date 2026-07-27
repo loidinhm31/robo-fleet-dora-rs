@@ -7,8 +7,9 @@ use robo_rover_lib::{
     LifecycleCommandResult, LifecycleEffectiveState, LifecycleRole, LifecycleStatus,
     PowerAuthority, PowerAuthorityDecision, PowerAuthoritySnapshot, PowerCommand,
     PowerCommandAction, PowerCommandResult, PowerPolicy, PowerProfile, PowerReasonCode,
-    PowerSnapshotGate, PowerState, PowerStatus, PowerTransition, ProtectedWorkSnapshot,
-    RecordingOccurrence, ResourceSnapshot, MAX_PROTECTED_WORK_ITEMS, POWER_PROTOCOL_VERSION,
+    PowerReservationReadiness, PowerSnapshotGate, PowerState, PowerStatus, PowerTransition,
+    ProtectedWorkSnapshot, RecordingOccurrence, ResourceSnapshot, MAX_PROTECTED_WORK_ITEMS,
+    POWER_PROTOCOL_VERSION,
 };
 use std::collections::BTreeMap;
 use uuid::Uuid;
@@ -87,6 +88,7 @@ pub struct PowerCoordinator {
     pending: Option<PendingTransition>,
     announced: Option<PowerTransition>,
     journal_capacity_unsafe: bool,
+    reservation_activation_started_at: BTreeMap<String, u64>,
 }
 
 impl PowerCoordinator {
@@ -122,6 +124,7 @@ impl PowerCoordinator {
             pending: None,
             announced: None,
             journal_capacity_unsafe: false,
+            reservation_activation_started_at: BTreeMap::new(),
         })
     }
 
@@ -289,7 +292,7 @@ impl PowerCoordinator {
         self.journal_capacity_unsafe = unsafe_capacity;
     }
 
-    pub fn current_status(&self, now_ms: u64) -> PowerStatus {
+    pub fn current_status(&mut self, now_ms: u64) -> PowerStatus {
         self.status(now_ms)
     }
 
@@ -874,7 +877,37 @@ impl PowerCoordinator {
         })
     }
 
-    fn status(&self, now_ms: u64) -> PowerStatus {
+    fn status(&mut self, now_ms: u64) -> PowerStatus {
+        let active_reservation_ids = self.ledger.active_reservation_ids(now_ms);
+        // Record the coordinator-observed activation boundary, rather than the
+        // scheduler's planned prewarm timestamp. It is only exposed once the
+        // ScheduledCapture profile is actually effective.
+        if self.requested == PowerProfile::ScheduledCapture
+            && matches!(
+                self.state,
+                PowerState::Prewarming | PowerState::Waking | PowerState::Active
+            )
+        {
+            for reservation_id in &active_reservation_ids {
+                self.reservation_activation_started_at
+                    .entry(reservation_id.clone())
+                    .or_insert(now_ms);
+            }
+        }
+        self.reservation_activation_started_at
+            .retain(|reservation_id, _| active_reservation_ids.contains(reservation_id));
+        let active_reservations = active_reservation_ids
+            .into_iter()
+            .filter_map(|reservation_id| {
+                self.reservation_activation_started_at
+                    .get(&reservation_id)
+                    .copied()
+                    .map(|activation_started_at_ms| PowerReservationReadiness {
+                        reservation_id,
+                        activation_started_at_ms,
+                    })
+            })
+            .collect();
         PowerStatus {
             protocol_version: POWER_PROTOCOL_VERSION,
             role: self.config.role,
@@ -893,6 +926,7 @@ impl PowerCoordinator {
                 (self.state == PowerState::Failed).then_some(PowerReasonCode::Timeout)
             },
             detail: None,
+            active_reservations,
             updated_at_ms: now_ms,
         }
     }

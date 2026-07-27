@@ -358,6 +358,7 @@ nodes:
       tracked_detections: gst-camera/tracked_detections   # DetectionFrame with tracking IDs
       tracking_telemetry: gst-camera/tracking_telemetry   # TrackingTelemetry
       power_status: power-coordinator/power_status
+      power_command_result: power-coordinator/power_command_result
       power_snapshot: power-coordinator/power_snapshot
       power_journal_record:
         source: power-coordinator/power_journal_record
@@ -378,6 +379,7 @@ nodes:
       - recording_occurrence_status
       - protected_work_snapshot
       - power_command
+      - power_command_result
       - power_event_ack
       - power_snapshot_request
     env:

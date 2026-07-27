@@ -52,6 +52,10 @@ impl<C: Clock> SchedulerRuntime<C> {
                 cursor += 1;
             }
             let members = &items[first..cursor];
+            let member_ids = members
+                .iter()
+                .map(|member| member.occurrence_id.clone())
+                .collect::<std::collections::BTreeSet<_>>();
             let earliest = &members[0];
             let locked_group_ids = members
                 .iter()
@@ -83,15 +87,60 @@ impl<C: Clock> SchedulerRuntime<C> {
                 .or(old_directory)
                 .unwrap_or_default();
             let locked = locked_group_ids.contains(&group_id);
-            let mut group = previous
-                .get(&group_id)
-                .cloned()
-                .unwrap_or(RecordingGroup::new(
+            let previous_group = previous.get(&group_id);
+            let reservation_changed = previous_group
+                .and_then(|group| group.power_reservation.as_ref())
+                .is_some_and(|reservation| {
+                    !matches!(reservation.state, crate::domain::ReservationState::Released)
+                        && (previous_group.is_some_and(|group| group.end_ms != end_ms)
+                            || previous_group
+                                .is_some_and(|group| group.start_ms != earliest.planned_start_ms)
+                            // A schedule edit can preserve the same wall-clock
+                            // window while replacing its revision-scoped
+                            // occurrence ID.  A registered reservation's
+                            // immutable payload is tied to the old owner set,
+                            // so it must be retired and released rather than
+                            // silently adopted by the replacement group.
+                            || previous_group
+                                .is_some_and(|group| group.owner_ids != member_ids))
+                });
+            if reservation_changed {
+                if let Some(tombstone) = previous_group.and_then(reservation_tombstone) {
+                    rebuilt.insert(tombstone.group_id.clone(), tombstone);
+                    self.group_revisions
+                        .entry(
+                            previous_group
+                                .and_then(|group| group.power_reservation.as_ref())
+                                .expect("reservation checked")
+                                .reservation_id
+                                .clone(),
+                        )
+                        .or_insert(0);
+                }
+            }
+            let mut group = if reservation_changed {
+                let mut fresh = RecordingGroup::new(
                     &entity_id,
                     earliest.planned_start_ms,
                     end_ms,
                     directory.clone(),
-                )?);
+                )?;
+                // The group identity remains the overlap key; only the old
+                // reservation becomes a separately persisted tombstone.
+                fresh.group_id = group_id.clone();
+                fresh.start_request_id = scheduled_start_request_id(&group_id)?;
+                fresh
+            } else {
+                previous
+                    .get(&group_id)
+                    .cloned()
+                    .unwrap_or(RecordingGroup::new(
+                        &entity_id,
+                        earliest.planned_start_ms,
+                        end_ms,
+                        directory.clone(),
+                    )?)
+            };
             if !locked {
                 group.start_ms = earliest.planned_start_ms;
             }
@@ -107,10 +156,17 @@ impl<C: Clock> SchedulerRuntime<C> {
             }
             rebuilt.insert(group_id, group);
         }
-        for (group_id, _) in previous
+        let removed = previous
             .into_iter()
             .filter(|(id, _)| !rebuilt.contains_key(id))
-        {
+            .collect::<Vec<_>>();
+        for (group_id, group) in removed {
+            if let Some(tombstone) = reservation_tombstone(&group) {
+                self.group_revisions
+                    .entry(tombstone.group_id.clone())
+                    .or_insert(0);
+                rebuilt.insert(tombstone.group_id.clone(), tombstone);
+            }
             if let Some(revision) = self.group_revisions.remove(&group_id) {
                 self.removed_group_revisions.insert(group_id, revision);
             }
@@ -121,6 +177,27 @@ impl<C: Clock> SchedulerRuntime<C> {
         }
         Ok(())
     }
+}
+
+/// Keep a releaseable reservation after its source schedule/group disappears.
+/// It has no recorder ownership and is persisted under the reservation UUID so
+/// an edit that reuses the overlap group id cannot overwrite the release work.
+fn reservation_tombstone(group: &RecordingGroup) -> Option<RecordingGroup> {
+    let reservation = group.power_reservation.as_ref()?;
+    if matches!(
+        reservation.state,
+        crate::domain::ReservationState::Pending | crate::domain::ReservationState::Released
+    ) {
+        return None;
+    }
+    let mut tombstone = group.clone();
+    tombstone.group_id = reservation.reservation_id.clone();
+    tombstone.owner_ids.clear();
+    tombstone.recording_id = None;
+    tombstone.pending_intent_id = None;
+    tombstone.pending_action = None;
+    tombstone.power_reservation.as_mut()?.retired = true;
+    Some(tombstone)
 }
 
 pub(crate) fn occurrence(

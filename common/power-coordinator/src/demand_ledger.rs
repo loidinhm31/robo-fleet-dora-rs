@@ -182,6 +182,19 @@ impl DemandLedger {
             .filter(move |item| item.not_before_ms <= now_ms && now_ms < item.expires_at_ms)
     }
 
+    /// Read-only evidence used for status publication. Status must name every
+    /// live reservation so consumers cannot mistake aggregate profile state
+    /// for an acknowledgement of a different reservation.
+    pub fn active_reservation_ids(&self, now_ms: u64) -> Vec<String> {
+        self.reservations
+            .values()
+            .filter(|reservation| {
+                reservation.not_before_ms <= now_ms && now_ms < reservation.expires_at_ms
+            })
+            .map(|reservation| reservation.reservation_id.clone())
+            .collect()
+    }
+
     fn insert_reservation_tombstone(&mut self, reservation: PowerReservation) {
         self.reservation_tombstones.insert(
             reservation.reservation_id.clone(),

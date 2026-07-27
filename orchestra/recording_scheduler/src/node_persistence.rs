@@ -242,5 +242,10 @@ pub(crate) fn persist(
             return Err(eyre::eyre!("recording group changed concurrently"));
         }
     }
+    for estimator in scheduler.prewarm_estimators() {
+        tokio
+            .block_on(repository.save_prewarm_estimator(&estimator))
+            .map_err(eyre::Report::msg)?;
+    }
     Ok(())
 }

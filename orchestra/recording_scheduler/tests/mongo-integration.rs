@@ -77,6 +77,7 @@ fn local_mongo_persists_occurrences_groups_and_outbox_idempotently() {
             planned_start_ms: occurrence.planned_start_ms,
             planned_end_ms: occurrence.planned_end_ms,
             relative_directory: "scheduled".into(),
+            reservation_id: None,
             action: ScheduledRecordingIntentAction::Acquire,
         };
         let mut pending_occurrence = occurrence.clone();
@@ -217,6 +218,7 @@ fn local_mongo_recovers_after_outbox_write_before_state_writes() {
             planned_start_ms: occurrence.planned_start_ms,
             planned_end_ms: occurrence.planned_end_ms,
             relative_directory: group.relative_directory.clone(),
+            reservation_id: None,
             action: ScheduledRecordingIntentAction::Acquire,
         };
         repository

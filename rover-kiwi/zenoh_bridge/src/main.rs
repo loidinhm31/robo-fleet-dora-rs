@@ -10,10 +10,11 @@ use robo_rover_lib::{
     types::{ArmCommandWithMetadata, InputSource, RoverCommandWithMetadata},
     AudioFrameMetadata, AudioFrameSequenceTracker, FrameSequenceTracker, JpegFramePacket,
     LifecycleCommand, LifecycleCommandResult, LifecycleRole, LifecycleStatus, LifecycleWakeLease,
-    MetricWindow, PcmFramePacket, PcmSampleFormat, PowerAuthoritySnapshot, PowerStatus, PowerTopic,
-    ProtectedWorkRelayBody, ProtectedWorkRelayEnvelope, ProtectedWorkSnapshotRequest,
-    RecordingOccurrence, SignedPowerCommand, SignedPowerEnvelope, SignedPowerEnvelopeKind,
-    SignedPowerJournalAcknowledgement, VideoFrameMetadata, PROTECTED_WORK_REQUEST_TTL_MS,
+    MetricWindow, PcmFramePacket, PcmSampleFormat, PowerAuthoritySnapshot, PowerCommandResult,
+    PowerStatus, PowerTopic, ProtectedWorkRelayBody, ProtectedWorkRelayEnvelope,
+    ProtectedWorkSnapshotRequest, RecordingOccurrence, SignedPowerCommand, SignedPowerEnvelope,
+    SignedPowerEnvelopeKind, SignedPowerJournalAcknowledgement, VideoFrameMetadata,
+    PROTECTED_WORK_REQUEST_TTL_MS,
 };
 use std::{
     sync::{Arc, Mutex},
@@ -199,6 +200,17 @@ async fn main() -> Result<()> {
         .declare_publisher(&power_status_topic)
         .await
         .map_err(|e| eyre::eyre!("Failed to declare publisher {}: {}", power_status_topic, e))?;
+    let power_command_result_topic = power_v1_topic(&entity_id, PowerTopic::CommandResult);
+    let power_command_result_pub = session
+        .declare_publisher(&power_command_result_topic)
+        .await
+        .map_err(|e| {
+            eyre::eyre!(
+                "Failed to declare publisher {}: {}",
+                power_command_result_topic,
+                e
+            )
+        })?;
     let power_snapshot_topic = power_v1_topic(&entity_id, PowerTopic::Snapshot);
     let power_snapshot_pub = session
         .declare_publisher(&power_snapshot_topic)
@@ -731,6 +743,25 @@ async fn main() -> Result<()> {
                                                     .is_ok_and(|status| status.validates_for(LifecycleRole::Rover, &entity_id).is_ok())
                                                 {
                                                     let _ = power_status_pub.put(bytes).await;
+                                                }
+                                            }
+                                            "power_command_result" => {
+                                                if serde_json::from_slice::<PowerCommandResult>(bytes)
+                                                    .is_ok_and(|result| result.validate().is_ok())
+                                                {
+                                                    let now_ms = current_time_ms().unwrap_or_default();
+                                                    match SignedPowerEnvelope::new(
+                                                        SignedPowerEnvelopeKind::CommandResult,
+                                                        LifecycleRole::Rover,
+                                                        entity_id.clone(),
+                                                        now_ms,
+                                                        serde_json::from_slice::<PowerCommandResult>(bytes)?,
+                                                    ).sign(&power_command_key) {
+                                                        Ok(result) => {
+                                                            let _ = power_command_result_pub.put(serde_json::to_vec(&result)?).await;
+                                                        }
+                                                        Err(error) => tracing::warn!(%error, "failed to sign rover power command result"),
+                                                    }
                                                 }
                                             }
                                             "power_snapshot" => {

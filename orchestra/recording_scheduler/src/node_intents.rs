@@ -20,6 +20,10 @@ pub(crate) fn build_intent(
         planned_start_ms: occurrence.planned_start_ms,
         planned_end_ms: occurrence.planned_end_ms,
         relative_directory: group.relative_directory.clone(),
+        reservation_id: group
+            .power_reservation
+            .as_ref()
+            .map(|reservation| reservation.reservation_id.clone()),
         action,
     }
 }

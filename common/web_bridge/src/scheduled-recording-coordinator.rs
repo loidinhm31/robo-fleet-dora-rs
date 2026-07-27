@@ -881,6 +881,7 @@ mod tests {
             planned_start_ms: 1,
             planned_end_ms: 2,
             relative_directory: "scheduled/a".into(),
+            reservation_id: None,
             action,
         }
     }

@@ -4454,6 +4454,16 @@ mod tests {
     use socketioxide::packet::{Packet, PacketData};
 
     #[test]
+    fn scheduled_storage_admission_requires_a_real_writable_filesystem() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(scheduled_storage_available_at(directory.path(), 0));
+        assert!(!scheduled_storage_available_at(
+            &directory.path().join("missing"),
+            0
+        ));
+    }
+
+    #[test]
     fn video_frame_packet_uses_binary_attachment_not_json_byte_array() {
         let payload = browser_video_frame_payload(1_717_000_000_000, 42, 640, 480, "jpeg");
         let jpeg = vec![0xff, 0xd8, 0xff, 0xd9];
@@ -4757,6 +4767,65 @@ fn enqueue_recording_demand(
     Ok(())
 }
 
+/// Fail closed unless the recorder's configured storage mount has enough
+/// free bytes at the exact scheduled-start boundary. This is deliberately a
+/// local admission proof, not an eventual recorder error after acquiring
+/// camera/microphone authority.
+fn scheduled_storage_available() -> bool {
+    const DEFAULT_MIN_FREE_BYTES: u64 = 64 * 1024 * 1024;
+    let min_free = std::env::var("SCHEDULED_RECORDING_MIN_FREE_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_MIN_FREE_BYTES);
+    let Some(root) = std::env::var_os("RECORDING_ROOT") else {
+        return false;
+    };
+    scheduled_storage_available_at(&std::path::PathBuf::from(root), min_free)
+}
+
+fn scheduled_storage_available_at(path: &std::path::Path, min_free: u64) -> bool {
+    if !path.is_dir() {
+        return false;
+    }
+    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) else {
+        return false;
+    };
+    // `statvfs` reports capacity, not whether this process can create the
+    // recorder's next segment. Check write access on the exact mount first.
+    if unsafe { libc::access(path.as_ptr(), libc::W_OK) } != 0 {
+        return false;
+    }
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // statvfs only reads the NUL-terminated path and initializes `stat` on 0.
+    if unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) } != 0 {
+        return false;
+    }
+    let stat = unsafe { stat.assume_init() };
+    (stat.f_bavail as u128).saturating_mul(stat.f_frsize as u128) >= min_free as u128
+}
+
+fn scheduled_media_authority(
+    shared_state: &SharedState,
+    entity_id: &str,
+    consumer_id: &str,
+) -> bool {
+    shared_state
+        .media_demand_registry
+        .lock()
+        .map(|registry| {
+            registry.consumer_owns_resources(
+                entity_id,
+                consumer_id,
+                &[
+                    MediaResource::Camera,
+                    MediaResource::Jpeg,
+                    MediaResource::Microphone,
+                ],
+            )
+        })
+        .unwrap_or(false)
+}
+
 fn rename_recording_demand(shared_state: &SharedState, request_id: &str, recording_id: &str) {
     if let Ok(mut registry) = shared_state.media_demand_registry.lock() {
         registry.rename_consumer(
@@ -4787,11 +4856,31 @@ fn apply_scheduled_effects(shared_state: &SharedState, effects: Vec<CoordinatorE
                 planned_end_ms,
                 command,
             } => {
-                let failure = if !is_target_active(shared_state, &entity_id) {
+                let command_entity_matches = matches!(
+                    &command.action,
+                    robo_rover_lib::RecordingSessionAction::Start { entity_id: command_entity, .. }
+                        if command_entity == &entity_id
+                );
+                let failure = if unix_now_ms() >= planned_end_ms {
+                    Some("scheduled window elapsed")
+                } else if !command_entity_matches {
+                    Some("scheduled recorder entity mismatch")
+                } else if !is_target_active(shared_state, &entity_id) {
                     Some("target rover is not active")
+                } else if !scheduled_storage_available() {
+                    Some("storage temporarily unavailable")
+                } else if shared_state
+                    .recording
+                    .scheduled_admission_available()
+                    .is_err()
+                {
+                    Some("recording command queue is full")
                 } else if enqueue_recording_demand(shared_state, &entity_id, &consumer_id, true)
                     .is_err()
                 {
+                    Some("scheduled media demand unavailable")
+                } else if !scheduled_media_authority(shared_state, &entity_id, &consumer_id) {
+                    let _ = enqueue_recording_demand(shared_state, &entity_id, &consumer_id, false);
                     Some("scheduled media demand unavailable")
                 } else if shared_state
                     .recording
