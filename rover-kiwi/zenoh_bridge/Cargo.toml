@@ -16,3 +16,5 @@ serde_json = { workspace = true }
 arrow = "53"
 flume = "0.11"
 uuid = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }

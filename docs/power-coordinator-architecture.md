@@ -117,9 +117,11 @@ Policy is operator intent:
 Policy never changes merely because effective state changes. `Wake Rover`
 changes `Sleep` to `Auto`; it does not hold `Awake`.
 
-After the Auto idle gate succeeds, Auto rests in `IdleListening`, not
-`Dormant`, so Rover-local `Hey Kiwi` remains available. Only explicit `Sleep`
-enters `Dormant` and disables KWS.
+After the Auto idle gate succeeds, Rover Auto rests in `IdleListening`, not
+`Dormant`, so Rover-local `Hey Kiwi` remains available. Rover explicit `Sleep`
+enters `Dormant` and disables KWS. Orchestra Auto and explicit `Sleep` select
+`OrchestraIdle`, which quiesces central speech recognition while leaving the
+always-on control spine available.
 
 ```mermaid
 stateDiagram-v2
@@ -157,6 +159,7 @@ from its durable occurrence state.
 | `IdleListening` | control spine, microphone capture, continuous KWS |
 | `ScheduledCapture` | exact camera/audio/encoder/bridge/recorder dependencies |
 | `NormalRover` | normal camera/audio/voice stack; ML remains lazy |
+| `OrchestraIdle` | control spine without central speech recognition |
 | `OrchestraSpeech` | central STT and command parser path |
 
 Always-on control spine:
@@ -171,6 +174,32 @@ Always-on control spine:
 Profiles use a static reviewed dependency graph. Sleep closes dependents before
 prerequisites. Wake starts prerequisites and waits for authoritative readiness
 before dependents.
+
+### Protected recording work
+
+The scheduler remains the durable source of recording-occurrence truth. Each
+validated update is sent in an HMAC-SHA256 envelope using a per-Rover key over
+`rover/{entity_id}/power/protected-work/{occurrence,snapshot,request}/v1`.
+Orchestra signs occurrence and snapshot publications; the Rover bridge verifies
+the signature, target, expiry, and payload before forwarding them to the local
+coordinator. The Rover signs its snapshot requests, and Orchestra verifies
+those requests before forwarding them to the scheduler. A Rover requests a
+full snapshot at startup and every 15 seconds; the scheduler also republishes
+snapshots after reconciliation.
+The coordinator applies only monotonic occurrence updates and bounds retained
+operations. `StartPending`, `Active`, and `StopPending` block Rover Auto
+quiescing; a snapshot authoritatively clears stale protection. This relay
+carries protected-work state only; it does not grant remote profile or policy
+authority. Relay envelopes live for at most 120 seconds (snapshot requests use
+a 30-second TTL), and verification tolerates up to 30 seconds of future clock
+skew.
+
+`POWER_PROTECTED_WORK_HMAC_KEY` is required by each Rover bridge and must be a
+unique secret of at least 32 bytes. `POWER_PROTECTED_WORK_HMAC_KEYS` is required
+by the Orchestra bridge and maps every active Rover ID to its matching secret.
+For example, generate a Rover secret with `openssl rand -hex 32`, then set the
+Orchestra map to `{"rover-kiwi":"that-same-secret"}`. Hosts must run normal
+time synchronization (for example, chrony or NTP).
 
 ## Demand and Reservation Contract
 

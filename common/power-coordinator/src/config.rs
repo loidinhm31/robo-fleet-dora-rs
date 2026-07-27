@@ -1,5 +1,7 @@
 use robo_rover_lib::LifecycleRole;
 
+pub const MIN_AUTO_IDLE_GRACE_MS: u64 = 300_000;
+
 #[derive(Debug, Clone)]
 pub struct CoordinatorConfig {
     pub role: LifecycleRole,
@@ -29,7 +31,7 @@ impl CoordinatorConfig {
         let config = Self {
             role,
             entity_id: required("ENTITY_ID")?,
-            idle_grace_ms: number("POWER_IDLE_GRACE_MS", 300_000)?,
+            idle_grace_ms: number("POWER_IDLE_GRACE_MS", MIN_AUTO_IDLE_GRACE_MS)?,
             min_awake_ms: number("POWER_MIN_AWAKE_MS", 30_000)?,
             resource_freshness_ms: number("POWER_RESOURCE_FRESHNESS_MS", 15_000)?,
             max_domain_cpu_percent: decimal("POWER_MAX_DOMAIN_CPU_PERCENT", 10.0)?,
@@ -56,7 +58,7 @@ impl CoordinatorConfig {
         Self {
             role,
             entity_id: entity_id.into(),
-            idle_grace_ms: 300_000,
+            idle_grace_ms: MIN_AUTO_IDLE_GRACE_MS,
             min_awake_ms: 0,
             resource_freshness_ms: 15_000,
             max_domain_cpu_percent: 10.0,
@@ -78,7 +80,7 @@ impl CoordinatorConfig {
     fn validate(&self) -> Result<(), String> {
         if self.entity_id.is_empty()
             || self.entity_id.len() > 128
-            || self.idle_grace_ms == 0
+            || self.idle_grace_ms < MIN_AUTO_IDLE_GRACE_MS
             || self.resource_freshness_ms == 0
             || self.required_low_samples == 0
             || self.transition_timeout_ms == 0
@@ -105,4 +107,16 @@ fn number<T: std::str::FromStr>(key: &str, default: T) -> Result<T, String> {
 }
 fn decimal(key: &str, default: f32) -> Result<f32, String> {
     number(key, default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_idle_grace_cannot_drop_below_five_minutes() {
+        let mut config = CoordinatorConfig::for_test(LifecycleRole::Rover, "rover");
+        config.idle_grace_ms = MIN_AUTO_IDLE_GRACE_MS - 1;
+        assert!(config.validate().is_err());
+    }
 }

@@ -77,6 +77,22 @@ impl DurablePowerCoordinator {
     pub fn observe_lifecycle_result(&mut self, result: robo_rover_lib::LifecycleCommandResult) {
         self.coordinator.observe_lifecycle_result(result);
     }
+    pub fn observe_protected_operation(&mut self, operation_id: impl Into<String>, active: bool) {
+        self.coordinator
+            .observe_protected_operation(operation_id, active);
+    }
+    pub fn observe_protected_occurrence(
+        &mut self,
+        occurrence: robo_rover_lib::RecordingOccurrence,
+    ) {
+        self.coordinator.observe_protected_occurrence(occurrence);
+    }
+    pub fn observe_protected_work_snapshot(
+        &mut self,
+        snapshot: robo_rover_lib::ProtectedWorkSnapshot,
+    ) {
+        self.coordinator.observe_protected_work_snapshot(snapshot);
+    }
     pub fn acknowledge(&mut self, event_id: &str) -> Result<(), String> {
         self.journal.acknowledge(event_id)
     }

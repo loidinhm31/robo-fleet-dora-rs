@@ -17,6 +17,7 @@ pub enum PowerProfile {
     IdleListening,
     ScheduledCapture,
     NormalRover,
+    OrchestraIdle,
     OrchestraSpeech,
 }
 
@@ -165,7 +166,10 @@ impl PowerProfile {
             (
                 LifecycleRole::Rover,
                 Self::Dormant | Self::IdleListening | Self::ScheduledCapture | Self::NormalRover
-            ) | (LifecycleRole::Orchestra, Self::OrchestraSpeech)
+            ) | (
+                LifecycleRole::Orchestra,
+                Self::OrchestraIdle | Self::OrchestraSpeech
+            )
         );
         valid
             .then_some(())

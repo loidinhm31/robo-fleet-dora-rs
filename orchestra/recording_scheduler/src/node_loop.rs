@@ -7,10 +7,11 @@ use dora_node_api::{
 };
 use eyre::Result;
 use robo_rover_lib::{
-    scheduled_intent_id, AuthenticatedRecordingScheduleCommand, RecordingCoordinatorFeedback,
-    RecordingReconciliationRequest, RecordingReconciliationSnapshot, RecordingScheduleQuery,
-    RecordingScheduleSnapshot, RecordingSchedulerReadiness, RecordingSchedulerStatus,
-    ScheduledRecordingIntentAction, RECORDING_SCHEDULE_PROTOCOL_VERSION,
+    occurrence_requires_protection, scheduled_intent_id, AuthenticatedRecordingScheduleCommand,
+    ProtectedWorkSnapshot, ProtectedWorkSnapshotRequest, RecordingCoordinatorFeedback,
+    RecordingOccurrence, RecordingReconciliationRequest, RecordingReconciliationSnapshot,
+    RecordingScheduleQuery, RecordingScheduleSnapshot, RecordingSchedulerReadiness,
+    RecordingSchedulerStatus, ScheduledRecordingIntentAction, RECORDING_SCHEDULE_PROTOCOL_VERSION,
 };
 
 use crate::{
@@ -135,6 +136,7 @@ fn run_ready_session(
     let result = DataId::from("recording_schedule_command_result".to_owned());
     let snapshot_result = DataId::from("recording_schedule_snapshot".to_owned());
     let occurrence_status = DataId::from("recording_occurrence_status".to_owned());
+    let protected_work_snapshot = DataId::from("protected_work_snapshot".to_owned());
     let intent = DataId::from("scheduled_recording_intent".to_owned());
     let reconcile = DataId::from("recording_reconciliation_request".to_owned());
     let manual_suppression_ack =
@@ -341,12 +343,35 @@ fn run_ready_session(
                         // has crossed the bridge, so matching sessions are adopted instead
                         // of blindly started a second time.
                         replay_desired_groups(&mut node, &intent, &scheduler)?;
+                        replay_protected_occurrences(&mut node, &occurrence_status, &scheduler)?;
+                        replay_protected_work_snapshots(
+                            &mut node,
+                            &protected_work_snapshot,
+                            &scheduler,
+                            SystemClock.now_ms() as u64,
+                        )?;
                         replay_manual_suppression_acks(
                             &mut node,
                             &manual_suppression_ack,
                             &scheduler,
                         )?;
                         log_metrics(&scheduler, "reconciliation");
+                    }
+                }
+                "protected_work_snapshot_request" => {
+                    if let Some(request) = decode::<ProtectedWorkSnapshotRequest>(&*data) {
+                        if request.validate().is_err() {
+                            continue;
+                        }
+                        send(
+                            &mut node,
+                            &protected_work_snapshot,
+                            &protected_work_snapshot_for(
+                                &scheduler,
+                                request.entity_id,
+                                SystemClock.now_ms() as u64,
+                            ),
+                        )?;
                     }
                 }
                 _ => {}
@@ -590,6 +615,70 @@ fn replay_desired_groups(
         send(node, output, &intent)?;
     }
     Ok(())
+}
+
+/// Replays live protected work after reconciliation so a restarted coordinator
+/// cannot infer that an in-progress recording is safe to quiesce.
+fn replay_protected_occurrences(
+    node: &mut DoraNode,
+    output: &DataId,
+    scheduler: &SchedulerRuntime<SystemClock>,
+) -> Result<()> {
+    for occurrence in scheduler
+        .occurrences
+        .values()
+        .filter(|occurrence| is_protected_occurrence(occurrence))
+    {
+        send(node, output, occurrence)?;
+    }
+    Ok(())
+}
+
+fn replay_protected_work_snapshots(
+    node: &mut DoraNode,
+    output: &DataId,
+    scheduler: &SchedulerRuntime<SystemClock>,
+    generated_at_ms: u64,
+) -> Result<()> {
+    let entities = scheduler
+        .occurrences
+        .values()
+        .map(|occurrence| occurrence.entity_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    for entity_id in entities {
+        send(
+            node,
+            output,
+            &protected_work_snapshot_for(scheduler, entity_id, generated_at_ms),
+        )?;
+    }
+    Ok(())
+}
+
+fn protected_work_snapshot_for(
+    scheduler: &SchedulerRuntime<SystemClock>,
+    entity_id: String,
+    generated_at_ms: u64,
+) -> ProtectedWorkSnapshot {
+    ProtectedWorkSnapshot {
+        protocol_version: robo_rover_lib::PROTECTED_WORK_RELAY_PROTOCOL_VERSION,
+        snapshot_id: uuid::Uuid::new_v4().to_string(),
+        entity_id: entity_id.clone(),
+        generated_at_ms,
+        occurrences: scheduler
+            .occurrences
+            .values()
+            .filter(|occurrence| {
+                occurrence.entity_id == entity_id
+                    && occurrence_requires_protection(occurrence.state)
+            })
+            .cloned()
+            .collect(),
+    }
+}
+
+fn is_protected_occurrence(occurrence: &RecordingOccurrence) -> bool {
+    occurrence_requires_protection(occurrence.state)
 }
 
 fn replay_manual_suppression_acks(

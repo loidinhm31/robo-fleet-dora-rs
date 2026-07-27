@@ -3,11 +3,12 @@ use crate::{
     plan_transition, target, CoordinatorConfig, DemandLedger, ProfileCatalog, TransitionPlan,
 };
 use robo_rover_lib::{
-    LifecycleCommand, LifecycleCommandOrigin, LifecycleCommandResult, LifecycleEffectiveState,
-    LifecycleRole, LifecycleStatus, PowerAuthority, PowerAuthorityDecision, PowerAuthoritySnapshot,
-    PowerCommand, PowerCommandAction, PowerCommandResult, PowerPolicy, PowerProfile,
-    PowerReasonCode, PowerSnapshotGate, PowerState, PowerStatus, PowerTransition, ResourceSnapshot,
-    POWER_PROTOCOL_VERSION,
+    occurrence_requires_protection, LifecycleCommand, LifecycleCommandOrigin,
+    LifecycleCommandResult, LifecycleEffectiveState, LifecycleRole, LifecycleStatus,
+    PowerAuthority, PowerAuthorityDecision, PowerAuthoritySnapshot, PowerCommand,
+    PowerCommandAction, PowerCommandResult, PowerPolicy, PowerProfile, PowerReasonCode,
+    PowerSnapshotGate, PowerState, PowerStatus, PowerTransition, ProtectedWorkSnapshot,
+    RecordingOccurrence, ResourceSnapshot, MAX_PROTECTED_WORK_ITEMS, POWER_PROTOCOL_VERSION,
 };
 use std::collections::BTreeMap;
 use uuid::Uuid;
@@ -44,6 +45,12 @@ struct CachedPowerCommand {
     result: PowerCommandResult,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ProtectedOperation {
+    updated_at_ms: u64,
+    active: bool,
+}
+
 const MAX_CACHED_POWER_COMMANDS: usize = 1_024;
 
 #[derive(Debug, Clone)]
@@ -73,7 +80,9 @@ pub struct PowerCoordinator {
     last_resource_sequence: Option<u64>,
     low_samples: u32,
     awake_since_ms: u64,
-    protected_operation: bool,
+    protected_operations: BTreeMap<String, ProtectedOperation>,
+    protected_work_capacity_blocked: bool,
+    protected_snapshot_at_ms: u64,
     pending: Option<PendingTransition>,
     announced: Option<PowerTransition>,
     journal_capacity_unsafe: bool,
@@ -106,7 +115,9 @@ impl PowerCoordinator {
             last_resource_sequence: None,
             low_samples: 0,
             awake_since_ms: 0,
-            protected_operation: false,
+            protected_operations: BTreeMap::new(),
+            protected_work_capacity_blocked: false,
+            protected_snapshot_at_ms: 0,
             pending: None,
             announced: None,
             journal_capacity_unsafe: false,
@@ -188,7 +199,89 @@ impl PowerCoordinator {
     }
 
     pub fn set_protected_operation(&mut self, active: bool) {
-        self.protected_operation = active;
+        self.observe_protected_operation("legacy", active);
+    }
+
+    pub fn observe_protected_operation(&mut self, operation_id: impl Into<String>, active: bool) {
+        self.apply_protected_operation(operation_id.into(), active, u64::MAX);
+    }
+
+    pub fn observe_protected_occurrence(&mut self, occurrence: RecordingOccurrence) {
+        if occurrence.validate().is_err() || occurrence.updated_at_ms < 0 {
+            return;
+        }
+        self.apply_protected_operation(
+            occurrence.occurrence_id,
+            occurrence_requires_protection(occurrence.state),
+            occurrence.updated_at_ms as u64,
+        );
+    }
+
+    pub fn observe_protected_work_snapshot(&mut self, snapshot: ProtectedWorkSnapshot) {
+        if snapshot.validate().is_err() || snapshot.generated_at_ms < self.protected_snapshot_at_ms
+        {
+            return;
+        }
+
+        // A snapshot replaces the sender's view atomically. Retain only updates that
+        // arrived after the snapshot was generated, so a full local map cannot cause
+        // the snapshot reconciliation to discard every protected operation.
+        let mut reconciled = snapshot
+            .occurrences
+            .into_iter()
+            .map(|occurrence| {
+                (
+                    occurrence.occurrence_id,
+                    ProtectedOperation {
+                        updated_at_ms: occurrence.updated_at_ms as u64,
+                        active: occurrence_requires_protection(occurrence.state),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        for (operation_id, operation) in &self.protected_operations {
+            // Equal timestamps have no causal ordering guarantee across the relay.
+            // Retaining them biases safely toward keeping Auto quiesce blocked until
+            // a later snapshot can authoritatively clear the operation.
+            if operation.updated_at_ms >= snapshot.generated_at_ms {
+                reconciled.insert(operation_id.clone(), operation.clone());
+            }
+        }
+        if reconciled.len() > MAX_PROTECTED_WORK_ITEMS {
+            self.protected_work_capacity_blocked = true;
+            return;
+        }
+        self.protected_operations = reconciled;
+        self.protected_work_capacity_blocked = false;
+        self.protected_snapshot_at_ms = snapshot.generated_at_ms;
+    }
+
+    fn apply_protected_operation(
+        &mut self,
+        operation_id: String,
+        active: bool,
+        updated_at_ms: u64,
+    ) {
+        if self
+            .protected_operations
+            .get(&operation_id)
+            .is_some_and(|current| current.updated_at_ms > updated_at_ms)
+        {
+            return;
+        }
+        if !self.protected_operations.contains_key(&operation_id)
+            && self.protected_operations.len() >= MAX_PROTECTED_WORK_ITEMS
+        {
+            self.protected_work_capacity_blocked = true;
+            return;
+        }
+        self.protected_operations.insert(
+            operation_id,
+            ProtectedOperation {
+                updated_at_ms,
+                active,
+            },
+        );
     }
 
     pub fn set_journal_capacity_unsafe(&mut self, unsafe_capacity: bool) {
@@ -480,10 +573,11 @@ impl PowerCoordinator {
             }
             PowerPolicy::Sleep => {
                 self.cancel_idle();
-                PowerProfile::Dormant
+                low_power_profile(self.config.role)
             }
             PowerPolicy::Auto
-                if self.protected_operation
+                if self.protected_work_capacity_blocked
+                    || self.protected_operations.values().any(|item| item.active)
                     || !active_profiles.is_empty()
                     || reservation_active =>
             {
@@ -559,7 +653,7 @@ impl PowerCoordinator {
             self.state = PowerState::IdlePending;
             normal
         } else {
-            PowerProfile::IdleListening
+            auto_idle_profile(self.config.role)
         }
     }
 
@@ -784,6 +878,18 @@ fn initial_profile(role: robo_rover_lib::LifecycleRole) -> PowerProfile {
         robo_rover_lib::LifecycleRole::Orchestra => PowerProfile::OrchestraSpeech,
     }
 }
+fn low_power_profile(role: robo_rover_lib::LifecycleRole) -> PowerProfile {
+    match role {
+        robo_rover_lib::LifecycleRole::Rover => PowerProfile::Dormant,
+        robo_rover_lib::LifecycleRole::Orchestra => PowerProfile::OrchestraIdle,
+    }
+}
+fn auto_idle_profile(role: robo_rover_lib::LifecycleRole) -> PowerProfile {
+    match role {
+        robo_rover_lib::LifecycleRole::Rover => PowerProfile::IdleListening,
+        robo_rover_lib::LifecycleRole::Orchestra => PowerProfile::OrchestraIdle,
+    }
+}
 fn role_as_resource(role: robo_rover_lib::LifecycleRole) -> robo_rover_lib::ResourceRole {
     match role {
         robo_rover_lib::LifecycleRole::Rover => robo_rover_lib::ResourceRole::Rover,
@@ -794,13 +900,18 @@ fn state_for(policy: PowerPolicy, effective: PowerProfile, requested: PowerProfi
     if requested != effective {
         if requested == PowerProfile::ScheduledCapture && policy == PowerPolicy::Sleep {
             PowerState::Prewarming
-        } else if requested == PowerProfile::Dormant || requested == PowerProfile::IdleListening {
+        } else if matches!(
+            requested,
+            PowerProfile::Dormant | PowerProfile::IdleListening | PowerProfile::OrchestraIdle
+        ) {
             PowerState::Quiescing
         } else {
             PowerState::Waking
         }
     } else {
         match effective {
+            // OrchestraIdle quiesces central speech but does not enter the
+            // Rover-only Dormant state (which means KWS is disabled).
             PowerProfile::Dormant => PowerState::Dormant,
             PowerProfile::IdleListening => PowerState::IdleListening,
             _ => PowerState::Active,
@@ -907,6 +1018,37 @@ mod tests {
             domains,
         }
     }
+
+    fn orchestra_snapshot(sequence: u64, sampled: i64) -> ResourceSnapshot {
+        let mut domains = BTreeMap::new();
+        domains.insert(
+            "central-speech-recognizer".into(),
+            DomainResourceUsage {
+                cpu_usage_percent: Some(1.0),
+                memory_rss_bytes: Some(1),
+                process_count: 1,
+                configured_node_count: 1,
+                sampled_at_ms: sampled,
+            },
+        );
+        ResourceSnapshot {
+            schema_version: 1,
+            role: ResourceRole::Orchestra,
+            entity_id: "orchestra".into(),
+            scope: ResourceScope::Host,
+            source: ResourceSource::Procfs,
+            sequence,
+            sampled_at_ms: sampled,
+            sample_interval_ms: 1,
+            cpu_usage_percent: Some(1.0),
+            cpu_capacity_cores: Some(1.0),
+            memory_used_bytes: None,
+            memory_available_bytes: None,
+            memory_limit_bytes: None,
+            nodes: BTreeMap::new(),
+            domains,
+        }
+    }
     fn status(
         node: &str,
         transition_id: Option<String>,
@@ -984,6 +1126,140 @@ mod tests {
         assert_eq!(
             item.tick(time(20_000, 20_000)).status.requested_profile,
             PowerProfile::NormalRover
+        );
+    }
+    #[test]
+    fn protected_operation_blocks_auto_quiesce_until_released() {
+        let mut item = coordinator();
+        item.policy = PowerPolicy::Auto;
+        item.effective = PowerProfile::NormalRover;
+        item.observe_resources(snapshot(1, Some(1.0), 1));
+        item.set_protected_operation(true);
+        assert_eq!(
+            item.tick(time(300_001, 300_001)).status.requested_profile,
+            PowerProfile::NormalRover
+        );
+        item.set_protected_operation(false);
+        assert_eq!(
+            item.tick(time(300_002, 300_002)).status.state,
+            PowerState::IdlePending
+        );
+    }
+
+    #[test]
+    fn protected_work_rejects_stale_updates_and_snapshot_clears_stale_state() {
+        let mut item = coordinator();
+        item.apply_protected_operation("recording-1".into(), true, 2);
+        item.apply_protected_operation("recording-1".into(), false, 3);
+        item.apply_protected_operation("recording-1".into(), true, 2);
+        assert!(!item.protected_operations["recording-1"].active);
+
+        item.apply_protected_operation("recording-2".into(), true, 4);
+        item.observe_protected_work_snapshot(ProtectedWorkSnapshot {
+            protocol_version: robo_rover_lib::PROTECTED_WORK_RELAY_PROTOCOL_VERSION,
+            snapshot_id: "f4f3e2d1-c0b9-48a7-9615-141312111000".into(),
+            entity_id: "rover".into(),
+            generated_at_ms: 5,
+            occurrences: vec![],
+        });
+        assert!(item.protected_operations.is_empty());
+    }
+
+    #[test]
+    fn protected_work_snapshot_reconciles_a_full_map_without_dropping_the_gate() {
+        let mut item = coordinator();
+        item.policy = PowerPolicy::Auto;
+        item.effective = PowerProfile::NormalRover;
+        item.observe_resources(snapshot(1, Some(1.0), 1));
+        for index in 0..MAX_PROTECTED_WORK_ITEMS {
+            item.apply_protected_operation(format!("old-{index}"), true, 1);
+        }
+
+        let occurrence: RecordingOccurrence = serde_json::from_value(serde_json::json!({
+            "occurrence_id": "f4f3e2d1-c0b9-48a7-9615-141312111000",
+            "schedule_id": "f4f3e2d1-c0b9-48a7-9615-141312111001",
+            "schedule_revision": 1,
+            "entity_id": "rover",
+            "planned_start_ms": 1,
+            "planned_end_ms": 2,
+            "dst_resolution": "exact",
+            "state": "active",
+            "retry_count": 0,
+            "next_retry_at_ms": null,
+            "group_id": null,
+            "start_request_id": "f4f3e2d1-c0b9-48a7-9615-141312111002",
+            "attempts": [],
+            "last_error": null,
+            "suppressed_by_manual": false,
+            "created_at_ms": 1,
+            "updated_at_ms": 2,
+            "terminal_at_ms": null,
+            "expires_at_ms": null
+        }))
+        .unwrap();
+        item.observe_protected_work_snapshot(ProtectedWorkSnapshot {
+            protocol_version: robo_rover_lib::PROTECTED_WORK_RELAY_PROTOCOL_VERSION,
+            snapshot_id: "f4f3e2d1-c0b9-48a7-9615-141312111003".into(),
+            entity_id: "rover".into(),
+            generated_at_ms: 2,
+            occurrences: vec![occurrence],
+        });
+
+        assert_eq!(item.protected_operations.len(), 1);
+        assert!(item
+            .protected_operations
+            .values()
+            .any(|operation| operation.active));
+        assert_eq!(
+            item.tick(time(300_001, 300_001)).status.requested_profile,
+            PowerProfile::NormalRover
+        );
+    }
+
+    #[test]
+    fn protected_work_snapshot_does_not_clear_an_equal_timestamp_update() {
+        let mut item = coordinator();
+        item.apply_protected_operation("recording-1".into(), true, 5);
+        item.observe_protected_work_snapshot(ProtectedWorkSnapshot {
+            protocol_version: robo_rover_lib::PROTECTED_WORK_RELAY_PROTOCOL_VERSION,
+            snapshot_id: "f4f3e2d1-c0b9-48a7-9615-141312111004".into(),
+            entity_id: "rover".into(),
+            generated_at_ms: 5,
+            occurrences: vec![],
+        });
+
+        assert!(item.protected_operations["recording-1"].active);
+    }
+
+    #[test]
+    fn orchestra_sleep_and_auto_use_the_contract_valid_idle_profile() {
+        let mut item = PowerCoordinator::new(
+            CoordinatorConfig::for_test(LifecycleRole::Orchestra, "orchestra"),
+            1,
+        )
+        .unwrap();
+        item.policy = PowerPolicy::Sleep;
+        assert_eq!(
+            item.tick(time(1, 1)).status.requested_profile,
+            PowerProfile::OrchestraIdle
+        );
+        item.policy = PowerPolicy::Auto;
+        item.effective = PowerProfile::OrchestraSpeech;
+        item.observe_resources(orchestra_snapshot(1, 1));
+        item.tick(time(1, 1));
+        item.observe_resources(orchestra_snapshot(2, 300_001));
+        item.tick(time(300_001, 300_001));
+        item.observe_resources(orchestra_snapshot(3, 300_002));
+        let status = item.tick(time(300_002, 300_002)).status;
+        assert_eq!(status.requested_profile, PowerProfile::OrchestraIdle);
+        assert!(status.validate().is_ok());
+        assert_eq!(
+            state_for(
+                PowerPolicy::Auto,
+                PowerProfile::OrchestraIdle,
+                PowerProfile::OrchestraIdle
+            ),
+            PowerState::Active
         );
     }
     #[test]

@@ -72,6 +72,12 @@ nodes:
       fleet_select_command: web-bridge/fleet_select_command
       lifecycle_command_authorized: lifecycle-manager/lifecycle_authorized_command
       lifecycle_status_query: web-bridge/lifecycle_status_query
+      recording_occurrence_status:
+        source: recording-scheduler/recording_occurrence_status
+        queue_size: 64
+      protected_work_snapshot:
+        source: recording-scheduler/protected_work_snapshot
+        queue_size: 16
     outputs:
       # Data FROM active rovers via Zenoh (subscribers)
       - video_frame         # JPEG frames from rover camera (with entity_id in metadata)
@@ -89,6 +95,7 @@ nodes:
       - lifecycle_command_result
       - lifecycle_status
       - lifecycle_capabilities
+      - protected_work_snapshot_request
     env:
       RUST_LOG: info
       ZENOH_MODE: "peer"
@@ -99,6 +106,7 @@ nodes:
       VIDEO_HEIGHT: "480"
       AUDIO_SAMPLE_RATE: "16000"
       AUDIO_CHANNELS: "1"
+      POWER_PROTECTED_WORK_HMAC_KEYS: "${POWER_PROTECTED_WORK_HMAC_KEYS:-}"
 
   # Central final-only VAD/offline speech recognizer.
   - id: central-speech-recognizer
@@ -155,8 +163,10 @@ nodes:
 
   # Orchestra-side recorder. Media inputs are direct fan-out from the bridge so
   # recorder backpressure cannot block browser delivery or speech processing.
-  # The scheduler has no recorder or rover output. It owns durable intent only;
-  # web-bridge remains the sole recorder-session and media-demand authority.
+  # The scheduler has no recorder or direct rover-control output. It owns durable
+  # intent and reports occurrence state; the Orchestra bridge relays that state
+  # to the target rover's protected-work gate. Web-bridge remains the sole
+  # recorder-session and media-demand authority.
   - id: recording-scheduler
     build: cargo build --release -p recording_scheduler
     path: ../target/release/recording_scheduler
@@ -179,10 +189,14 @@ nodes:
         # Snapshots are idempotent; the scheduler requests another one every
         # reconciliation interval, repairing a full bounded transport queue.
         queue_size: 8
+      protected_work_snapshot_request:
+        source: orchestra-bridge/protected_work_snapshot_request
+        queue_size: 16
     outputs:
       - recording_schedule_command_result
       - recording_schedule_snapshot
       - recording_occurrence_status
+      - protected_work_snapshot
       - scheduled_recording_intent
       - recording_reconciliation_request
       - recording_scheduler_manual_suppression_ack
@@ -264,6 +278,12 @@ nodes:
         source: lifecycle-manager/lifecycle_status
         queue_size: 64
       lifecycle_command_result: lifecycle-manager/lifecycle_command_result
+      recording_occurrence_status:
+        source: recording-scheduler/recording_occurrence_status
+        queue_size: 64
+      protected_work_snapshot:
+        source: recording-scheduler/protected_work_snapshot
+        queue_size: 16
       power_event_ack: power-event-projector/power_event_ack
       tick: dora/timer/millis/1000
     outputs:
@@ -315,10 +335,11 @@ nodes:
       - lifecycle_command_result
       - lifecycle_status
       - lifecycle_capabilities
+      - protected_work_snapshot_request
       - lifecycle_authorized_command
     env:
       RUST_LOG: info
-      LIFECYCLE_CAPABILITIES: '[{"target":{"role":"orchestra","entity_id":"orchestra","node_id":"central-speech-recognizer"},"supported":true,"always_on":false},{"target":{"role":"orchestra","entity_id":"orchestra","node_id":"media-recorder"},"supported":true,"always_on":false},{"target":{"role":"orchestra","entity_id":"orchestra","node_id":"orchestra-bridge"},"supported":false,"always_on":true},{"target":{"role":"orchestra","entity_id":"orchestra","node_id":"web-bridge"},"supported":false,"always_on":true}]'
+      LIFECYCLE_CAPABILITIES: '[{"target":{"role":"orchestra","entity_id":"orchestra","node_id":"central-speech-recognizer"},"supported":true,"always_on":false},{"target":{"role":"orchestra","entity_id":"orchestra","node_id":"media-recorder"},"supported":false,"always_on":true},{"target":{"role":"orchestra","entity_id":"orchestra","node_id":"orchestra-bridge"},"supported":false,"always_on":true},{"target":{"role":"orchestra","entity_id":"orchestra","node_id":"web-bridge"},"supported":false,"always_on":true}]'
       LIFECYCLE_REMOTE_ROVER_ENTITIES: "${ACTIVE_ROVERS:-rover-kiwi}"
 
   # Web bridge - Fleet control with entity selection

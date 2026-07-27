@@ -1,3 +1,14 @@
+---
+title: "Coordinator Profiles and Auto Reducer"
+description: "Deliver role-scoped power profiles, bounded demand accounting, protected-work vetoes, readiness barriers, and the five-minute Auto reducer gate."
+status: completed
+priority: P1
+effort: 40h
+branch: main
+tags: [feature, backend, power-coordinator, rover, orchestra]
+created: 2026-07-26
+---
+
 # Phase 02 — Coordinator Profiles and Auto Reducer
 
 ## Context links
@@ -8,7 +19,7 @@
 
 ## Overview
 
-- Date: 2026-07-26; priority: P1; implementation/review: Blocked by Phase 01 remediation.
+- Date: 2026-07-27; priority: P1; implementation/review: DONE — accepted 2026-07-27T13:32:39+07:00.
 - Add deterministic deployment-local policy, demand ledger, reviewed profiles, readiness barriers, and Auto hysteresis.
 
 ## Carryover audit
@@ -66,10 +77,10 @@ barriers, and most reducer tests exist. The phase is not accepted because:
 
 - [x] Add coordinator crate, baseline profile validation, and reducer tests.
 - [x] Add domain CPU freshness evidence and staged lifecycle barriers.
-- [ ] Wire protected-work ownership into the runtime contract/dataflow.
-- [ ] Make Orchestra Sleep contract-valid and enforce the five-minute floor.
-- [ ] Complete profile and always-on ownership inventories.
-- [ ] Add per-source TTL/capacity and missing retry/restart/profile tests.
+- [x] Wire protected-work ownership into the runtime contract/dataflow.
+- [x] Make Orchestra Sleep contract-valid and enforce the five-minute floor.
+- [x] Complete profile and always-on ownership inventories.
+- [x] Add per-source TTL/capacity and missing retry/restart/profile tests.
 
 ## Success Criteria
 
@@ -91,3 +102,10 @@ barriers, and most reducer tests exist. The phase is not accepted because:
 ## Next steps
 
 Phase 03 persists intent before enabling real transitions. Threshold values remain target-hardware decisions.
+
+## Completion status
+
+All Phase 02 carryover gaps and success criteria are accepted: role-valid
+profiles (including Orchestra Sleep), protected-work ownership, bounded
+per-source demand TTL/capacity, complete always-on inventories, readiness
+barriers, and the five-minute Auto grace are implemented and covered by tests.

@@ -142,6 +142,12 @@ nodes:
         source: lifecycle-manager/lifecycle_status
         queue_size: 64
       lifecycle_command_result: lifecycle-manager/lifecycle_command_result
+      recording_occurrence_status:
+        source: zenoh-bridge/recording_occurrence_status
+        queue_size: 64
+      protected_work_snapshot:
+        source: zenoh-bridge/protected_work_snapshot
+        queue_size: 16
       tick: dora/timer/millis/1000
     outputs:
       - lifecycle_command
@@ -357,8 +363,11 @@ nodes:
       - lifecycle_command_relay
       - lifecycle_wake_lease_relay
       - lifecycle_status_query
+      - recording_occurrence_status
+      - protected_work_snapshot
     env:
       RUST_LOG: info
       ZENOH_MODE: "peer"
       ENTITY_ID: "rover-kiwi"
       ZENOH_CONFIG: "${ROVER_ZENOH_CONFIG:-zenoh_bridge/zenoh_config.json5}"
+      POWER_PROTECTED_WORK_HMAC_KEY: "${POWER_PROTECTED_WORK_HMAC_KEY:-}"

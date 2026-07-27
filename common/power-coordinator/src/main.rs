@@ -8,7 +8,8 @@ use power_coordinator::{
     CoordinatorConfig, CoordinatorTime, DurablePowerCoordinator, JournalAcknowledgement,
 };
 use robo_rover_lib::{
-    init_tracing, LifecycleCommandResult, LifecycleStatus, PowerCommand, ResourceSnapshot,
+    init_tracing, LifecycleCommandResult, LifecycleStatus, PowerCommand, RecordingOccurrence,
+    ResourceSnapshot,
 };
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -55,6 +56,20 @@ fn main() -> Result<()> {
                             "power_command_result",
                             &coordinator.apply_command(command, now),
                         )?;
+                    }
+                }
+            }
+            Event::Input { id, data, .. } if id.as_str() == "recording_occurrence_status" => {
+                if let Some(bytes) = binary(&data) {
+                    if let Ok(occurrence) = serde_json::from_slice::<RecordingOccurrence>(bytes) {
+                        coordinator.observe_protected_occurrence(occurrence);
+                    }
+                }
+            }
+            Event::Input { id, data, .. } if id.as_str() == "protected_work_snapshot" => {
+                if let Some(bytes) = binary(&data) {
+                    if let Ok(snapshot) = serde_json::from_slice(bytes) {
+                        coordinator.observe_protected_work_snapshot(snapshot);
                     }
                 }
             }
@@ -113,4 +128,28 @@ fn send<T: serde::Serialize>(node: &mut DoraNode, id: &str, value: &T) -> Result
         BinaryArray::from_vec(vec![payload.as_slice()]),
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use robo_rover_lib::{occurrence_requires_protection, RecordingOccurrenceState};
+
+    #[test]
+    fn only_live_recording_states_hold_the_protected_work_gate() {
+        assert!(!occurrence_requires_protection(
+            RecordingOccurrenceState::Planned
+        ));
+        assert!(occurrence_requires_protection(
+            RecordingOccurrenceState::StartPending
+        ));
+        assert!(occurrence_requires_protection(
+            RecordingOccurrenceState::Active
+        ));
+        assert!(occurrence_requires_protection(
+            RecordingOccurrenceState::StopPending
+        ));
+        assert!(!occurrence_requires_protection(
+            RecordingOccurrenceState::Completed
+        ));
+    }
 }

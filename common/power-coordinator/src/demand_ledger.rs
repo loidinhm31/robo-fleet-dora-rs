@@ -34,6 +34,7 @@ impl DemandLedger {
         demand: PowerDemand,
         now_ms: u64,
     ) -> Result<LedgerOutcome, PowerReasonCode> {
+        self.prune_expired_demands(now_ms);
         if demand.expires_at_ms <= now_ms {
             return Err(PowerReasonCode::Expired);
         }
@@ -59,7 +60,14 @@ impl DemandLedger {
         if demand.action != PowerDemandAction::Acquire {
             return Err(PowerReasonCode::Conflict);
         }
-        if self.demands.len() >= MAX_POWER_DEMANDS {
+        if self.demands.values().filter(|entry| entry.active).count() >= MAX_POWER_DEMANDS
+            || self
+                .demands
+                .values()
+                .filter(|entry| entry.active && entry.demand.source == demand.source)
+                .count()
+                >= demand.source.capacity()
+        {
             return Err(PowerReasonCode::CapacityExceeded);
         }
         self.demands.insert(
@@ -188,6 +196,11 @@ impl DemandLedger {
         self.reservation_tombstones
             .retain(|_, tombstone| tombstone.expires_at_ms > now_ms);
     }
+
+    fn prune_expired_demands(&mut self, now_ms: u64) {
+        self.demands
+            .retain(|_, entry| entry.demand.expires_at_ms > now_ms);
+    }
 }
 
 #[cfg(test)]
@@ -232,6 +245,28 @@ mod tests {
         );
         assert_eq!(ledger.active_demands(21).count(), 0);
     }
+
+    #[test]
+    fn capacity_is_bounded_per_source_without_blocking_other_sources() {
+        let mut ledger = DemandLedger::default();
+        for index in 0..PowerDemandSource::Kws.capacity() {
+            let mut item = demand(PowerDemandAction::Acquire, 1, 100);
+            item.source = PowerDemandSource::Kws;
+            item.demand_id = format!("f4f3e2d1-c0b9-48a7-9615-{index:012}");
+            ledger.apply(item, 2).unwrap();
+        }
+        let mut overflow = demand(PowerDemandAction::Acquire, 1, 100);
+        overflow.source = PowerDemandSource::Kws;
+        overflow.demand_id = "f4f3e2d1-c0b9-48a7-9615-999999999999".into();
+        assert_eq!(
+            ledger.apply(overflow, 2),
+            Err(PowerReasonCode::CapacityExceeded)
+        );
+
+        let mut ui = demand(PowerDemandAction::Acquire, 1, 100);
+        ui.demand_id = "f4f3e2d1-c0b9-48a7-9615-888888888888".into();
+        assert_eq!(ledger.apply(ui, 2), Ok(LedgerOutcome::Applied));
+    }
     #[test]
     fn release_tombstone_cannot_be_reacquired() {
         let mut ledger = DemandLedger::default();
@@ -245,6 +280,25 @@ mod tests {
             ledger.apply(demand(PowerDemandAction::Acquire, 2, 20), 2),
             Err(PowerReasonCode::Conflict)
         );
+    }
+
+    #[test]
+    fn released_demand_frees_source_capacity_for_a_new_id() {
+        let mut ledger = DemandLedger::default();
+        for index in 0..PowerDemandSource::Kws.capacity() {
+            let mut item = demand(PowerDemandAction::Acquire, 1, 100);
+            item.source = PowerDemandSource::Kws;
+            item.demand_id = format!("f4f3e2d1-c0b9-48a7-9615-{index:012}");
+            ledger.apply(item, 2).unwrap();
+        }
+        ledger
+            .release("rover", "f4f3e2d1-c0b9-48a7-9615-000000000000")
+            .unwrap();
+
+        let mut replacement = demand(PowerDemandAction::Acquire, 1, 100);
+        replacement.source = PowerDemandSource::Kws;
+        replacement.demand_id = "f4f3e2d1-c0b9-48a7-9615-999999999999".into();
+        assert_eq!(ledger.apply(replacement, 2), Ok(LedgerOutcome::Applied));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use robo_rover_lib::{LifecycleRole, PowerProfile};
 use std::collections::{BTreeMap, BTreeSet};
 
-const FORBIDDEN_TARGETS: [&str; 8] = [
+const ALWAYS_ON_TARGETS: [&str; 17] = [
     "rover-controller",
     "arm-controller",
     "watchdog",
@@ -10,6 +10,15 @@ const FORBIDDEN_TARGETS: [&str; 8] = [
     "resource-monitor",
     "recording-scheduler",
     "power-coordinator",
+    "lifecycle-manager",
+    "web-bridge",
+    "command-parser",
+    "media-recorder",
+    "emergency-path",
+    "visual-servo-controller",
+    "power-event-projector",
+    "audio-converter",
+    "video-encoder",
 ];
 
 #[derive(Debug, Clone)]
@@ -24,6 +33,7 @@ enum PowerProfileKey {
     IdleListening,
     ScheduledCapture,
     NormalRover,
+    OrchestraIdle,
     OrchestraSpeech,
 }
 
@@ -34,6 +44,7 @@ impl From<PowerProfile> for PowerProfileKey {
             PowerProfile::IdleListening => Self::IdleListening,
             PowerProfile::ScheduledCapture => Self::ScheduledCapture,
             PowerProfile::NormalRover => Self::NormalRover,
+            PowerProfile::OrchestraIdle => Self::OrchestraIdle,
             PowerProfile::OrchestraSpeech => Self::OrchestraSpeech,
         }
     }
@@ -69,10 +80,13 @@ impl ProfileCatalog {
                 ],
             ),
             LifecycleRole::Orchestra => (
-                BTreeMap::from([(
-                    PowerProfileKey::OrchestraSpeech,
-                    vec!["central-speech-recognizer"],
-                )]),
+                BTreeMap::from([
+                    (PowerProfileKey::OrchestraIdle, vec![]),
+                    (
+                        PowerProfileKey::OrchestraSpeech,
+                        vec!["central-speech-recognizer"],
+                    ),
+                ]),
                 vec![],
             ),
         };
@@ -112,7 +126,7 @@ impl ProfileCatalog {
 
     pub fn rank(&self, profile: PowerProfile) -> u8 {
         match profile {
-            PowerProfile::Dormant => 0,
+            PowerProfile::Dormant | PowerProfile::OrchestraIdle => 0,
             PowerProfile::IdleListening => 1,
             PowerProfile::ScheduledCapture => 2,
             PowerProfile::NormalRover | PowerProfile::OrchestraSpeech => 3,
@@ -130,7 +144,7 @@ impl ProfileCatalog {
 
     fn validate(&self) -> Result<(), String> {
         let all = self.ordered();
-        if all.iter().any(|target| FORBIDDEN_TARGETS.contains(target)) {
+        if all.iter().any(|target| ALWAYS_ON_TARGETS.contains(target)) {
             return Err("profile contains an always-on safety target".into());
         }
         if self
@@ -199,5 +213,25 @@ mod tests {
                 .last(),
             Some(&"audio-capture")
         );
+    }
+
+    #[test]
+    fn catalogs_never_schedule_always_on_targets() {
+        for role in [LifecycleRole::Rover, LifecycleRole::Orchestra] {
+            let catalog = ProfileCatalog::for_role(role).unwrap();
+            for profile in [
+                PowerProfile::Dormant,
+                PowerProfile::IdleListening,
+                PowerProfile::ScheduledCapture,
+                PowerProfile::NormalRover,
+                PowerProfile::OrchestraIdle,
+                PowerProfile::OrchestraSpeech,
+            ] {
+                assert!(catalog
+                    .targets(profile)
+                    .iter()
+                    .all(|target| !ALWAYS_ON_TARGETS.contains(target)));
+            }
+        }
     }
 }

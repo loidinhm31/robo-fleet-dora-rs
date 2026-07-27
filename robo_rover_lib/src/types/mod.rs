@@ -8,6 +8,7 @@ pub mod lifecycle_types;
 pub mod nlu_types;
 mod pcm_frame_packet;
 pub mod power_types;
+pub mod protected_work_types;
 pub mod recording_occurrence_types;
 pub mod recording_schedule_types;
 pub mod recording_schedule_validation;
@@ -28,6 +29,7 @@ pub use lifecycle_types::*;
 pub use nlu_types::*;
 pub use pcm_frame_packet::*;
 pub use power_types::*;
+pub use protected_work_types::*;
 pub use recording_occurrence_types::*;
 pub use recording_schedule_types::*;
 pub use recording_schedule_validation::*;
@@ -45,6 +47,8 @@ mod lifecycle_contract_tests;
 mod pcm_frame_packet_tests;
 #[cfg(test)]
 mod power_contract_tests;
+#[cfg(test)]
+mod protected_work_types_tests;
 #[cfg(test)]
 mod recording_schedule_types_tests;
 #[cfg(test)]

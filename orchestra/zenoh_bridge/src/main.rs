@@ -9,7 +9,9 @@ use robo_rover_lib::{
     AudioFrameMetadata, AudioFrameSequenceTracker, CameraAction, CameraControl, FleetSelectCommand,
     FleetSubscriptionCommand, FrameSequenceTracker, JpegFramePacket, LifecycleCommand,
     LifecycleCommandResult, LifecycleRole, LifecycleStatus, LifecycleWakeLease, MetricWindow,
-    PcmFramePacket, PcmSampleFormat, StreamCommand, StreamControl, TargetedMediaControl,
+    PcmFramePacket, PcmSampleFormat, ProtectedWorkRelayBody, ProtectedWorkRelayEnvelope,
+    ProtectedWorkSnapshot, ProtectedWorkSnapshotRequest, RecordingOccurrence, StreamCommand,
+    StreamControl, TargetedMediaControl, PROTECTED_WORK_RELAY_TTL_MS,
 };
 use serde_json;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -50,6 +52,7 @@ struct RoverSubscriptions {
     lifecycle_status_sub: ZenohSubscriber,
     lifecycle_result_sub: ZenohSubscriber,
     lifecycle_capabilities_sub: ZenohSubscriber,
+    protected_work_request_sub: ZenohSubscriber,
 }
 
 struct LegacyAudioState {
@@ -175,6 +178,17 @@ async fn subscribe_to_rover(
                 e
             )
         })?;
+    let protected_work_request_topic = format!("rover/{entity_id}/power/protected-work/request/v1");
+    let protected_work_request_sub = session
+        .declare_subscriber(&protected_work_request_topic)
+        .await
+        .map_err(|e| {
+            eyre::eyre!(
+                "Failed to subscribe to {}: {}",
+                protected_work_request_topic,
+                e
+            )
+        })?;
 
     Ok(RoverSubscriptions {
         entity_id: entity_id.to_string(),
@@ -193,6 +207,7 @@ async fn subscribe_to_rover(
         lifecycle_status_sub,
         lifecycle_result_sub,
         lifecycle_capabilities_sub,
+        protected_work_request_sub,
     })
 }
 
@@ -233,6 +248,7 @@ async fn handle_fleet_subscription_command(
     session: &Arc<zenoh::Session>,
     data: dora_node_api::ArrowData,
     latest_voice_config: Option<&[u8]>,
+    protected_work_keys: &BTreeMap<String, Vec<u8>>,
 ) -> Result<()> {
     if let Some(binary_array) = data.0.as_any().downcast_ref::<BinaryArray>() {
         if binary_array.len() > 0 {
@@ -243,6 +259,8 @@ async fn handle_fleet_subscription_command(
                 FleetSubscriptionCommand::ActivateRover { entity_id, .. } => {
                     if active_rovers.contains_key(&entity_id) {
                         tracing::warn!("Rover {} already active", entity_id);
+                    } else if !protected_work_keys.contains_key(&entity_id) {
+                        tracing::warn!(%entity_id, "rejected Rover activation without a protected-work HMAC key");
                     } else if can_activate_rover(active_rovers.len()) {
                         tracing::info!("Activating rover: {}", entity_id);
                         let subs = subscribe_to_rover(session, &entity_id).await?;
@@ -276,6 +294,13 @@ async fn handle_fleet_subscription_command(
                             return Ok(());
                         }
                     };
+                    if let Some(entity_id) = entity_ids
+                        .iter()
+                        .find(|entity_id| !protected_work_keys.contains_key(*entity_id))
+                    {
+                        tracing::warn!(%entity_id, "rejected active Rover set without a protected-work HMAC key");
+                        return Ok(());
+                    }
                     tracing::info!("Setting active rovers: {:?}", entity_ids);
 
                     // Remove rovers not in new list
@@ -410,6 +435,15 @@ async fn main() -> Result<()> {
     );
 
     tracing::info!("Zenoh session ID: {}", session.zid());
+    let protected_work_keys = protected_work_keys_from_env()?;
+    if let Some(entity_id) = initial_rovers
+        .iter()
+        .find(|entity_id| !protected_work_keys.contains_key(*entity_id))
+    {
+        return Err(eyre::eyre!(
+            "missing protected-work HMAC key for active rover {entity_id}"
+        ));
+    }
 
     // =========================================================================
     // Initialize subscriptions for active rovers
@@ -455,6 +489,8 @@ async fn main() -> Result<()> {
     let lifecycle_status_output = DataId::from("lifecycle_status".to_owned());
     let lifecycle_result_output = DataId::from("lifecycle_command_result".to_owned());
     let lifecycle_capabilities_output = DataId::from("lifecycle_capabilities".to_owned());
+    let protected_work_snapshot_request_output =
+        DataId::from("protected_work_snapshot_request".to_owned());
 
     // Statistics per rover
     let video_counts: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -504,6 +540,7 @@ async fn main() -> Result<()> {
                                     &session,
                                     data,
                                     latest_voice_config.as_deref(),
+                                    &protected_work_keys,
                                 ).await {
                                     tracing::error!("Fleet subscription error: {}", e);
                                 }
@@ -532,6 +569,61 @@ async fn main() -> Result<()> {
                                     if let Some(bytes) = (binary_array.len() > 0).then(|| binary_array.value(0)) {
                                         if let Err(error) = publish_targeted_media_control(&session, &active_rovers, bytes).await {
                                             tracing::warn!(%error, "rejected targeted media control");
+                                        }
+                                    }
+                                }
+                            }
+
+                            // The scheduler owns occurrence truth. Every transition is HMAC
+                            // authenticated for its explicit rover; terminal states clear the
+                            // rover-local protected-work gate.
+                            "recording_occurrence_status" => {
+                                if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                                    if binary_array.len() == 1 {
+                                        let bytes = binary_array.value(0);
+                                        if let Ok(occurrence) = serde_json::from_slice::<RecordingOccurrence>(bytes) {
+                                            if let Some(key) = protected_work_keys.get(&occurrence.entity_id) {
+                                                match signed_protected_work_envelope(
+                                                    occurrence.entity_id.clone(),
+                                                    ProtectedWorkRelayBody::Occurrence { occurrence },
+                                                    key,
+                                                ) {
+                                                    Ok(envelope) => {
+                                                        let topic = format!("rover/{}/power/protected-work/occurrence/v1", envelope.target_entity_id);
+                                                        if let Err(error) = session.put(topic, serde_json::to_vec(&envelope)?).await {
+                                                            tracing::warn!(%error, "failed to publish protected recording work");
+                                                        }
+                                                    }
+                                                    Err(error) => tracing::warn!(%error, "rejected invalid protected recording work"),
+                                                }
+                                            } else {
+                                                tracing::warn!("rejected protected recording work without a rover key");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            "protected_work_snapshot" => {
+                                if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                                    if binary_array.len() == 1 {
+                                        let bytes = binary_array.value(0);
+                                        if let Ok(snapshot) = serde_json::from_slice::<ProtectedWorkSnapshot>(bytes) {
+                                            if let Some(key) = protected_work_keys.get(&snapshot.entity_id) {
+                                                match signed_protected_work_envelope(
+                                                    snapshot.entity_id.clone(),
+                                                    ProtectedWorkRelayBody::Snapshot { snapshot },
+                                                    key,
+                                                ) {
+                                                    Ok(envelope) => {
+                                                        let topic = format!("rover/{}/power/protected-work/snapshot/v1", envelope.target_entity_id);
+                                                        if let Err(error) = session.put(topic, serde_json::to_vec(&envelope)?).await {
+                                                            tracing::warn!(%error, "failed to publish protected-work snapshot");
+                                                        }
+                                                    }
+                                                    Err(error) => tracing::warn!(%error, "rejected invalid protected-work snapshot"),
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1061,6 +1153,24 @@ async fn main() -> Result<()> {
                     forward_binary_output(&mut node, &lifecycle_capabilities_output, sample);
                 }
             }
+
+            result = receive_from_rovers(&active_rovers, |subs| &subs.protected_work_request_sub) => {
+                if let Some((entity_id, sample)) = result {
+                    let payload = sample.payload().to_bytes();
+                    if let Some(key) = protected_work_keys.get(&entity_id) {
+                        if let Some(request) = verified_snapshot_request(payload.as_ref(), &entity_id, key) {
+                            let serialized = serde_json::to_vec(&request)?;
+                            let _ = node.send_output(
+                                protected_work_snapshot_request_output.clone(),
+                                Default::default(),
+                                BinaryArray::from_vec(vec![serialized.as_slice()]),
+                            );
+                        } else {
+                            tracing::warn!(%entity_id, "rejected protected-work snapshot request");
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1189,6 +1299,53 @@ fn web_command_topic(input_id: &str, entity_id: &str) -> Option<String> {
         "stream_command_web" => Some(format!("rover/{entity_id}/cmd/stream/v1")),
         "tracking_command_web" => Some(format!("rover/{entity_id}/cmd/tracking")),
         "tts_command_web" => Some(format!("rover/{entity_id}/cmd/tts")),
+        _ => None,
+    }
+}
+
+fn protected_work_keys_from_env() -> Result<BTreeMap<String, Vec<u8>>> {
+    let raw = std::env::var("POWER_PROTECTED_WORK_HMAC_KEYS")
+        .map_err(|_| eyre::eyre!("POWER_PROTECTED_WORK_HMAC_KEYS is required"))?;
+    let keys = serde_json::from_str::<BTreeMap<String, String>>(&raw)
+        .map_err(|_| eyre::eyre!("POWER_PROTECTED_WORK_HMAC_KEYS must be a JSON object"))?;
+    if keys.is_empty() || keys.values().any(|key| key.len() < 32) {
+        return Err(eyre::eyre!(
+            "protected-work HMAC keys must be at least 32 bytes"
+        ));
+    }
+    Ok(keys
+        .into_iter()
+        .map(|(entity_id, key)| (entity_id, key.into_bytes()))
+        .collect())
+}
+
+fn signed_protected_work_envelope(
+    entity_id: String,
+    body: ProtectedWorkRelayBody,
+    key: &[u8],
+) -> Result<ProtectedWorkRelayEnvelope, String> {
+    ProtectedWorkRelayEnvelope::new(
+        entity_id,
+        current_time_ms()?,
+        PROTECTED_WORK_RELAY_TTL_MS,
+        body,
+    )
+    .sign(key)
+}
+
+fn verified_snapshot_request(
+    payload: &[u8],
+    entity_id: &str,
+    key: &[u8],
+) -> Option<ProtectedWorkSnapshotRequest> {
+    let envelope = serde_json::from_slice::<ProtectedWorkRelayEnvelope>(payload).ok()?;
+    envelope.verify(key, current_time_ms().ok()?).ok()?;
+    match envelope.body {
+        ProtectedWorkRelayBody::SnapshotRequest { request }
+            if envelope.target_entity_id == entity_id && request.entity_id == entity_id =>
+        {
+            Some(request)
+        }
         _ => None,
     }
 }
@@ -1463,7 +1620,8 @@ mod audio_tests {
 #[cfg(test)]
 mod routing_tests {
     use robo_rover_lib::{
-        CameraAction, CameraControl, StreamCommand, StreamControl, TargetedMediaControl,
+        CameraAction, CameraControl, ProtectedWorkRelayBody, ProtectedWorkRelayEnvelope,
+        StreamCommand, StreamControl, TargetedMediaControl, PROTECTED_WORK_RELAY_TTL_MS,
     };
 
     /// Returns true if the given Dora input id is classified as a parser input
@@ -1684,6 +1842,51 @@ mod routing_tests {
         let stream = serde_json::from_slice::<StreamControl>(&commands[1].1).unwrap();
         assert!(matches!(stream.command, StreamCommand::Stop));
         assert!(!stream.video_enabled);
+    }
+
+    #[test]
+    fn protected_work_occurrence_envelope_is_signed_for_its_target_rover() {
+        let occurrence = serde_json::json!({
+            "occurrence_id": "f4f3e2d1-c0b9-48a7-9615-141312111000",
+            "schedule_id": "f4f3e2d1-c0b9-48a7-9615-141312111001",
+            "schedule_revision": 1,
+            "entity_id": "rover-a",
+            "planned_start_ms": 1,
+            "planned_end_ms": 2,
+            "dst_resolution": "exact",
+            "state": "active",
+            "retry_count": 0,
+            "next_retry_at_ms": null,
+            "group_id": null,
+            "start_request_id": "f4f3e2d1-c0b9-48a7-9615-141312111002",
+            "attempts": [],
+            "last_error": null,
+            "suppressed_by_manual": false,
+            "created_at_ms": 1,
+            "updated_at_ms": 1,
+            "terminal_at_ms": null,
+            "expires_at_ms": null
+        });
+        let key = b"12345678901234567890123456789012";
+        let envelope = ProtectedWorkRelayEnvelope::new(
+            "rover-a".into(),
+            super::current_time_ms().unwrap(),
+            PROTECTED_WORK_RELAY_TTL_MS,
+            ProtectedWorkRelayBody::Occurrence {
+                occurrence: serde_json::from_value(occurrence).unwrap(),
+            },
+        )
+        .sign(key)
+        .unwrap();
+        assert!(envelope
+            .verify(key, super::current_time_ms().unwrap())
+            .is_ok());
+        assert!(envelope
+            .verify(
+                b"abcdefghijklmnopqrstuvwxyz123456",
+                super::current_time_ms().unwrap()
+            )
+            .is_err());
     }
 }
 

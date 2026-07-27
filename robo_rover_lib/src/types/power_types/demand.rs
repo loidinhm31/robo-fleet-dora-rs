@@ -2,7 +2,6 @@ use super::{validation::*, PowerAuthority, PowerProfile, POWER_PROTOCOL_VERSION}
 use crate::types::lifecycle_types::LifecycleRole;
 use serde::{Deserialize, Serialize};
 
-const MAX_DEMAND_TTL_MS: u64 = 3_600_000;
 const MAX_RESERVATION_TTL_MS: u64 = 604_800_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,7 +80,7 @@ impl PowerDemand {
             self.issued_at_ms,
             self.not_before_ms,
             self.expires_at_ms,
-            MAX_DEMAND_TTL_MS,
+            self.source.max_ttl_ms(),
         )
     }
 
@@ -140,6 +139,23 @@ impl PowerReservation {
 }
 
 impl PowerDemandSource {
+    pub const fn max_ttl_ms(self) -> u64 {
+        match self {
+            Self::Ui => 120_000,
+            Self::Scheduler | Self::Kws => 300_000,
+            Self::Media => 900_000,
+            Self::Safety | Self::Maintenance => 3_600_000,
+        }
+    }
+
+    pub const fn capacity(self) -> usize {
+        match self {
+            Self::Ui | Self::Media => 32,
+            Self::Scheduler => 16,
+            Self::Kws | Self::Safety | Self::Maintenance => 8,
+        }
+    }
+
     fn allows(self, profile: PowerProfile) -> bool {
         matches!(
             (self, profile),
@@ -169,4 +185,37 @@ fn validate_window(issued: u64, not_before: u64, expires: u64, max_ttl: u64) -> 
         return Err("invalid power demand or reservation timestamps".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{LifecycleRole, PowerAuthority, PowerDemandPriority};
+
+    fn demand(expires_at_ms: u64) -> PowerDemand {
+        PowerDemand {
+            protocol_version: POWER_PROTOCOL_VERSION,
+            demand_id: "f4f3e2d1-c0b9-48a7-9615-141312111000".into(),
+            action: PowerDemandAction::Acquire,
+            source: PowerDemandSource::Ui,
+            priority: PowerDemandPriority::Normal,
+            role: LifecycleRole::Rover,
+            entity_id: "rover".into(),
+            required_profile: PowerProfile::NormalRover,
+            authority: PowerAuthority {
+                epoch: 1,
+                sequence: 1,
+            },
+            issued_at_ms: 1,
+            not_before_ms: 1,
+            expires_at_ms,
+            renew_sequence: 1,
+        }
+    }
+
+    #[test]
+    fn ui_ttl_is_bounded_to_two_minutes() {
+        assert!(demand(120_002).validate().is_err());
+        assert!(demand(120_001).validate().is_ok());
+    }
 }
