@@ -203,6 +203,7 @@ impl LifecycleManager {
         target.authority_epoch = command.manager_epoch;
         target.revision = command.expected_revision.saturating_add(1);
         target.terminal_fence = None;
+        target.transition_deadline_ms = None;
         target.transition_id = command.transition_id.clone();
         target.desired_state = command.desired_state;
         if command.desired_state == LifecycleDesiredState::Quiesced {
@@ -642,6 +643,7 @@ impl LifecycleManager {
             item.desired_state = command.desired_state;
             item.revision = item.revision.saturating_add(1);
             item.terminal_fence = None;
+            item.transition_deadline_ms = None;
             item.transition_id = command.transition_id.clone();
             item.revision
         };
@@ -698,13 +700,15 @@ impl LifecycleManager {
                 if item.effective_state != LifecycleEffectiveState::Running =>
             {
                 item.effective_state = LifecycleEffectiveState::Resuming;
-                item.transition_deadline_ms = Some(now_ms.saturating_add(TRANSITION_TIMEOUT_MS));
+                item.transition_deadline_ms
+                    .get_or_insert_with(|| now_ms.saturating_add(TRANSITION_TIMEOUT_MS));
             }
             LifecycleDesiredState::Quiesced
                 if item.effective_state != LifecycleEffectiveState::Quiesced =>
             {
                 item.effective_state = LifecycleEffectiveState::Quiescing;
-                item.transition_deadline_ms = Some(now_ms.saturating_add(TRANSITION_TIMEOUT_MS));
+                item.transition_deadline_ms
+                    .get_or_insert_with(|| now_ms.saturating_add(TRANSITION_TIMEOUT_MS));
             }
             _ => {}
         }
@@ -1093,6 +1097,34 @@ mod tests {
         assert_eq!(
             manager.status(&target(), 30_002).unwrap().effective_state,
             LifecycleEffectiveState::Failed
+        );
+    }
+
+    #[test]
+    fn superseding_revision_receives_a_new_transition_deadline() {
+        let mut manager = LifecycleManager::new(
+            9,
+            vec![LifecycleCapability {
+                target: target(),
+                supported: true,
+                always_on: false,
+            }],
+        )
+        .unwrap();
+        assert!(
+            manager
+                .apply(command(9, 0, LifecycleDesiredState::Quiesced), 2)
+                .accepted
+        );
+        let mut replacement = command(9, 1, LifecycleDesiredState::Running);
+        replacement.request_id = "f4f3e2d1-c0b9-48a7-9615-141312111015".into();
+        replacement.issued_at_ms = 30_000;
+        replacement.expires_at_ms = 40_000;
+        assert!(manager.apply(replacement, 30_000).accepted);
+        manager.tick(30_002);
+        assert_eq!(
+            manager.status(&target(), 30_002).unwrap().effective_state,
+            LifecycleEffectiveState::Resuming
         );
     }
 

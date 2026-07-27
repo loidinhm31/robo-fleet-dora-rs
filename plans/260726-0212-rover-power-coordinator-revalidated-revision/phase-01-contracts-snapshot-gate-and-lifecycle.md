@@ -8,14 +8,14 @@
 
 ## Overview
 
-- Date: 2026-07-26; priority: P1; implementation/review: In progress — remediation.
+- Date: 2026-07-27; priority: P1; implementation/review: Done — accepted.
 - Freeze V1 shared contracts and expose a safe `AuthorityUnknown` boundary above existing lifecycle fencing.
 
 ## Carryover audit
 
-The superseded Phase 01 commit is a useful baseline, not accepted completion.
+The superseded Phase 01 commit was a useful baseline, not accepted completion.
 Shared contracts, validation, lifecycle transition IDs, terminal fencing, and
-lease tombstones exist. Revalidated acceptance still requires:
+lease tombstones now exist and the revalidated acceptance items below passed:
 
 - integrate `PowerSnapshotGate` into the coordinator state-machine boundary so
   missing or stale snapshots suppress remote profile-command decisions;
@@ -86,13 +86,13 @@ lease tombstones exist. Revalidated acceptance still requires:
 
 - [x] Land the baseline shared fixture and validators.
 - [x] Add lifecycle transition IDs, terminal fencing, and lease tombstones.
-- [ ] Integrate the snapshot gate into the coordinator state-machine boundary;
+- [x] Integrate the snapshot gate into the coordinator state-machine boundary;
   leave production transport wiring to Phase 04.
-- [ ] Freeze one-shot `ObserveOnly | CommandAllowed` semantics in the shared
+- [x] Freeze one-shot `ObserveOnly | CommandAllowed` semantics in the shared
   fixture and table-driven Rust tests.
-- [ ] Add immutable command replay results and changed-duplicate rejection.
-- [ ] Keep active lifecycle deadlines fixed across reconciliation.
-- [ ] Add reservation tombstones plus expanded fixture/property-style tests.
+- [x] Add immutable command replay results and changed-duplicate rejection.
+- [x] Keep active lifecycle deadlines fixed across reconciliation.
+- [x] Add reservation tombstones plus expanded fixture/property-style tests.
 
 ## Success Criteria
 
@@ -118,4 +118,10 @@ lease tombstones exist. Revalidated acceptance still requires:
 
 ## Next steps
 
-Start Phase 02 only after fixture and lifecycle review. Freeze snapshot retry/staleness values later from fault evidence.
+Phase 01 accepted on 2026-07-27 after 118 focused tests and one doctest passed.
+Start Phase 02; retain Phase 04 transport wiring as a later dependency. Freeze
+snapshot retry/staleness values later from fault evidence.
+
+Validation evidence: 118 focused tests + 1 doctest passing (2026-07-27 Asia/Ho_Chi_Minh).
+
+Unresolved questions: none for Phase 01 acceptance; plan-level questions remain in `plan.md`.

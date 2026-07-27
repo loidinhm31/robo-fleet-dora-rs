@@ -193,6 +193,16 @@ profiles (for example, scheduler → `ScheduledCapture`, KWS → `NormalRover`),
 and demand/reservation IDs are idempotent: reusing an ID with a different
 immutable payload is rejected.
 
+### Snapshot reconciliation gate
+
+After a Rover reconnect, Orchestra enters `AuthorityUnknown` and may observe
+status only. A matching, fresh `PowerAuthoritySnapshot` must be accepted before
+the gate grants one newer `{ epoch, sequence }` value for a profile command;
+stale, malformed, replayed, or out-of-order observations clear the grant and
+return to observe-only. Re-consuming the same authority is also observe-only.
+This prevents a reconnect from force-taking control or issuing a command from
+an unverified snapshot.
+
 Conceptual contract:
 
 ```text
@@ -269,6 +279,17 @@ per-lease `generation`. Acquire and release messages carrying an older or
 revoked generation are rejected, so delayed network packets cannot revive a
 released lease or fence a newer lease. Lease expiry is bounded and leases
 temporarily affect effective state without mutating operator policy.
+
+Released or expired reservations retain a bounded tombstone fence for the
+reservation's maximum validity window. Replaying the identical immutable
+reservation is idempotent; changing its payload or attempting to extend/revive
+it is rejected until the tombstone expires. Tombstones count toward ledger
+capacity and are pruned by time.
+
+Lifecycle managers start a transition deadline when work first enters
+`Resuming` or `Quiescing`. Reissued/superseding commands clear the prior
+deadline, so each accepted revision receives a fresh bounded timeout; repeated
+status ticks do not extend an in-flight deadline.
 
 ## Auto Algorithm
 

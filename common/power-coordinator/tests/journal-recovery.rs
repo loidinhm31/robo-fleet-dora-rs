@@ -3,8 +3,8 @@ use power_coordinator::{
     JournalConfig, JournalIntent, JournalRecord,
 };
 use robo_rover_lib::{
-    LifecycleRole, PowerAuthority, PowerEvent, PowerEventType, PowerPolicy, PowerProfile,
-    PowerState, PowerStatus, POWER_PROTOCOL_VERSION,
+    LifecycleRole, PowerAuthority, PowerCommand, PowerCommandAction, PowerEvent, PowerEventType,
+    PowerPolicy, PowerProfile, PowerState, PowerStatus, POWER_PROTOCOL_VERSION,
 };
 use std::{fs::OpenOptions, io::Write};
 use tempfile::TempDir;
@@ -158,4 +158,38 @@ fn restart_appends_a_fresh_awake_intent_with_a_new_epoch() {
     let records = restarted.pending_records();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].event.authority.epoch, 2);
+}
+
+#[test]
+fn durable_exact_command_replay_does_not_append_a_second_journal_intent() {
+    let dir = TempDir::new().unwrap();
+    let mut config = CoordinatorConfig::for_test(LifecycleRole::Rover, "rover-kiwi");
+    config.journal_dir = dir.path().display().to_string();
+    let mut coordinator = DurablePowerCoordinator::open(config, 100).unwrap();
+    let command = PowerCommand {
+        protocol_version: POWER_PROTOCOL_VERSION,
+        command_id: "f4f3e2d1-c0b9-48a7-9615-141312111014".into(),
+        role: LifecycleRole::Rover,
+        entity_id: "rover-kiwi".into(),
+        authority: PowerAuthority {
+            epoch: 1,
+            sequence: 1,
+        },
+        action: PowerCommandAction::SetPolicy {
+            policy: PowerPolicy::Auto,
+        },
+        issued_at_ms: 100,
+        not_before_ms: 100,
+        expires_at_ms: 200,
+        detail: None,
+    };
+    let time = CoordinatorTime {
+        wall_ms: 101,
+        monotonic_ms: 1,
+    };
+    let accepted = coordinator.apply_command(command.clone(), time);
+    let records_after_first = coordinator.pending_records().len();
+    assert!(accepted.accepted);
+    assert_eq!(coordinator.apply_command(command, time), accepted);
+    assert_eq!(coordinator.pending_records().len(), records_after_first);
 }

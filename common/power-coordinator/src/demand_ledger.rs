@@ -15,10 +15,17 @@ struct DemandEntry {
     active: bool,
 }
 
+#[derive(Debug, Clone)]
+struct ReservationTombstone {
+    reservation: PowerReservation,
+    expires_at_ms: u64,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct DemandLedger {
     demands: BTreeMap<(String, String), DemandEntry>,
     reservations: BTreeMap<String, PowerReservation>,
+    reservation_tombstones: BTreeMap<String, ReservationTombstone>,
 }
 
 impl DemandLedger {
@@ -85,13 +92,29 @@ impl DemandLedger {
         reservation: PowerReservation,
         now_ms: u64,
     ) -> Result<LedgerOutcome, PowerReasonCode> {
+        self.prune_reservation_tombstones(now_ms);
         if reservation.expires_at_ms <= now_ms {
             return Err(PowerReasonCode::Expired);
         }
         match self.reservations.get(&reservation.reservation_id) {
             Some(current) if current == &reservation => Ok(LedgerOutcome::Idempotent),
             Some(_) => Err(PowerReasonCode::DuplicateMismatch),
-            None if self.reservations.len() >= MAX_POWER_DEMANDS => {
+            None if self
+                .reservation_tombstones
+                .get(&reservation.reservation_id)
+                .is_some_and(|current| current.reservation == reservation) =>
+            {
+                Ok(LedgerOutcome::Idempotent)
+            }
+            None if self
+                .reservation_tombstones
+                .contains_key(&reservation.reservation_id) =>
+            {
+                Err(PowerReasonCode::DuplicateMismatch)
+            }
+            None if self.reservations.len() + self.reservation_tombstones.len()
+                >= MAX_POWER_DEMANDS =>
+            {
                 Err(PowerReasonCode::CapacityExceeded)
             }
             None => {
@@ -105,10 +128,16 @@ impl DemandLedger {
     pub fn release_reservation(
         &mut self,
         reservation_id: &str,
+        now_ms: u64,
     ) -> Result<LedgerOutcome, PowerReasonCode> {
-        self.reservations
-            .remove(reservation_id)
-            .map(|_| LedgerOutcome::Applied)
+        self.prune_reservation_tombstones(now_ms);
+        if let Some(reservation) = self.reservations.remove(reservation_id) {
+            self.insert_reservation_tombstone(reservation);
+            return Ok(LedgerOutcome::Applied);
+        }
+        self.reservation_tombstones
+            .contains_key(reservation_id)
+            .then_some(LedgerOutcome::Idempotent)
             .ok_or(PowerReasonCode::Conflict)
     }
 
@@ -128,10 +157,36 @@ impl DemandLedger {
             .map(|entry| &entry.demand)
     }
 
-    pub fn active_reservations(&self, now_ms: u64) -> impl Iterator<Item = &PowerReservation> {
+    pub fn active_reservations(&mut self, now_ms: u64) -> impl Iterator<Item = &PowerReservation> {
+        let expired: Vec<_> = self
+            .reservations
+            .values()
+            .filter(|reservation| reservation.expires_at_ms <= now_ms)
+            .cloned()
+            .collect();
+        for reservation in expired {
+            self.reservations.remove(&reservation.reservation_id);
+            self.insert_reservation_tombstone(reservation);
+        }
+        self.prune_reservation_tombstones(now_ms);
         self.reservations
             .values()
             .filter(move |item| item.not_before_ms <= now_ms && now_ms < item.expires_at_ms)
+    }
+
+    fn insert_reservation_tombstone(&mut self, reservation: PowerReservation) {
+        self.reservation_tombstones.insert(
+            reservation.reservation_id.clone(),
+            ReservationTombstone {
+                expires_at_ms: reservation.tombstone_expires_at_ms(),
+                reservation,
+            },
+        );
+    }
+
+    fn prune_reservation_tombstones(&mut self, now_ms: u64) {
+        self.reservation_tombstones
+            .retain(|_, tombstone| tombstone.expires_at_ms > now_ms);
     }
 }
 
@@ -189,6 +244,67 @@ mod tests {
         assert_eq!(
             ledger.apply(demand(PowerDemandAction::Acquire, 2, 20), 2),
             Err(PowerReasonCode::Conflict)
+        );
+    }
+
+    #[test]
+    fn released_or_expired_reservation_cannot_be_changed_or_revived() {
+        let mut ledger = DemandLedger::default();
+        let reservation = PowerReservation {
+            protocol_version: POWER_PROTOCOL_VERSION,
+            reservation_id: "f4f3e2d1-c0b9-48a7-9615-141312111001".into(),
+            role: LifecycleRole::Rover,
+            entity_id: "rover".into(),
+            authority: PowerAuthority {
+                epoch: 1,
+                sequence: 1,
+            },
+            required_profile: PowerProfile::ScheduledCapture,
+            issued_at_ms: 1,
+            not_before_ms: 1,
+            expires_at_ms: 10,
+        };
+        ledger.register_reservation(reservation.clone(), 2).unwrap();
+        assert_eq!(
+            ledger.release_reservation(&reservation.reservation_id, 2),
+            Ok(LedgerOutcome::Applied)
+        );
+        assert_eq!(
+            ledger.register_reservation(reservation.clone(), 2),
+            Ok(LedgerOutcome::Idempotent)
+        );
+        let mut changed = reservation.clone();
+        changed.expires_at_ms = 20;
+        assert_eq!(
+            ledger.register_reservation(changed, 2),
+            Err(PowerReasonCode::DuplicateMismatch)
+        );
+
+        let mut expired = reservation;
+        expired.reservation_id = "f4f3e2d1-c0b9-48a7-9615-141312111002".into();
+        ledger.register_reservation(expired.clone(), 2).unwrap();
+        assert_eq!(ledger.active_reservations(10).count(), 0);
+        assert_eq!(
+            ledger.register_reservation(expired.clone(), 10),
+            Err(PowerReasonCode::Expired)
+        );
+        let mut revived = expired.clone();
+        revived.expires_at_ms = 20;
+        assert_eq!(
+            ledger.register_reservation(revived, 10),
+            Err(PowerReasonCode::DuplicateMismatch)
+        );
+        let retained_until = expired.tombstone_expires_at_ms();
+        let next = PowerReservation {
+            reservation_id: "f4f3e2d1-c0b9-48a7-9615-141312111003".into(),
+            issued_at_ms: retained_until,
+            not_before_ms: retained_until,
+            expires_at_ms: retained_until + 10,
+            ..expired
+        };
+        assert_eq!(
+            ledger.register_reservation(next, retained_until),
+            Ok(LedgerOutcome::Applied)
         );
     }
 }

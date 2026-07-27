@@ -96,34 +96,102 @@ fn snapshot_gate_requires_a_fresh_matching_snapshot_and_newer_authority() {
         sequence: 1,
     };
     assert_eq!(gate.state(100), PowerState::AuthorityUnknown);
-    assert!(!gate.consume_profile_authority(next, 100));
+    assert_eq!(
+        gate.consume_profile_authority(next, 100),
+        PowerAuthorityDecision::ObserveOnly
+    );
 
     let snapshot: PowerAuthoritySnapshot = serde_json::from_str(
         r#"{"protocol_version":1,"snapshot_id":"33333333-3333-4333-8333-333333333333","role":"rover","entity_id":"rover-kiwi","authority":{"epoch":7,"sequence":2},"state":"active","effective_profile":"normal_rover","captured_at_ms":100,"expires_at_ms":200}"#,
     ).unwrap();
     gate.observe(snapshot, 101).unwrap();
-    assert!(!gate.consume_profile_authority(
-        PowerAuthority {
-            epoch: 7,
-            sequence: 2
-        },
-        101
-    ));
-    assert!(gate.consume_profile_authority(next, 101));
+    assert_eq!(
+        gate.consume_profile_authority(
+            PowerAuthority {
+                epoch: 7,
+                sequence: 2
+            },
+            101
+        ),
+        PowerAuthorityDecision::ObserveOnly
+    );
+    assert_eq!(
+        gate.consume_profile_authority(next, 101),
+        PowerAuthorityDecision::CommandAllowed
+    );
     let replayed_snapshot: PowerAuthoritySnapshot = serde_json::from_str(
         r#"{"protocol_version":1,"snapshot_id":"33333333-3333-4333-8333-333333333333","role":"rover","entity_id":"rover-kiwi","authority":{"epoch":7,"sequence":2},"state":"active","effective_profile":"normal_rover","captured_at_ms":100,"expires_at_ms":200}"#,
     )
     .unwrap();
     assert!(gate.observe(replayed_snapshot, 102).is_err());
-    assert!(!gate.consume_profile_authority(
-        PowerAuthority {
-            epoch: 8,
-            sequence: 2
-        },
-        101
-    ));
+    assert_eq!(
+        gate.consume_profile_authority(
+            PowerAuthority {
+                epoch: 8,
+                sequence: 2
+            },
+            101
+        ),
+        PowerAuthorityDecision::ObserveOnly
+    );
     assert_eq!(gate.state(200), PowerState::AuthorityUnknown);
-    assert!(!gate.consume_profile_authority(next, 200));
+    assert_eq!(
+        gate.consume_profile_authority(next, 200),
+        PowerAuthorityDecision::ObserveOnly
+    );
+
+    let rollback_snapshot: PowerAuthoritySnapshot = serde_json::from_str(
+        r#"{"protocol_version":1,"snapshot_id":"44444444-3333-4333-8333-333333333333","role":"rover","entity_id":"rover-kiwi","authority":{"epoch":9,"sequence":1},"state":"active","effective_profile":"normal_rover","captured_at_ms":300,"expires_at_ms":400}"#,
+    )
+    .unwrap();
+    gate.observe(rollback_snapshot, 300).unwrap();
+    assert_eq!(gate.state(299), PowerState::AuthorityUnknown);
+    assert_eq!(
+        gate.consume_profile_authority(
+            PowerAuthority {
+                epoch: 10,
+                sequence: 1
+            },
+            299
+        ),
+        PowerAuthorityDecision::ObserveOnly
+    );
+}
+
+#[test]
+fn snapshot_gate_cases_are_driven_by_the_shared_contract_fixture() {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../../test-data/contracts/power-v1.json")).unwrap();
+    for case in fixture["authority_gate_cases"].as_array().unwrap() {
+        let now_ms = case["now_ms"].as_u64().unwrap();
+        let proposed: PowerAuthority =
+            serde_json::from_value(case["proposed_authority"].clone()).unwrap();
+        let mut gate = PowerSnapshotGate::new(LifecycleRole::Rover, "rover-kiwi".into()).unwrap();
+        if let Some(prior) = case.get("prior_snapshot") {
+            let prior: PowerAuthoritySnapshot = serde_json::from_value(prior.clone()).unwrap();
+            assert!(gate.observe(prior, now_ms).is_ok(), "{}", case["name"]);
+        }
+        if let Some(snapshot) = case.get("snapshot") {
+            let snapshot: PowerAuthoritySnapshot =
+                serde_json::from_value(snapshot.clone()).unwrap();
+            let _ = gate.observe(snapshot, now_ms);
+        }
+        let decision = gate.consume_profile_authority(proposed, now_ms);
+        assert_eq!(
+            serde_json::to_value(decision).unwrap(),
+            case["expected"],
+            "{}",
+            case["name"]
+        );
+        if case["consume_twice"].as_bool().unwrap_or(false) {
+            assert_eq!(
+                serde_json::to_value(gate.consume_profile_authority(proposed, now_ms)).unwrap(),
+                case["second_expected"],
+                "{}",
+                case["name"]
+            );
+        }
+    }
 }
 
 fn fixture_command() -> PowerCommand {

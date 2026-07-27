@@ -28,8 +28,8 @@ Implement the power coordinator specified in [the revalidated architecture](../.
 
 | # | Phase | Status | Progress | Effort | Dependency |
 |---|---|---|---:|---:|---|
-| 1 | [Contracts, snapshot gate, lifecycle hardening](./phase-01-contracts-snapshot-gate-and-lifecycle.md) | In Progress — remediation | 0% accepted | 32h | — |
-| 2 | [Coordinator profiles and Auto reducer](./phase-02-coordinator-profiles-and-auto-reducer.md) | Blocked — partial carryover | 0% accepted | 40h | 1 |
+| 1 | [Contracts, snapshot gate, lifecycle hardening](./phase-01-contracts-snapshot-gate-and-lifecycle.md) | Done — accepted 2026-07-27 | 100% accepted | 32h | — |
+| 2 | [Coordinator profiles and Auto reducer](./phase-02-coordinator-profiles-and-auto-reducer.md) | Pending — ready after Phase 01 | 0% accepted | 40h | 1 |
 | 3 | [Local journal and Mongo projection](./phase-03-local-journal-and-mongo-projection.md) | Blocked — partial carryover | 0% accepted | 34h | 1–2 |
 | 4 | [Zenoh authority and direct-mode routing](./phase-04-zenoh-authority-and-direct-routing.md) | Pending | 0% | 34h | 1–3 |
 | 5 | [Scheduler reservations and bounded prewarm](./phase-05-scheduler-reservations-and-bounded-prewarm.md) | Pending | 0% | 34h | 1–4 |
@@ -45,12 +45,12 @@ accepted until its revised success criteria pass.
 
 - Cut over on 2026-07-26 from the superseded plan after commits `ff6624e`,
   `a9ba1c4`, and `a1cbc38`.
-- Phase 01 is the active boundary. The snapshot gate contract is not integrated
-  into the coordinator state machine, command-ID replay is not idempotent, and
-  lease-triggered lifecycle reconciliation can refresh an active deadline.
-- Phase 02 remains blocked by Phase 01. Protected-work input is not wired,
-  Orchestra Sleep produces an invalid profile, and profile/source bounds are
-  incomplete.
+- Phase 01 reacceptance completed 2026-07-27 (118 focused tests plus one
+  doctest passing). Snapshot gating, immutable replay, deadline fencing, and
+  reservation tombstones are accepted at the contract/state-machine boundary.
+- Phase 02 is no longer blocked by Phase 01, but remains unaccepted and must
+  address its own carryover gaps: protected-work input, valid Orchestra Sleep
+  profile, and complete profile/source bounds.
 - Phase 03 remains blocked by Phases 01–02. Wake-causing commands cannot use
   reserved journal capacity, event history loses command/demand context, and
   Mongo/outage coverage is not an enforced test gate.

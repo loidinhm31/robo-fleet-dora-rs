@@ -35,6 +35,16 @@ pub enum PowerState {
     Failed,
 }
 
+/// Transport-neutral authority result used before a coordinator emits a
+/// remote profile command. A fresh snapshot authorizes exactly one newer
+/// authority value; every other condition is deliberately observation-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PowerAuthorityDecision {
+    ObserveOnly,
+    CommandAllowed,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PowerReasonCode {
@@ -271,19 +281,28 @@ impl PowerSnapshotGate {
     }
 
     pub fn observe(&mut self, snapshot: PowerAuthoritySnapshot, now_ms: u64) -> Result<(), String> {
-        snapshot.validates_for(self.role, &self.entity_id)?;
-        if snapshot.captured_at_ms > now_ms || snapshot.expires_at_ms <= now_ms {
-            return Err("power snapshot is not fresh".into());
-        }
-        if self
-            .last_consumed_authority
-            .is_some_and(|authority| snapshot.authority < authority)
-            || self
-                .snapshot
-                .as_ref()
-                .is_some_and(|current| current.authority > snapshot.authority)
-        {
-            return Err("power snapshot authority is stale".into());
+        let observed = (|| {
+            snapshot.validates_for(self.role, &self.entity_id)?;
+            if snapshot.captured_at_ms > now_ms || snapshot.expires_at_ms <= now_ms {
+                return Err("power snapshot is not fresh".into());
+            }
+            if self
+                .last_consumed_authority
+                .is_some_and(|authority| snapshot.authority < authority)
+                || self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|current| current.authority > snapshot.authority)
+            {
+                return Err("power snapshot authority is stale".into());
+            }
+            Ok(())
+        })();
+        if observed.is_err() {
+            // A malformed or reordered observation invalidates the current
+            // reconciliation grant; later commands require a fresh snapshot.
+            self.snapshot = None;
+            return observed;
         }
         self.snapshot = Some(snapshot);
         Ok(())
@@ -292,25 +311,30 @@ impl PowerSnapshotGate {
     pub fn state(&self, now_ms: u64) -> PowerState {
         self.snapshot
             .as_ref()
-            .filter(|snapshot| snapshot.expires_at_ms > now_ms)
+            .filter(|snapshot| snapshot.captured_at_ms <= now_ms && snapshot.expires_at_ms > now_ms)
             .map_or(PowerState::AuthorityUnknown, |snapshot| snapshot.state)
     }
 
-    pub fn consume_profile_authority(&mut self, authority: PowerAuthority, now_ms: u64) -> bool {
+    pub fn consume_profile_authority(
+        &mut self,
+        authority: PowerAuthority,
+        now_ms: u64,
+    ) -> PowerAuthorityDecision {
         let Some(snapshot) = self.snapshot.as_ref() else {
-            return false;
+            return PowerAuthorityDecision::ObserveOnly;
         };
-        if snapshot.expires_at_ms <= now_ms
+        if snapshot.captured_at_ms > now_ms
+            || snapshot.expires_at_ms <= now_ms
             || authority <= snapshot.authority
             || self
                 .last_consumed_authority
                 .is_some_and(|last| snapshot.authority <= last || authority <= last)
         {
-            return false;
+            return PowerAuthorityDecision::ObserveOnly;
         }
         self.last_consumed_authority = Some(authority);
         self.snapshot = None;
-        true
+        PowerAuthorityDecision::CommandAllowed
     }
 }
 

@@ -132,6 +132,11 @@ impl PowerReservation {
         }
         Ok(())
     }
+
+    /// Retain a replay fence for the longest validity window accepted by V1.
+    pub fn tombstone_expires_at_ms(&self) -> u64 {
+        self.issued_at_ms.saturating_add(MAX_RESERVATION_TTL_MS)
+    }
 }
 
 impl PowerDemandSource {

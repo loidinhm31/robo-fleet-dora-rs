@@ -4,9 +4,10 @@ use crate::{
 };
 use robo_rover_lib::{
     LifecycleCommand, LifecycleCommandOrigin, LifecycleCommandResult, LifecycleEffectiveState,
-    LifecycleStatus, PowerAuthority, PowerCommand, PowerCommandAction, PowerCommandResult,
-    PowerPolicy, PowerProfile, PowerReasonCode, PowerState, PowerStatus, PowerTransition,
-    ResourceSnapshot, POWER_PROTOCOL_VERSION,
+    LifecycleRole, LifecycleStatus, PowerAuthority, PowerAuthorityDecision, PowerAuthoritySnapshot,
+    PowerCommand, PowerCommandAction, PowerCommandResult, PowerPolicy, PowerProfile,
+    PowerReasonCode, PowerSnapshotGate, PowerState, PowerStatus, PowerTransition, ResourceSnapshot,
+    POWER_PROTOCOL_VERSION,
 };
 use std::collections::BTreeMap;
 use uuid::Uuid;
@@ -38,6 +39,14 @@ struct IssuedLifecycleCommand {
 }
 
 #[derive(Debug, Clone)]
+struct CachedPowerCommand {
+    command: PowerCommand,
+    result: PowerCommandResult,
+}
+
+const MAX_CACHED_POWER_COMMANDS: usize = 1_024;
+
+#[derive(Debug, Clone)]
 pub struct CoordinatorEffects {
     pub status: PowerStatus,
     pub transition: Option<PowerTransition>,
@@ -57,6 +66,9 @@ pub struct PowerCoordinator {
     resources: Option<ResourceSnapshot>,
     lifecycle: BTreeMap<String, LifecycleStatus>,
     command_targets: BTreeMap<String, IssuedLifecycleCommand>,
+    command_replays: BTreeMap<String, CachedPowerCommand>,
+    authority_gate: Option<PowerSnapshotGate>,
+    authority_gate_reason: Option<PowerReasonCode>,
     idle_since_ms: Option<u64>,
     last_resource_sequence: Option<u64>,
     low_samples: u32,
@@ -87,6 +99,9 @@ impl PowerCoordinator {
             resources: None,
             lifecycle: BTreeMap::new(),
             command_targets: BTreeMap::new(),
+            command_replays: BTreeMap::new(),
+            authority_gate: None,
+            authority_gate_reason: None,
             idle_since_ms: None,
             last_resource_sequence: None,
             low_samples: 0,
@@ -191,6 +206,62 @@ impl PowerCoordinator {
         }
     }
 
+    /// Enables the snapshot-first remote authority boundary. Phase 04 supplies
+    /// the transport input; this state-machine API remains transport agnostic.
+    pub fn require_authority_snapshot(
+        &mut self,
+        remote_role: LifecycleRole,
+        remote_entity_id: String,
+    ) -> Result<(), String> {
+        self.authority_gate = Some(PowerSnapshotGate::new(remote_role, remote_entity_id)?);
+        self.authority_gate_reason = Some(PowerReasonCode::SnapshotMissing);
+        Ok(())
+    }
+
+    /// Invalid snapshots are intentionally converted to bounded telemetry and
+    /// never escape the coordinator event loop.
+    pub fn observe_authority_snapshot(
+        &mut self,
+        snapshot: PowerAuthoritySnapshot,
+        now_ms: u64,
+    ) -> PowerAuthorityDecision {
+        let Some(gate) = self.authority_gate.as_mut() else {
+            return PowerAuthorityDecision::ObserveOnly;
+        };
+        match gate.observe(snapshot, now_ms) {
+            Ok(()) => {
+                self.authority_gate_reason = None;
+                PowerAuthorityDecision::ObserveOnly
+            }
+            Err(error) => {
+                self.authority_gate_reason = Some(snapshot_reason(&error));
+                PowerAuthorityDecision::ObserveOnly
+            }
+        }
+    }
+
+    /// Returns the one-shot authorization Phase 04 must obtain before mapping
+    /// a profile decision onto a bridge or direct-mode command.
+    pub fn authorize_remote_profile_command(
+        &mut self,
+        proposed_authority: PowerAuthority,
+        now_ms: u64,
+    ) -> PowerAuthorityDecision {
+        let Some(gate) = self.authority_gate.as_mut() else {
+            return PowerAuthorityDecision::ObserveOnly;
+        };
+        let decision = gate.consume_profile_authority(proposed_authority, now_ms);
+        if decision == PowerAuthorityDecision::ObserveOnly {
+            self.authority_gate_reason =
+                Some(if gate.state(now_ms) == PowerState::AuthorityUnknown {
+                    PowerReasonCode::SnapshotStale
+                } else {
+                    PowerReasonCode::StaleAuthority
+                });
+        }
+        decision
+    }
+
     pub fn command_will_apply(
         &self,
         command: &PowerCommand,
@@ -234,7 +305,7 @@ impl PowerCoordinator {
                 .map(|_| ())
                 .map_err(|reason| format!("{reason:?}")),
             PowerCommandAction::ReleaseReservation { reservation_id } => ledger
-                .release_reservation(reservation_id)
+                .release_reservation(reservation_id, now.wall_ms)
                 .map(|_| ())
                 .map_err(|reason| format!("{reason:?}")),
         }
@@ -245,6 +316,18 @@ impl PowerCoordinator {
         command: PowerCommand,
         now: CoordinatorTime,
     ) -> PowerCommandResult {
+        if let Some(result) = self.replay_result(&command, now.wall_ms) {
+            return result;
+        }
+        if self.command_replays.len() >= MAX_CACHED_POWER_COMMANDS {
+            return rejected_command(
+                command,
+                self.authority,
+                PowerReasonCode::CapacityExceeded,
+                "power command replay cache is full",
+            );
+        }
+        let command_id = command.command_id.clone();
         let accepted = command
             .validates_for(self.config.role, &self.config.entity_id)
             .and_then(|_| {
@@ -292,15 +375,15 @@ impl PowerCoordinator {
                         .map_err(|reason| format!("{reason:?}")),
                     PowerCommandAction::ReleaseReservation { reservation_id } => self
                         .ledger
-                        .release_reservation(reservation_id)
+                        .release_reservation(reservation_id, now.wall_ms)
                         .map(|_| ())
                         .map_err(|reason| format!("{reason:?}")),
                 }
             });
-        match accepted {
+        let result = match accepted {
             Ok(()) => PowerCommandResult {
                 protocol_version: POWER_PROTOCOL_VERSION,
-                command_id: command.command_id,
+                command_id: command_id.clone(),
                 accepted: true,
                 authority: self.bump_authority(),
                 reason_code: None,
@@ -308,16 +391,62 @@ impl PowerCoordinator {
             },
             Err(detail) => PowerCommandResult {
                 protocol_version: POWER_PROTOCOL_VERSION,
-                command_id: command.command_id,
+                command_id: command_id.clone(),
                 accepted: false,
                 authority: self.authority,
                 reason_code: Some(reason_from_error(&detail)),
                 detail: Some(detail),
             },
-        }
+        };
+        self.command_replays.insert(
+            command_id,
+            CachedPowerCommand {
+                command,
+                result: result.clone(),
+            },
+        );
+        result
+    }
+
+    /// Returns an immutable prior command result without creating a new
+    /// journal intent. Expired cache entries cannot consume admission space.
+    pub fn replay_result(
+        &mut self,
+        command: &PowerCommand,
+        now_ms: u64,
+    ) -> Option<PowerCommandResult> {
+        self.command_replays
+            .retain(|_, cached| cached.command.expires_at_ms > now_ms);
+        self.command_replays.get(&command.command_id).map(|cached| {
+            if cached.command == *command {
+                cached.result.clone()
+            } else {
+                rejected_command(
+                    command.clone(),
+                    self.authority,
+                    PowerReasonCode::DuplicateMismatch,
+                    "command id payload changed",
+                )
+            }
+        })
     }
 
     pub fn tick(&mut self, now: CoordinatorTime) -> CoordinatorEffects {
+        if self
+            .authority_gate
+            .as_ref()
+            .is_some_and(|gate| gate.state(now.wall_ms) == PowerState::AuthorityUnknown)
+        {
+            self.state = PowerState::AuthorityUnknown;
+            self.authority_gate_reason
+                .get_or_insert(PowerReasonCode::SnapshotMissing);
+            return CoordinatorEffects {
+                status: self.status(now.wall_ms),
+                transition: None,
+                lifecycle_commands: vec![],
+                query_lifecycle_status: true,
+            };
+        }
         self.reduce(now);
         let commands = self.advance_transition(now);
         CoordinatorEffects {
@@ -624,8 +753,14 @@ impl PowerCoordinator {
             requested_profile: self.requested,
             effective_profile: self.effective,
             state: self.state,
-            transition_id: self.pending.as_ref().map(|item| item.id.clone()),
-            reason_code: (self.state == PowerState::Failed).then_some(PowerReasonCode::Timeout),
+            transition_id: (self.state != PowerState::AuthorityUnknown)
+                .then(|| self.pending.as_ref().map(|item| item.id.clone()))
+                .flatten(),
+            reason_code: if self.state == PowerState::AuthorityUnknown {
+                self.authority_gate_reason
+            } else {
+                (self.state == PowerState::Failed).then_some(PowerReasonCode::Timeout)
+            },
             detail: None,
             updated_at_ms: now_ms,
         }
@@ -683,6 +818,34 @@ fn reason_from_error(detail: &str) -> PowerReasonCode {
         PowerReasonCode::CapacityExceeded
     } else {
         PowerReasonCode::InvalidRequest
+    }
+}
+
+fn snapshot_reason(error: &str) -> PowerReasonCode {
+    if error.contains("target") {
+        PowerReasonCode::InvalidTarget
+    } else if error.contains("fresh") {
+        PowerReasonCode::SnapshotStale
+    } else if error.contains("authority") {
+        PowerReasonCode::StaleAuthority
+    } else {
+        PowerReasonCode::InvalidRequest
+    }
+}
+
+fn rejected_command(
+    command: PowerCommand,
+    authority: PowerAuthority,
+    reason_code: PowerReasonCode,
+    detail: &str,
+) -> PowerCommandResult {
+    PowerCommandResult {
+        protocol_version: POWER_PROTOCOL_VERSION,
+        command_id: command.command_id,
+        accepted: false,
+        authority,
+        reason_code: Some(reason_code),
+        detail: Some(detail.into()),
     }
 }
 
@@ -835,6 +998,142 @@ mod tests {
         let effects = item.tick(time(1, 1));
         assert_eq!(effects.lifecycle_commands.len(), 1);
         assert!(effects.lifecycle_commands[0].transition_id.is_some());
+    }
+
+    #[test]
+    fn snapshot_gate_suppresses_effects_and_requires_one_fresh_authorization() {
+        let mut item = coordinator();
+        item.require_authority_snapshot(LifecycleRole::Rover, "rover-remote".into())
+            .unwrap();
+        let missing = item.tick(time(1, 1));
+        assert_eq!(missing.status.state, PowerState::AuthorityUnknown);
+        assert!(missing.lifecycle_commands.is_empty());
+
+        let invalid = PowerAuthoritySnapshot {
+            protocol_version: POWER_PROTOCOL_VERSION,
+            snapshot_id: "f4f3e2d1-c0b9-48a7-9615-141312111010".into(),
+            role: LifecycleRole::Rover,
+            entity_id: "other-rover".into(),
+            authority: PowerAuthority {
+                epoch: 1,
+                sequence: 1,
+            },
+            state: PowerState::Active,
+            effective_profile: PowerProfile::NormalRover,
+            captured_at_ms: 1,
+            expires_at_ms: 100,
+        };
+        assert_eq!(
+            item.observe_authority_snapshot(invalid, 2),
+            PowerAuthorityDecision::ObserveOnly
+        );
+        assert_eq!(
+            item.tick(time(2, 2)).status.reason_code,
+            Some(PowerReasonCode::InvalidTarget)
+        );
+
+        let valid = PowerAuthoritySnapshot {
+            entity_id: "rover-remote".into(),
+            snapshot_id: "f4f3e2d1-c0b9-48a7-9615-141312111011".into(),
+            ..PowerAuthoritySnapshot {
+                protocol_version: POWER_PROTOCOL_VERSION,
+                snapshot_id: "unused".into(),
+                role: LifecycleRole::Rover,
+                entity_id: "unused".into(),
+                authority: PowerAuthority {
+                    epoch: 1,
+                    sequence: 1,
+                },
+                state: PowerState::Active,
+                effective_profile: PowerProfile::NormalRover,
+                captured_at_ms: 2,
+                expires_at_ms: 100,
+            }
+        };
+        assert_eq!(
+            item.observe_authority_snapshot(valid, 2),
+            PowerAuthorityDecision::ObserveOnly
+        );
+        assert_ne!(
+            item.tick(time(2, 2)).status.state,
+            PowerState::AuthorityUnknown
+        );
+        let proposed = PowerAuthority {
+            epoch: 2,
+            sequence: 1,
+        };
+        assert_eq!(
+            item.authorize_remote_profile_command(proposed, 2),
+            PowerAuthorityDecision::CommandAllowed
+        );
+        assert_eq!(
+            item.authorize_remote_profile_command(proposed, 2),
+            PowerAuthorityDecision::ObserveOnly
+        );
+    }
+
+    #[test]
+    fn command_id_replay_returns_original_result_and_rejects_changed_payload() {
+        let mut item = coordinator();
+        let command = PowerCommand {
+            protocol_version: POWER_PROTOCOL_VERSION,
+            command_id: "f4f3e2d1-c0b9-48a7-9615-141312111012".into(),
+            role: LifecycleRole::Rover,
+            entity_id: "rover".into(),
+            authority: PowerAuthority {
+                epoch: 1,
+                sequence: 1,
+            },
+            action: PowerCommandAction::SetPolicy {
+                policy: PowerPolicy::Auto,
+            },
+            issued_at_ms: 1,
+            not_before_ms: 1,
+            expires_at_ms: 100,
+            detail: None,
+        };
+        let accepted = item.apply_command(command.clone(), time(2, 2));
+        assert!(accepted.accepted);
+        assert_eq!(item.apply_command(command.clone(), time(3, 3)), accepted);
+
+        let mut changed = command;
+        changed.action = PowerCommandAction::SetPolicy {
+            policy: PowerPolicy::Sleep,
+        };
+        let rejected = item.apply_command(changed, time(3, 3));
+        assert_eq!(
+            rejected.reason_code,
+            Some(PowerReasonCode::DuplicateMismatch)
+        );
+        assert_eq!(item.current_status(3).authority, accepted.authority);
+    }
+
+    #[test]
+    fn expired_command_replay_is_pruned_before_new_admission() {
+        let mut item = coordinator();
+        let command = PowerCommand {
+            protocol_version: POWER_PROTOCOL_VERSION,
+            command_id: "f4f3e2d1-c0b9-48a7-9615-141312111013".into(),
+            role: LifecycleRole::Rover,
+            entity_id: "rover".into(),
+            authority: PowerAuthority {
+                epoch: 1,
+                sequence: 1,
+            },
+            action: PowerCommandAction::SetPolicy {
+                policy: PowerPolicy::Auto,
+            },
+            issued_at_ms: 1,
+            not_before_ms: 1,
+            expires_at_ms: 3,
+            detail: None,
+        };
+        assert!(item.apply_command(command.clone(), time(2, 2)).accepted);
+        assert!(item.replay_result(&command, 3).is_none());
+        assert!(item.command_replays.is_empty());
+        let replay = item.apply_command(command, time(3, 3));
+        assert_eq!(replay.reason_code, Some(PowerReasonCode::StaleAuthority));
+        assert_eq!(item.command_replays.len(), 1);
     }
 
     #[test]

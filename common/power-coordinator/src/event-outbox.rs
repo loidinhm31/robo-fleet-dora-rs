@@ -45,9 +45,12 @@ impl DurablePowerCoordinator {
         command: PowerCommand,
         now: CoordinatorTime,
     ) -> PowerCommandResult {
+        if let Some(result) = self.coordinator.replay_result(&command, now.wall_ms) {
+            return result;
+        }
         let status = self.coordinator.current_status(now.wall_ms);
-        if let Err(detail) = self.preview_command(&command, now) {
-            return rejected(command, status, detail);
+        if self.coordinator.command_will_apply(&command, now).is_err() {
+            return self.coordinator.apply_command(command, now);
         }
         let mut journal_status = status;
         journal_status.authority = self.coordinator.next_authority();
@@ -127,10 +130,6 @@ impl DurablePowerCoordinator {
         self.coordinator
             .set_journal_capacity_unsafe(self.journal.capacity().unsafe_for_sleep);
         Ok(effects)
-    }
-
-    fn preview_command(&self, command: &PowerCommand, now: CoordinatorTime) -> Result<(), String> {
-        self.coordinator.command_will_apply(command, now)
     }
 
     fn append_command(
