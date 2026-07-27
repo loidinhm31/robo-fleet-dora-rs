@@ -1,4 +1,4 @@
-use super::{validation::*, POWER_PROTOCOL_VERSION};
+use super::{validation::*, PowerDemandPriority, PowerDemandSource, POWER_PROTOCOL_VERSION};
 use crate::types::lifecycle_types::LifecycleRole;
 use serde::{Deserialize, Serialize};
 
@@ -135,7 +135,55 @@ pub struct PowerEvent {
     pub reason_code: Option<PowerReasonCode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Bounded, operator-safe context required to explain a durable power event.
+    #[serde(default, skip_serializing_if = "PowerEventContext::is_empty")]
+    pub context: PowerEventContext,
     pub occurred_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PowerEventContext {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command_action: Option<PowerCommandActionKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy: Option<PowerPolicy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub demand_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub demand_source: Option<PowerDemandSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_profile: Option<PowerProfile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub demand_priority: Option<PowerDemandPriority>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_before_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reservation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lifecycle_targets: Vec<PowerLifecycleTargetContext>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PowerCommandActionKind {
+    SetPolicy,
+    RegisterDemand,
+    ReleaseDemand,
+    RegisterReservation,
+    ReleaseReservation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PowerLifecycleTargetContext {
+    pub node_id: String,
+    pub manager_epoch: u64,
+    pub expected_revision: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +191,7 @@ pub struct PowerEvent {
 pub enum PowerEventType {
     PolicyChanged,
     DemandChanged,
+    CommandApplied,
     TransitionRequested,
     TransitionApplied,
     TransitionFailed,
@@ -256,8 +305,36 @@ impl PowerEvent {
         self.authority.validate()?;
         validate_optional_uuid("transition_id", self.transition_id.as_deref())?;
         validate_detail(self.detail.as_ref())?;
+        self.context.validate()?;
         if self.occurred_at_ms == 0 {
             return Err("invalid power event timestamp".into());
+        }
+        Ok(())
+    }
+}
+
+impl PowerEventContext {
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        validate_optional_uuid("command_id", self.command_id.as_deref())?;
+        validate_optional_uuid("demand_id", self.demand_id.as_deref())?;
+        validate_optional_uuid("reservation_id", self.reservation_id.as_deref())?;
+        if let (Some(not_before), Some(expires)) = (self.not_before_ms, self.expires_at_ms) {
+            if not_before >= expires {
+                return Err("invalid event context window".into());
+            }
+        }
+        if self.lifecycle_targets.len() > 32 {
+            return Err("too many lifecycle target contexts".into());
+        }
+        for target in &self.lifecycle_targets {
+            validate_id("lifecycle target node_id", &target.node_id)?;
+            if target.manager_epoch == 0 {
+                return Err("invalid lifecycle target epoch".into());
+            }
         }
         Ok(())
     }

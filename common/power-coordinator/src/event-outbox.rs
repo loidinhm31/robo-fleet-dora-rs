@@ -1,5 +1,5 @@
 use crate::{
-    outbox_event::{record, rejected},
+    outbox_event::{command_context, lifecycle_context, record, rejected},
     CoordinatorConfig, CoordinatorEffects, CoordinatorTime, EventJournal, JournalAppendClass,
     JournalConfig, JournalIntent, JournalRecord, PowerCoordinator,
 };
@@ -35,6 +35,7 @@ impl DurablePowerCoordinator {
             None,
             status.clone(),
             now_ms,
+            Default::default(),
         ))?;
         item.last_effective = Some(status.effective_profile);
         Ok(item)
@@ -48,17 +49,26 @@ impl DurablePowerCoordinator {
         if let Some(result) = self.coordinator.replay_result(&command, now.wall_ms) {
             return result;
         }
-        let status = self.coordinator.current_status(now.wall_ms);
         if self.coordinator.command_will_apply(&command, now).is_err() {
             return self.coordinator.apply_command(command, now);
         }
-        let mut journal_status = status;
-        journal_status.authority = self.coordinator.next_authority();
         let event_type = match command.action {
             PowerCommandAction::SetPolicy { .. } => PowerEventType::PolicyChanged,
             _ => PowerEventType::DemandChanged,
         };
-        if let Err(detail) = self.append_command(event_type, journal_status, now.wall_ms) {
+        let class = command_append_class(&command);
+        let mut predicted = self.coordinator.clone();
+        let predicted_result = predicted.apply_command(command.clone(), now);
+        if !predicted_result.accepted {
+            return predicted_result;
+        }
+        if let Err(detail) = self.append_command_pair(
+            &command,
+            event_type,
+            predicted.current_status(now.wall_ms),
+            now.wall_ms,
+            class,
+        ) {
             return rejected(
                 command,
                 self.coordinator.current_status(now.wall_ms),
@@ -110,7 +120,10 @@ impl DurablePowerCoordinator {
         self.coordinator
             .set_journal_capacity_unsafe(self.journal.capacity().unsafe_for_sleep);
         let effects = self.coordinator.tick(now);
-        if effects.transition.is_some() {
+        // A transition may be announced before lifecycle statuses are present.
+        // Persist another requested record when commands are actually issued so
+        // the durable history retains the exact target/revision fence.
+        if effects.transition.is_some() || !effects.lifecycle_commands.is_empty() {
             let class = is_wake_to_safer(
                 effects.status.effective_profile,
                 effects.status.requested_profile,
@@ -124,6 +137,7 @@ impl DurablePowerCoordinator {
                 effects.status.clone(),
                 now.wall_ms,
                 class,
+                lifecycle_context(&effects.lifecycle_commands),
             )?;
         }
         if self.last_effective != Some(effects.status.effective_profile) {
@@ -140,6 +154,7 @@ impl DurablePowerCoordinator {
                 effects.status.clone(),
                 now.wall_ms,
                 class,
+                Default::default(),
             )?;
             self.last_effective = Some(effects.status.effective_profile);
         }
@@ -148,15 +163,37 @@ impl DurablePowerCoordinator {
         Ok(effects)
     }
 
-    fn append_command(
+    fn append_command_pair(
         &mut self,
+        command: &PowerCommand,
         event_type: PowerEventType,
-        status: PowerStatus,
+        applied_status: PowerStatus,
         now_ms: u64,
+        class: JournalAppendClass,
     ) -> Result<(), String> {
-        let mut command = record(JournalIntent::Command, event_type, None, status, now_ms);
-        command.status = None;
-        self.journal.append(command, JournalAppendClass::Normal)
+        let mut intent = record(
+            JournalIntent::Command,
+            event_type,
+            None,
+            applied_status.clone(),
+            now_ms,
+            command_context(command),
+        );
+        // An intent proves admission ordering but must never publish the
+        // pre-apply snapshot as authoritative current state.
+        intent.status = None;
+        let applied = record(
+            JournalIntent::CommandApplied,
+            PowerEventType::CommandApplied,
+            None,
+            applied_status,
+            now_ms,
+            command_context(command),
+        );
+        self.journal
+            .preflight_append(&[(&intent, class), (&applied, class)])?;
+        self.journal.append(intent, class)?;
+        self.journal.append(applied, class)
     }
     fn append_with_class(
         &mut self,
@@ -166,11 +203,23 @@ impl DurablePowerCoordinator {
         status: PowerStatus,
         now_ms: u64,
         class: JournalAppendClass,
+        context: robo_rover_lib::PowerEventContext,
     ) -> Result<(), String> {
         self.journal.append(
-            record(intent, event_type, transition_id, status, now_ms),
+            record(intent, event_type, transition_id, status, now_ms, context),
             class,
         )
+    }
+}
+
+fn command_append_class(command: &PowerCommand) -> JournalAppendClass {
+    match command.action {
+        PowerCommandAction::SetPolicy {
+            policy: robo_rover_lib::PowerPolicy::Awake,
+        }
+        | PowerCommandAction::RegisterDemand { .. }
+        | PowerCommandAction::RegisterReservation { .. } => JournalAppendClass::WakeToSafer,
+        _ => JournalAppendClass::Normal,
     }
 }
 

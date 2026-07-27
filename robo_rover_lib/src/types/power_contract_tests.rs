@@ -43,6 +43,7 @@ fn power_fixture_round_trips_and_validates() {
     ] {
         assert!(valid.is_ok());
     }
+    assert_eq!(event.context.lifecycle_targets[0].node_id, "kornia-capture");
     assert_eq!(serde_json::to_value(command).unwrap(), fixture["command"]);
 }
 

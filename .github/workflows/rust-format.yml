@@ -17,3 +17,22 @@ jobs:
         run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt
       - name: Check workspace formatting
         run: cargo +1.88.0 fmt --all -- --check
+
+  power-projector-mongo:
+    runs-on: ubuntu-latest
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.runCommand({ ping: 1 })'"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Run Mongo projection gate
+        env:
+          POWER_PROJECTOR_TEST_MONGODB_URI: mongodb://127.0.0.1:27017
+        run: cargo +1.88.0 test -p power_event_projector --test mongo-integration -- --ignored

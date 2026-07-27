@@ -61,6 +61,7 @@ pub struct CoordinatorEffects {
     pub query_lifecycle_status: bool,
 }
 
+#[derive(Clone)]
 pub struct PowerCoordinator {
     config: CoordinatorConfig,
     catalog: ProfileCatalog,

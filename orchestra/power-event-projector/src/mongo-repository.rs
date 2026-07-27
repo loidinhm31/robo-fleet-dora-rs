@@ -6,6 +6,16 @@ use mongodb::{
     Client, Collection, Database, IndexModel,
 };
 use power_coordinator::JournalRecord;
+use robo_rover_lib::{PowerDemandSource, PowerEventType, PowerReasonCode};
+
+#[derive(Debug, Clone, Default)]
+pub struct HistoryFilter {
+    pub event_type: Option<PowerEventType>,
+    pub demand_source: Option<PowerDemandSource>,
+    pub transition_id: Option<String>,
+    pub target_node_id: Option<String>,
+    pub reason_code: Option<PowerReasonCode>,
+}
 
 pub struct MongoRepository {
     events: Collection<Document>,
@@ -53,6 +63,16 @@ impl MongoRepository {
                 false,
                 None,
             ),
+            index(
+                doc! {"deployment_id": 1, "entity_id": 1, "event.context.demand_source": 1, "occurred_at": -1},
+                false,
+                None,
+            ),
+            index(
+                doc! {"deployment_id": 1, "entity_id": 1, "event.context.lifecycle_targets.node_id": 1, "occurred_at": -1},
+                false,
+                None,
+            ),
             index(doc! {"expires_at": 1}, false, Some(0)),
         ] {
             self.events.create_index(index, None).await?;
@@ -97,6 +117,29 @@ impl MongoRepository {
         cursor: Option<(DateTime, String)>,
         limit: i64,
     ) -> Result<Vec<Document>, String> {
+        self.history_filtered(
+            deployment_id,
+            entity_id,
+            from_ms,
+            to_ms,
+            cursor,
+            limit,
+            &HistoryFilter::default(),
+        )
+        .await
+    }
+
+    #[allow(dead_code)] // Exposed to the authenticated history API in Phase 07.
+    pub async fn history_filtered(
+        &self,
+        deployment_id: &str,
+        entity_id: &str,
+        from_ms: Option<i64>,
+        to_ms: Option<i64>,
+        cursor: Option<(DateTime, String)>,
+        limit: i64,
+        filter: &HistoryFilter,
+    ) -> Result<Vec<Document>, String> {
         let (from, to) = clamp_window(from_ms, to_ms);
         let mut clauses = vec![
             doc! {"deployment_id": deployment_id, "entity_id": entity_id, "occurred_at": {"$gte": DateTime::from_millis(from), "$lte": DateTime::from_millis(to)}},
@@ -104,6 +147,7 @@ impl MongoRepository {
         if let Some(filter) = cursor_filter(cursor.as_ref().map(|(at, id)| (at, id.as_str()))) {
             clauses.push(filter);
         }
+        append_history_filters(&mut clauses, filter)?;
         self.events
             .find(
                 doc! {"$and": clauses},
@@ -141,6 +185,28 @@ impl MongoRepository {
             Err(error) => Err(error.to_string()),
         }
     }
+}
+
+fn append_history_filters(
+    clauses: &mut Vec<Document>,
+    filter: &HistoryFilter,
+) -> Result<(), String> {
+    if let Some(event_type) = filter.event_type {
+        clauses.push(doc! {"event.event_type": mongodb::bson::to_bson(&event_type).map_err(|error| error.to_string())?});
+    }
+    if let Some(source) = filter.demand_source {
+        clauses.push(doc! {"event.context.demand_source": mongodb::bson::to_bson(&source).map_err(|error| error.to_string())?});
+    }
+    if let Some(transition_id) = filter.transition_id.as_deref() {
+        clauses.push(doc! {"event.transition_id": transition_id});
+    }
+    if let Some(target_node_id) = filter.target_node_id.as_deref() {
+        clauses.push(doc! {"event.context.lifecycle_targets.node_id": target_node_id});
+    }
+    if let Some(reason_code) = filter.reason_code {
+        clauses.push(doc! {"event.reason_code": mongodb::bson::to_bson(&reason_code).map_err(|error| error.to_string())?});
+    }
+    Ok(())
 }
 
 fn index(keys: Document, unique: bool, ttl_seconds: Option<u64>) -> IndexModel {

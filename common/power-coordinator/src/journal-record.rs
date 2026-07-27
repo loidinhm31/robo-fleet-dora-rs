@@ -8,6 +8,7 @@ pub const JOURNAL_VERSION: u8 = 1;
 pub enum JournalIntent {
     BootAwake,
     Command,
+    CommandApplied,
     Transition,
     TransitionApplied,
 }

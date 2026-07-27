@@ -11,7 +11,7 @@ mongodb = "2"
 robo_rover_lib = { path = "../../robo_rover_lib" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { version = "1.24.2", features = ["rt"] }
+tokio = { version = "1.24.2", features = ["rt", "time"] }
 tracing = { workspace = true }
 uuid = { workspace = true }
 power_coordinator = { path = "../../common/power-coordinator" }

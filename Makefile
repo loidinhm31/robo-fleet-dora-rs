@@ -7,7 +7,7 @@
 .PHONY: help models models-reset check-models build-orchestra build-rover build-all up-orchestra up-rover \
         up-rover-direct up-mongodb down-mongodb logs-mongodb up-workstation down logs-orchestra \
         logs-rover shell-orchestra shell-rover status clean build-rover-cross format format-check \
-	        format-file validate-recording-path validate-compose validate-workstation-compose validate-edge-voice-x86
+        format-file validate-recording-path validate-compose validate-workstation-compose validate-edge-voice-x86 test-power-projector-mongo
 
 # Default target
 .DEFAULT_GOAL := help
@@ -51,6 +51,7 @@ help:
 	@echo "  make logs-rover      - View rover logs (follow mode)"
 	@echo "  make status          - Check Dora node status in containers"
 	@echo "  make validate-edge-voice-x86 - Run the native x86 edge-voice benchmark"
+	@echo "  make test-power-projector-mongo - Run the required Mongo projection integration gate"
 	@echo ""
 	@echo "Shell Access:"
 	@echo "  make shell-orchestra - Open bash shell in orchestra container"
@@ -149,6 +150,9 @@ up-mongodb:
 	@echo ""
 	@echo "MongoDB started on mongodb://127.0.0.1:$${MONGODB_PORT:-27017}"
 	@echo "View logs with: make logs-mongodb"
+
+test-power-projector-mongo:
+	POWER_PROJECTOR_TEST_MONGODB_URI=$${POWER_PROJECTOR_TEST_MONGODB_URI:-mongodb://127.0.0.1:$${MONGODB_PORT:-27017}} cargo test -p power_event_projector --test mongo-integration -- --ignored
 
 # @env: SOURCE_URI SOURCE_TYPE
 up-rover-direct:  ## Start rover in direct-connect mode (web UI on rover, no Zenoh)

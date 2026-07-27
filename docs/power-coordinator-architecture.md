@@ -449,7 +449,8 @@ backpressure status.
 
 ### Phase 03 partial baseline
 
-The coordinator persists the journal under `POWER_JOURNAL_DIR` (default
+The coordinator persists durable command intent and applied records in the
+journal under `POWER_JOURNAL_DIR` (default
 `/var/lib/robo-fleet/power-journal/{role}`) using two files:
 `power-events.log` and atomically replaced `power-journal.meta`. Records are
 framed as version-1 JSON payloads with a CRC32 checksum. Startup recovery
@@ -458,10 +459,11 @@ closed. Metadata tracks the next journal sequence, highest authority epoch,
 and projector acknowledgements. Acknowledged records are compacted only after
 the projector confirms persistence. Capacity limits are configurable with
 `POWER_JOURNAL_MAX_BYTES`, `POWER_JOURNAL_MAX_RECORDS`,
-`POWER_JOURNAL_WAKE_RESERVE_BYTES`, and `POWER_JOURNAL_WAKE_RESERVE_RECORDS`;
-the reserved slice exists, but current command classification does not yet let
-all wake-causing commands use it. Phase 03 reacceptance closes that gap and
-adds physical disk-pressure evidence.
+`POWER_JOURNAL_WAKE_RESERVE_BYTES`, and `POWER_JOURNAL_WAKE_RESERVE_RECORDS`.
+Wake-causing command intents are classified into the reserved slice, while
+non-wake traffic remains subject to ordinary capacity limits. Physical
+disk-pressure is surfaced through journal health rather than silently dropping
+an unapplied safety intent.
 
 On Orchestra, `power-event-projector` consumes the coordinator's
 `power_journal_record` Dora input and emits `power_event_ack` only after the
@@ -473,10 +475,13 @@ sequence. Duplicate delivery is therefore idempotent, and reordered or stale
 records cannot regress the current projection. History queries are bounded to
 the 90-day retention window and support a time/event cursor.
 
-This baseline is incomplete: command events omit required action/demand/target
-context, demand/source filters are absent, projector write failure lacks
-bounded retry, Rover record/ack transport remains Phase 04 work, and the
-Mongo-backed test is not enforced when its URI is unset.
+Command intent/applied events now carry bounded action, policy, demand,
+reservation, and lifecycle-target context. History queries support event type,
+demand source, transition, target-node, reason-code, and time-cursor filters.
+Projector startup and per-record writes use bounded linear-backoff retries;
+failed attempts publish degraded health and do not acknowledge the journal
+record until Mongo persistence succeeds. Rover record/ack transport remains
+Phase 04 work, and the Mongo-backed test remains opt-in when its URI is unset.
 
 ## Invariants
 

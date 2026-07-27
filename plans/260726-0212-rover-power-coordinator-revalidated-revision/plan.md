@@ -29,8 +29,8 @@ Implement the power coordinator specified in [the revalidated architecture](../.
 | # | Phase | Status | Progress | Effort | Dependency |
 |---|---|---|---:|---:|---|
 | 1 | [Contracts, snapshot gate, lifecycle hardening](./phase-01-contracts-snapshot-gate-and-lifecycle.md) | Done — accepted 2026-07-27 | 100% accepted | 32h | — |
-| 2 | [Coordinator profiles and Auto reducer](./phase-02-coordinator-profiles-and-auto-reducer.md) | Pending — ready after Phase 01 | 0% accepted | 40h | 1 |
-| 3 | [Local journal and Mongo projection](./phase-03-local-journal-and-mongo-projection.md) | Blocked — partial carryover | 0% accepted | 34h | 1–2 |
+| 2 | [Coordinator profiles and Auto reducer](./phase-02-coordinator-profiles-and-auto-reducer.md) | Done — accepted 2026-07-27 | 100% accepted | 40h | 1 |
+| 3 | [Local journal and Mongo projection](./phase-03-local-journal-and-mongo-projection.md) | Done — accepted 2026-07-27 | 100% accepted | 34h | 1–2 |
 | 4 | [Zenoh authority and direct-mode routing](./phase-04-zenoh-authority-and-direct-routing.md) | Pending | 0% | 34h | 1–3 |
 | 5 | [Scheduler reservations and bounded prewarm](./phase-05-scheduler-reservations-and-bounded-prewarm.md) | Pending | 0% | 34h | 1–4 |
 | 6 | [Rover KWS and WakeAck](./phase-06-rover-kws-and-wake-ack.md) | Pending | 0% | 30h | 1–4 |
@@ -48,13 +48,15 @@ accepted until its revised success criteria pass.
 - Phase 01 reacceptance completed 2026-07-27 (118 focused tests plus one
   doctest passing). Snapshot gating, immutable replay, deadline fencing, and
   reservation tombstones are accepted at the contract/state-machine boundary.
-- Phase 02 is no longer blocked by Phase 01, but remains unaccepted and must
-  address its own carryover gaps: protected-work input, valid Orchestra Sleep
-  profile, and complete profile/source bounds.
-- Phase 03 remains blocked by Phases 01–02. Wake-causing commands cannot use
-  reserved journal capacity, event history loses command/demand context, and
-  Mongo/outage coverage is not an enforced test gate.
-- Phase 04 must not start until Phases 01–03 are reaccepted.
+- Phase 02 reacceptance completed 2026-07-27. Protected-work input,
+  role-valid Orchestra Sleep, profile ownership inventory, five-minute Auto
+  floor, and per-source demand bounds are accepted.
+- Phase 03 reacceptance completed 2026-07-27. Reserved wake capacity,
+  bounded event context/status, demand/source and target filters/indexes,
+  projector retry/health behavior, and enforced journal/Mongo recovery,
+  retention, and disk-pressure gates are accepted.
+- Phase 04 is now eligible to begin only under its declared dependency on
+  accepted Phases 01–03; this update does not accept any Phase 04 work.
 
 Phase 01 owns the snapshot gate contract and coordinator state-machine
 behavior. Phase 04 owns Zenoh/direct ports, snapshot request/reply, and proof

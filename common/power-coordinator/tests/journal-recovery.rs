@@ -26,6 +26,7 @@ fn record(epoch: u64) -> JournalRecord {
             event_type: PowerEventType::TransitionRequested,
             reason_code: None,
             detail: None,
+            context: Default::default(),
             occurred_at_ms: 100,
         },
         status: Some(PowerStatus {
@@ -192,4 +193,53 @@ fn durable_exact_command_replay_does_not_append_a_second_journal_intent() {
     assert!(accepted.accepted);
     assert_eq!(coordinator.apply_command(command, time), accepted);
     assert_eq!(coordinator.pending_records().len(), records_after_first);
+}
+
+#[test]
+fn wake_policy_command_uses_reserved_capacity_and_keeps_auditable_context() {
+    let dir = TempDir::new().unwrap();
+    let mut config = CoordinatorConfig::for_test(LifecycleRole::Rover, "rover-kiwi");
+    config.journal_dir = dir.path().display().to_string();
+    config.journal_max_records = 4;
+    config.journal_wake_reserve_records = 2;
+    let mut coordinator = DurablePowerCoordinator::open(config, 100).unwrap();
+    let time = CoordinatorTime {
+        wall_ms: 101,
+        monotonic_ms: 1,
+    };
+    let auto = PowerCommand {
+        protocol_version: POWER_PROTOCOL_VERSION,
+        command_id: "f4f3e2d1-c0b9-48a7-9615-141312111015".into(),
+        role: LifecycleRole::Rover,
+        entity_id: "rover-kiwi".into(),
+        authority: PowerAuthority {
+            epoch: 1,
+            sequence: 1,
+        },
+        action: PowerCommandAction::SetPolicy {
+            policy: PowerPolicy::Auto,
+        },
+        issued_at_ms: 100,
+        not_before_ms: 100,
+        expires_at_ms: 200,
+        detail: None,
+    };
+    assert!(!coordinator.apply_command(auto.clone(), time).accepted);
+
+    let mut wake = auto;
+    wake.command_id = "f4f3e2d1-c0b9-48a7-9615-141312111016".into();
+    wake.action = PowerCommandAction::SetPolicy {
+        policy: PowerPolicy::Awake,
+    };
+    assert!(coordinator.apply_command(wake, time).accepted);
+    let record = coordinator
+        .pending_records()
+        .into_iter()
+        .find(|record| {
+            record.intent == JournalIntent::CommandApplied
+                && record.event.context.policy == Some(PowerPolicy::Awake)
+        })
+        .expect("wake command intent is journaled from reserved capacity");
+    assert!(record.status.is_some());
+    assert!(record.event.context.command_id.is_some());
 }

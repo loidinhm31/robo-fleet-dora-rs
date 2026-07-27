@@ -1,5 +1,5 @@
 use mongodb::bson::{self, doc, Document};
-use power_coordinator::JournalRecord;
+use power_coordinator::{JournalIntent, JournalRecord};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const HISTORY_RETENTION_MS: i64 = 90 * 24 * 60 * 60 * 1_000;
@@ -27,6 +27,12 @@ pub fn current_document(
     deployment_id: &str,
     record: &JournalRecord,
 ) -> Result<Option<Document>, String> {
+    if !matches!(
+        record.intent,
+        JournalIntent::BootAwake | JournalIntent::CommandApplied | JournalIntent::TransitionApplied
+    ) {
+        return Ok(None);
+    }
     let Some(status) = &record.status else {
         return Ok(None);
     };

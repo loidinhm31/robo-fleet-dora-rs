@@ -73,7 +73,7 @@ impl CoordinatorConfig {
             journal_max_bytes: 1024 * 1024,
             journal_max_records: 100,
             journal_wake_reserve_bytes: 1024,
-            journal_wake_reserve_records: 1,
+            journal_wake_reserve_records: 2,
         }
     }
 

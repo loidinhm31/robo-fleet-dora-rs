@@ -158,6 +158,34 @@ impl EventJournal {
         Ok(())
     }
 
+    /// Check that all records fit before a command changes coordinator state.
+    pub fn preflight_append(
+        &self,
+        records: &[(&JournalRecord, JournalAppendClass)],
+    ) -> Result<(), String> {
+        let mut bytes = self.log_bytes;
+        let mut count = self.pending().count();
+        for (record, class) in records {
+            let payload = serde_json::to_vec(record).map_err(|error| error.to_string())?;
+            if payload.len() > MAX_RECORD_BYTES {
+                return Err("journal record exceeds maximum size".into());
+            }
+            bytes = bytes.saturating_add((HEADER_BYTES + payload.len()) as u64);
+            count = count.saturating_add(1);
+            let (byte_limit, record_limit) = match class {
+                JournalAppendClass::Normal => (
+                    self.config.max_bytes - self.config.wake_reserve_bytes,
+                    self.config.max_records - self.config.wake_reserve_records,
+                ),
+                JournalAppendClass::WakeToSafer => (self.config.max_bytes, self.config.max_records),
+            };
+            if bytes > byte_limit || count > record_limit {
+                return Err("journal CapacityExceeded".into());
+            }
+        }
+        Ok(())
+    }
+
     /// A new boot epoch supersedes an unreplicated earlier boot intent. Other
     /// unacknowledged transition records remain intact.
     pub fn replace_boot_intent(&mut self, record: JournalRecord) -> Result<(), String> {

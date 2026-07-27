@@ -308,11 +308,14 @@ nodes:
       power_journal_record: power-coordinator/power_journal_record
     outputs:
       - power_event_ack
+      - power_projector_health
     env:
       RUST_LOG: info
       POWER_DEPLOYMENT_ID: "${POWER_DEPLOYMENT_ID:-default}"
       MONGODB_URI: "${MONGODB_URI:-mongodb://127.0.0.1:27017}"
       MONGODB_DATABASE: "${MONGODB_DATABASE:-gleanOak}"
+      POWER_PROJECTOR_RETRY_ATTEMPTS: "${POWER_PROJECTOR_RETRY_ATTEMPTS:-3}"
+      POWER_PROJECTOR_RETRY_BACKOFF_MS: "${POWER_PROJECTOR_RETRY_BACKOFF_MS:-100}"
 
   - id: lifecycle-manager
     build: cargo build --release -p lifecycle_manager
