@@ -79,6 +79,17 @@ fn recovers_a_torn_final_record_and_preserves_epoch_high_water() {
 }
 
 #[test]
+fn persists_observed_remote_epoch_before_restart() {
+    let dir = TempDir::new().unwrap();
+    let mut journal = EventJournal::open(config(&dir)).unwrap();
+    journal.observe_epoch(41).unwrap();
+    drop(journal);
+
+    let recovered = EventJournal::open(config(&dir)).unwrap();
+    assert_eq!(recovered.next_epoch(), 42);
+}
+
+#[test]
 fn discards_a_corrupt_final_record_and_reports_it() {
     let dir = TempDir::new().unwrap();
     let mut journal = EventJournal::open(config(&dir)).unwrap();

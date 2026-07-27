@@ -8,8 +8,8 @@ use power_coordinator::{
     CoordinatorConfig, CoordinatorTime, DurablePowerCoordinator, JournalAcknowledgement,
 };
 use robo_rover_lib::{
-    init_tracing, LifecycleCommandResult, LifecycleStatus, PowerCommand, RecordingOccurrence,
-    ResourceSnapshot,
+    init_tracing, LifecycleCommandResult, LifecycleStatus, PowerAuthoritySnapshot, PowerCommand,
+    RecordingOccurrence, ResourceSnapshot,
 };
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -18,7 +18,12 @@ fn main() -> Result<()> {
     let config = CoordinatorConfig::from_env().map_err(eyre::Report::msg)?;
     let started = Instant::now();
     let mut coordinator =
-        DurablePowerCoordinator::open(config, wall_ms()).map_err(eyre::Report::msg)?;
+        DurablePowerCoordinator::open(config.clone(), wall_ms()).map_err(eyre::Report::msg)?;
+    if let Some(remote_entity_id) = config.remote_authority_entity_id {
+        coordinator
+            .require_authority_snapshot(robo_rover_lib::LifecycleRole::Rover, remote_entity_id)
+            .map_err(eyre::Report::msg)?;
+    }
     let (mut node, mut events) = DoraNode::init_from_env()?;
     while let Some(event) = events.recv() {
         let poll_lifecycle = matches!(&event, Event::Input { id, .. } if id.as_str() == "tick");
@@ -51,14 +56,35 @@ fn main() -> Result<()> {
             Event::Input { id, data, .. } if id.as_str() == "power_command" => {
                 if let Some(bytes) = binary(&data) {
                     if let Ok(command) = serde_json::from_slice::<PowerCommand>(bytes) {
-                        send(
-                            &mut node,
-                            "power_command_result",
-                            &coordinator.apply_command(command, now),
-                        )?;
+                        if config.role == robo_rover_lib::LifecycleRole::Orchestra
+                            && command.role == robo_rover_lib::LifecycleRole::Rover
+                            && coordinator
+                                .authorize_remote_profile_command(command.authority, now.wall_ms)
+                                == robo_rover_lib::PowerAuthorityDecision::CommandAllowed
+                        {
+                            send(&mut node, "power_remote_command", &command)?;
+                        } else {
+                            send(
+                                &mut node,
+                                "power_command_result",
+                                &coordinator.apply_command(command, now),
+                            )?;
+                        }
                     }
                 }
             }
+            Event::Input { id, data, .. } if id.as_str() == "power_authority_snapshot" => {
+                if let Some(bytes) = binary(&data) {
+                    if let Ok(snapshot) = serde_json::from_slice::<PowerAuthoritySnapshot>(bytes) {
+                        coordinator
+                            .observe_authority_snapshot(snapshot, now.wall_ms)
+                            .map_err(eyre::Report::msg)?;
+                    }
+                }
+            }
+            // A reconnect request has no mutable payload: completing this input cycle
+            // publishes the current, short-lived authority snapshot below.
+            Event::Input { id, .. } if id.as_str() == "power_snapshot_request" => {}
             Event::Input { id, data, .. } if id.as_str() == "recording_occurrence_status" => {
                 if let Some(bytes) = binary(&data) {
                     if let Ok(occurrence) = serde_json::from_slice::<RecordingOccurrence>(bytes) {
@@ -76,10 +102,12 @@ fn main() -> Result<()> {
             Event::Input { id, data, .. } if id.as_str() == "power_event_ack" => {
                 if let Some(bytes) = binary(&data) {
                     if let Ok(ack) = serde_json::from_slice::<JournalAcknowledgement>(bytes) {
-                        coordinator
-                            .acknowledge(&ack.event_id)
-                            .map_err(eyre::Report::msg)?;
-                        coordinator.compact().map_err(eyre::Report::msg)?;
+                        if ack.validates_for(&config.entity_id, None).is_ok() {
+                            coordinator
+                                .acknowledge(&ack.event_id)
+                                .map_err(eyre::Report::msg)?;
+                            coordinator.compact().map_err(eyre::Report::msg)?;
+                        }
                     }
                 }
             }
@@ -88,6 +116,11 @@ fn main() -> Result<()> {
         }
         let effects = coordinator.tick(now).map_err(eyre::Report::msg)?;
         send(&mut node, "power_status", &effects.status)?;
+        send(
+            &mut node,
+            "power_snapshot",
+            &coordinator.authority_snapshot(now.wall_ms),
+        )?;
         if poll_lifecycle {
             send(&mut node, "lifecycle_status_query", &serde_json::json!({}))?;
         }
@@ -96,6 +129,7 @@ fn main() -> Result<()> {
         }
         for record in coordinator.pending_records() {
             send(&mut node, "power_journal_record", &record)?;
+            send(&mut node, "power_event", &record.event)?;
         }
         send(
             &mut node,

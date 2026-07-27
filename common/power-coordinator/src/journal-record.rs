@@ -1,4 +1,4 @@
-use robo_rover_lib::{PowerEvent, PowerStatus};
+use robo_rover_lib::{PowerEvent, PowerJournalAcknowledgement, PowerStatus};
 use serde::{Deserialize, Serialize};
 
 pub const JOURNAL_VERSION: u8 = 1;
@@ -24,11 +24,7 @@ pub struct JournalRecord {
     pub status: Option<PowerStatus>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct JournalAcknowledgement {
-    pub event_id: String,
-}
+pub type JournalAcknowledgement = PowerJournalAcknowledgement;
 
 impl JournalRecord {
     pub fn validate(&self) -> Result<(), String> {

@@ -1,0 +1,49 @@
+scenario=phase01-monitor-smoke
+timestamp_utc=20260620T190352Z
+duration_seconds=1
+sample_seconds=1
+nano_cpus=3000000000 memory=4294967296 oom_killed=false
+cgroup_start
+usage_usec 663202439
+user_usec 525311789
+system_usec 137890650
+nice_usec 987
+core_sched.force_idle_usec 0
+nr_periods 14631
+nr_throttled 501
+throttled_usec 48296641
+nr_bursts 0
+burst_usec 0
+153133056
+162447360
+low 0
+high 0
+max 0
+oom 0
+oom_kill 0
+oom_group_kill 0
+sock_throttled 0
+samples_begin
+sample_utc=2026-06-20T19:03:52Z	cpu=45.33%	memory=134MB / 4.295GB
+samples_end
+cgroup_end
+usage_usec 666815130
+user_usec 528655447
+system_usec 138159682
+nice_usec 987
+core_sched.force_idle_usec 0
+nr_periods 14643
+nr_throttled 513
+throttled_usec 49388282
+nr_bursts 0
+burst_usec 0
+131751936
+162447360
+low 0
+high 0
+max 0
+oom 0
+oom_kill 0
+oom_group_kill 0
+sock_throttled 0
+nano_cpus=3000000000 memory=4294967296 oom_killed=false

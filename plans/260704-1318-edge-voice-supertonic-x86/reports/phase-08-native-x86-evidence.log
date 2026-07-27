@@ -1,0 +1,51 @@
+connected socket_url=http://127.0.0.1:3030
+metric_phase=initial_state
+default_revision=0 desired_config={"language":"en","speaker_id":5,"speed":1,"num_steps":8,"volume":0.800000011920929}
+voice_ready_revision=0
+baseline_dataflow_fps=0 baseline_edge_voice_rss_mb=200.4375
+metric_phase=vision_activation
+tracking_command=enable_detection state=DetectionOnly
+tracking_command=enable state=Enabled
+vision_state=Enabled
+metric_phase=vision_only
+performance_window=vision_only samples=2 avg_dataflow_fps=0 peak_edge_voice_rss_mb=200.4
+metric_phase=vision_tts
+config_revision=1 speaker=0 language=en ready
+sid-0-en cmd=59bf888b-e03f-4bad-9790-86c780b0721f ttfa_ms=41 wall_ms=1053 estimated_rtf=0.411 edge_voice_rss_mb=200.4
+config_revision=2 speaker=1 language=vi ready
+sid-1-vi cmd=b3227624-e1bb-4927-bf9a-ade57908d9ca ttfa_ms=41 wall_ms=933 estimated_rtf=0.319 edge_voice_rss_mb=200.4
+config_revision=3 speaker=2 language=en ready
+sid-2-en cmd=686e2098-da9d-43fd-b09a-62b33c044ee4 ttfa_ms=41 wall_ms=1200 estimated_rtf=0.480 edge_voice_rss_mb=200.4
+config_revision=4 speaker=3 language=vi ready
+sid-3-vi cmd=a2e4b13b-3545-4f9e-be73-f3c0aa7467ca ttfa_ms=41 wall_ms=1878 estimated_rtf=0.626 edge_voice_rss_mb=266.9
+config_revision=5 speaker=4 language=en ready
+sid-4-en cmd=279258af-3f5b-4ba5-b793-8175e10d5970 ttfa_ms=49 wall_ms=1644 estimated_rtf=0.560 edge_voice_rss_mb=266.9
+config_revision=6 speaker=5 language=vi ready
+sid-5-vi cmd=ec245ec1-4a96-4767-bb96-785f33f7a8d5 ttfa_ms=41 wall_ms=1170 estimated_rtf=0.410 edge_voice_rss_mb=266.9
+config_revision=7 speaker=6 language=en ready
+sid-6-en cmd=8655c943-f2a7-40b5-87df-de3ecb5b2e2c ttfa_ms=41 wall_ms=1415 estimated_rtf=0.482 edge_voice_rss_mb=267.0
+config_revision=8 speaker=7 language=vi ready
+sid-7-vi cmd=33db5961-fbdd-4252-b131-b96301f2f7d3 ttfa_ms=41 wall_ms=1684 estimated_rtf=0.481 edge_voice_rss_mb=267.0
+config_revision=9 speaker=8 language=en ready
+sid-8-en cmd=b3cc557f-7cbc-4145-8098-d7368dfe5f17 ttfa_ms=41 wall_ms=1330 estimated_rtf=0.463 edge_voice_rss_mb=267.0
+config_revision=10 speaker=9 language=vi ready
+sid-9-vi cmd=f792fae1-e61e-478f-9eb6-92e0f4fb198d ttfa_ms=42 wall_ms=1114 estimated_rtf=0.318 edge_voice_rss_mb=267.0
+config_revision=11 speaker=5 language=en ready
+walkie cmd=d6dc64c6-0b8e-4210-98df-c88fcb37f9cd result=interrupted wall_ms=4809
+config_revision=12 speaker=5 language=en ready
+config_revision=13 speaker=5 language=en ready
+soak_progress=10/100 p95_ttfa_ms=57.0 p95_estimated_rtf=0.779
+soak_progress=20/100 p95_ttfa_ms=57.0 p95_estimated_rtf=0.796
+soak_progress=30/100 p95_ttfa_ms=63.0 p95_estimated_rtf=0.821
+soak_progress=40/100 p95_ttfa_ms=57.0 p95_estimated_rtf=0.843
+soak_progress=50/100 p95_ttfa_ms=57.0 p95_estimated_rtf=0.843
+soak_progress=60/100 p95_ttfa_ms=57.0 p95_estimated_rtf=0.843
+soak_progress=70/100 p95_ttfa_ms=61.0 p95_estimated_rtf=0.862
+soak_progress=80/100 p95_ttfa_ms=61.0 p95_estimated_rtf=0.843
+soak_progress=90/100 p95_ttfa_ms=61.0 p95_estimated_rtf=0.843
+soak_progress=100/100 p95_ttfa_ms=60.0 p95_estimated_rtf=0.828
+soak_done count=100 p95_ttfa_ms=60.0 p95_estimated_rtf=0.828
+capture_samples_rejected=60017 capture_drops=60017
+metric_phase=vision_shutdown
+tracking_command=disable_detection state=Disabled
+vision_state=Disabled

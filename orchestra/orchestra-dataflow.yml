@@ -78,6 +78,8 @@ nodes:
       protected_work_snapshot:
         source: recording-scheduler/protected_work_snapshot
         queue_size: 16
+      power_command: power-coordinator/power_remote_command
+      remote_power_event_ack: power-event-projector/remote_power_event_ack
     outputs:
       # Data FROM active rovers via Zenoh (subscribers)
       - video_frame         # JPEG frames from rover camera (with entity_id in metadata)
@@ -96,6 +98,9 @@ nodes:
       - lifecycle_status
       - lifecycle_capabilities
       - protected_work_snapshot_request
+      - power_status
+      - power_authority_snapshot
+      - power_journal_record
     env:
       RUST_LOG: info
       ZENOH_MODE: "peer"
@@ -107,6 +112,8 @@ nodes:
       AUDIO_SAMPLE_RATE: "16000"
       AUDIO_CHANNELS: "1"
       POWER_PROTECTED_WORK_HMAC_KEYS: "${POWER_PROTECTED_WORK_HMAC_KEYS:-}"
+      POWER_COMMAND_HMAC_KEYS: "${POWER_COMMAND_HMAC_KEYS:-}"
+      POWER_DEPLOYMENT_ID: "${POWER_DEPLOYMENT_ID:-default}"
 
   # Central final-only VAD/offline speech recognizer.
   - id: central-speech-recognizer
@@ -284,20 +291,27 @@ nodes:
       protected_work_snapshot:
         source: recording-scheduler/protected_work_snapshot
         queue_size: 16
+      power_authority_snapshot:
+        source: orchestra-bridge/power_authority_snapshot
+        queue_size: 16
       power_event_ack: power-event-projector/power_event_ack
       tick: dora/timer/millis/1000
     outputs:
       - lifecycle_command
       - lifecycle_status_query
       - power_status
+      - power_snapshot
+      - power_event
       - power_transition
       - power_command_result
+      - power_remote_command
       - power_journal_record
       - power_journal_health
     env:
       RUST_LOG: info
       ENTITY_ID: "orchestra"
       POWER_COORDINATOR_ROLE: "orchestra"
+      POWER_REMOTE_AUTHORITY_ENTITY_ID: "${POWER_REMOTE_AUTHORITY_ENTITY_ID:-rover-kiwi}"
       POWER_JOURNAL_DIR: "${POWER_JOURNAL_DIR:-/var/lib/robo-fleet/power-journal/orchestra}"
       POWER_JOURNAL_WAKE_RESERVE_RECORDS: "${POWER_JOURNAL_WAKE_RESERVE_RECORDS:-10}"
 
@@ -306,8 +320,10 @@ nodes:
     path: ../target/release/power_event_projector
     inputs:
       power_journal_record: power-coordinator/power_journal_record
+      remote_power_journal_record: orchestra-bridge/power_journal_record
     outputs:
       - power_event_ack
+      - remote_power_event_ack
       - power_projector_health
     env:
       RUST_LOG: info

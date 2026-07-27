@@ -206,6 +206,30 @@ impl PowerAuthority {
             Ok(())
         }
     }
+
+    /// Normal commands use the receiver's current stamp and advance its
+    /// sequence after apply. A reconnect may establish exactly the next epoch
+    /// at sequence one. No other authority jump is admissible.
+    pub fn accepts_command_authority(&self, proposed: Self) -> bool {
+        (proposed == *self && self.next_sequence().is_some())
+            || self.next_epoch().is_some_and(|next| proposed == next)
+    }
+
+    /// The sole epoch-reconciliation successor. This intentionally differs
+    /// from `next_sequence`: Orchestra must use it after observing a Rover
+    /// snapshot, because the Rover's sequence is not Orchestra's local one.
+    pub fn next_epoch(&self) -> Option<Self> {
+        self.epoch
+            .checked_add(1)
+            .map(|epoch| Self { epoch, sequence: 1 })
+    }
+
+    pub fn next_sequence(&self) -> Option<Self> {
+        self.sequence.checked_add(1).map(|sequence| Self {
+            epoch: self.epoch,
+            sequence,
+        })
+    }
 }
 
 impl PowerProfile {
@@ -406,7 +430,7 @@ impl PowerSnapshotGate {
         };
         if snapshot.captured_at_ms > now_ms
             || snapshot.expires_at_ms <= now_ms
-            || authority <= snapshot.authority
+            || snapshot.authority.next_epoch() != Some(authority)
             || self
                 .last_consumed_authority
                 .is_some_and(|last| snapshot.authority <= last || authority <= last)

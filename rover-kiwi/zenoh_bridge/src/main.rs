@@ -4,16 +4,21 @@ use dora_node_api::{
     DoraNode, Event,
 };
 use eyre::Result;
+use power_coordinator::JournalRecord;
 use robo_rover_lib::{
-    capture_age_ms, init_tracing, record_capture_age,
+    capture_age_ms, init_tracing, power_v1_topic, record_capture_age,
     types::{ArmCommandWithMetadata, InputSource, RoverCommandWithMetadata},
     AudioFrameMetadata, AudioFrameSequenceTracker, FrameSequenceTracker, JpegFramePacket,
-    LifecycleCommand, LifecycleCommandResult, LifecycleStatus, LifecycleWakeLease, MetricWindow,
-    PcmFramePacket, PcmSampleFormat, ProtectedWorkRelayBody, ProtectedWorkRelayEnvelope,
-    ProtectedWorkSnapshotRequest, RecordingOccurrence, VideoFrameMetadata,
-    PROTECTED_WORK_REQUEST_TTL_MS,
+    LifecycleCommand, LifecycleCommandResult, LifecycleRole, LifecycleStatus, LifecycleWakeLease,
+    MetricWindow, PcmFramePacket, PcmSampleFormat, PowerAuthoritySnapshot, PowerStatus, PowerTopic,
+    ProtectedWorkRelayBody, ProtectedWorkRelayEnvelope, ProtectedWorkSnapshotRequest,
+    RecordingOccurrence, SignedPowerCommand, SignedPowerEnvelope, SignedPowerEnvelopeKind,
+    SignedPowerJournalAcknowledgement, VideoFrameMetadata, PROTECTED_WORK_REQUEST_TTL_MS,
 };
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{
+    sync::{Arc, Mutex},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 use zenoh::Config;
 
 #[path = "walkie-audio.rs"]
@@ -57,33 +62,47 @@ async fn main() -> Result<()> {
         config
     };
 
-    let session = zenoh::open(config)
-        .await
-        .map_err(|e| eyre::eyre!("Failed to open Zenoh session: {}", e))?;
+    let session = Arc::new(
+        zenoh::open(config)
+            .await
+            .map_err(|e| eyre::eyre!("Failed to open Zenoh session: {}", e))?,
+    );
 
     tracing::info!("Zenoh session ID: {}", session.zid());
     let protected_work_key = protected_work_key_from_env()?;
+    let power_command_key = power_command_key_from_env()?;
+    let power_deployment_id = power_deployment_id_from_env()?;
+    let (media_publish_tx, media_publish_rx) =
+        flume::bounded::<MediaPublish>(MEDIA_PUBLISH_CAPACITY);
+    let media_session = Arc::clone(&session);
+    tokio::spawn(async move {
+        while let Ok(publish) = media_publish_rx.recv_async().await {
+            if let Err(error) = media_session.put(publish.topic, publish.payload).await {
+                tracing::debug!(%error, "dropped failed rover media publish");
+            }
+        }
+    });
 
     // =========================================================================
     // PUBLISHERS: Send data TO orchestra via Zenoh
     // =========================================================================
 
     let video_topic = format!("rover/{}/video/jpeg/v1", entity_id);
-    let video_pub = session
+    let _video_pub = session
         .declare_publisher(&video_topic)
         .await
         .map_err(|e| eyre::eyre!("Failed to declare publisher {}: {}", video_topic, e))?;
     tracing::info!("Publisher: {}", video_topic);
 
     let audio_topic = format!("rover/{}/audio/raw", entity_id);
-    let audio_pub = session
+    let _audio_pub = session
         .declare_publisher(&audio_topic)
         .await
         .map_err(|e| eyre::eyre!("Failed to declare publisher {}: {}", audio_topic, e))?;
     tracing::info!("Publisher: {}", audio_topic);
 
     let playback_audio_topic = format!("rover/{}/audio/playback/raw", entity_id);
-    let playback_audio_pub = session
+    let _playback_audio_pub = session
         .declare_publisher(&playback_audio_topic)
         .await
         .map_err(|e| {
@@ -175,9 +194,31 @@ async fn main() -> Result<()> {
             )
         })?;
 
+    let power_status_topic = power_v1_topic(&entity_id, PowerTopic::Status);
+    let power_status_pub = session
+        .declare_publisher(&power_status_topic)
+        .await
+        .map_err(|e| eyre::eyre!("Failed to declare publisher {}: {}", power_status_topic, e))?;
+    let power_snapshot_topic = power_v1_topic(&entity_id, PowerTopic::Snapshot);
+    let power_snapshot_pub = session
+        .declare_publisher(&power_snapshot_topic)
+        .await
+        .map_err(|e| {
+            eyre::eyre!(
+                "Failed to declare publisher {}: {}",
+                power_snapshot_topic,
+                e
+            )
+        })?;
+    let power_event_topic = power_v1_topic(&entity_id, PowerTopic::Event);
+    let power_event_pub = session
+        .declare_publisher(&power_event_topic)
+        .await
+        .map_err(|e| eyre::eyre!("Failed to declare publisher {}: {}", power_event_topic, e))?;
+
     // Detection-only mode (YOLO, no tracking IDs) — separate from tracked_detections
     let detections_topic = format!("rover/{}/video/detections_only", entity_id);
-    let detections_pub = session
+    let _detections_pub = session
         .declare_publisher(&detections_topic)
         .await
         .map_err(|e| eyre::eyre!("Failed to declare publisher {}: {}", detections_topic, e))?;
@@ -185,7 +226,7 @@ async fn main() -> Result<()> {
 
     // Full tracking mode (YOLO + ReID + BoTSORT, with tracking IDs)
     let tracked_detections_topic = format!("rover/{}/video/detections", entity_id);
-    let tracked_detections_pub = session
+    let _tracked_detections_pub = session
         .declare_publisher(&tracked_detections_topic)
         .await
         .map_err(|e| {
@@ -198,7 +239,7 @@ async fn main() -> Result<()> {
     tracing::info!("Publisher: {}", tracked_detections_topic);
 
     let tracking_telemetry_topic = format!("rover/{}/telemetry/tracking", entity_id);
-    let tracking_telemetry_pub = session
+    let _tracking_telemetry_pub = session
         .declare_publisher(&tracking_telemetry_topic)
         .await
         .map_err(|e| {
@@ -324,6 +365,39 @@ async fn main() -> Result<()> {
                 e
             )
         })?;
+    let power_command_topic = power_v1_topic(&entity_id, PowerTopic::Command);
+    let power_command_sub = session
+        .declare_subscriber(&power_command_topic)
+        .await
+        .map_err(|e| {
+            eyre::eyre!(
+                "Failed to declare subscriber {}: {}",
+                power_command_topic,
+                e
+            )
+        })?;
+    let power_snapshot_request_topic = power_v1_topic(&entity_id, PowerTopic::SnapshotRequest);
+    let power_snapshot_request_sub = session
+        .declare_subscriber(&power_snapshot_request_topic)
+        .await
+        .map_err(|e| {
+            eyre::eyre!(
+                "Failed to declare subscriber {}: {}",
+                power_snapshot_request_topic,
+                e
+            )
+        })?;
+    let power_event_ack_topic = power_v1_topic(&entity_id, PowerTopic::EventAck);
+    let power_event_ack_sub = session
+        .declare_subscriber(&power_event_ack_topic)
+        .await
+        .map_err(|e| {
+            eyre::eyre!(
+                "Failed to declare subscriber {}: {}",
+                power_event_ack_topic,
+                e
+            )
+        })?;
     let protected_work_occurrence_topic =
         format!("rover/{}/power/protected-work/occurrence/v1", entity_id);
     let protected_work_occurrence_sub = session
@@ -367,6 +441,9 @@ async fn main() -> Result<()> {
     let lifecycle_status_query_output = DataId::from("lifecycle_status_query".to_owned());
     let recording_occurrence_status_output = DataId::from("recording_occurrence_status".to_owned());
     let protected_work_snapshot_output = DataId::from("protected_work_snapshot".to_owned());
+    let power_command_output = DataId::from("power_command".to_owned());
+    let power_snapshot_request_output = DataId::from("power_snapshot_request".to_owned());
+    let power_event_ack_output = DataId::from("power_event_ack".to_owned());
 
     // Statistics
     let mut video_count: u64 = 0;
@@ -394,13 +471,38 @@ async fn main() -> Result<()> {
     let mut audio_sequence = AudioFrameSequenceTracker::default();
     let mut playback_audio_sequence = AudioFrameSequenceTracker::default();
 
-    // Create channel to bridge Dora's sync events to async
-    let (dora_tx, dora_rx) = flume::unbounded();
+    // Media ingress is explicitly lossy and isolated. A camera/audio burst
+    // therefore cannot delay a snapshot request, power command, event record
+    // or signed acknowledgement on the bounded control plane.
+    let (control_tx, control_rx) = flume::bounded(CONTROL_INGRESS_CAPACITY);
+    let (media_tx, media_rx) = flume::bounded(MEDIA_INGRESS_CAPACITY);
+    let (power_update_tx, power_update_rx) = flume::bounded(1);
+    let latest_power_updates = Arc::new(Mutex::new(LatestPowerUpdates::default()));
+    let power_updates_for_thread = Arc::clone(&latest_power_updates);
+    let power_update_tx_for_thread = power_update_tx.clone();
 
     // Spawn task to read Dora events
     std::thread::spawn(move || {
         while let Some(event) = events.recv() {
-            if dora_tx.send(event).is_err() {
+            if is_coalesced_power_update(&event) {
+                let mut updates = power_updates_for_thread
+                    .lock()
+                    .expect("power update mutex poisoned");
+                match &event {
+                    Event::Input { id, .. } if id.as_str() == "power_snapshot" => {
+                        updates.snapshot = Some(event);
+                    }
+                    Event::Input { id, .. } if id.as_str() == "power_status" => {
+                        updates.status = Some(event);
+                    }
+                    _ => unreachable!("only power updates are coalesced"),
+                }
+                let _ = power_update_tx_for_thread.try_send(());
+            } else if is_high_rate_dora_ingress(&event) {
+                if media_tx.try_send(event).is_err() {
+                    tracing::debug!("dropped saturated high-rate Dora media ingress");
+                }
+            } else if control_tx.send(event).is_err() {
                 break;
             }
         }
@@ -415,7 +517,7 @@ async fn main() -> Result<()> {
     loop {
         tokio::select! {
             // Handle Dora events (data FROM local dataflow TO publish to Zenoh)
-            Ok(event) = dora_rx.recv_async() => {
+            Some(event) = receive_dora_event(&control_rx, &power_update_rx, &power_update_tx, &latest_power_updates, &media_rx) => {
                 match event {
                     Event::Input { id, data, metadata } => {
                         match id.as_str() {
@@ -441,16 +543,15 @@ async fn main() -> Result<()> {
                                             video_age_metrics.record(Duration::from_millis(age_ms), 0);
                                             JpegFramePacket { metadata, payload: bytes }.encode()
                                         }) {
-                                            Ok(packet) => match video_pub.put(&packet).await {
-                                                Ok(_) => {
+                                            Ok(packet) => {
+                                                let packet_len = packet.len();
+                                                if queue_media_publish(&media_publish_tx, &video_topic, packet) {
                                                     video_count += 1;
-                                                    video_metrics.record(started.elapsed(), packet.len());
+                                                    video_metrics.record(started.elapsed(), packet_len);
+                                                } else {
+                                                    video_metrics.record_drops(1);
                                                 }
-                                                Err(error) => {
-                                                    video_metrics.record_error();
-                                                    tracing::error!(%error, "failed to publish video frame");
-                                                }
-                                            },
+                                            }
                                             Err(error) => {
                                                 video_metrics.record_error();
                                                 tracing::error!(%error, "invalid video frame metadata");
@@ -508,16 +609,12 @@ async fn main() -> Result<()> {
 
                                 match result {
                                     Ok((audio_metadata, frame_age_ms, packet)) => {
-                                        match audio_pub.put(&packet).await {
-                                            Ok(_) => {
-                                                audio_count = audio_count.saturating_add(1);
-                                                audio_metrics.record(started.elapsed(), packet.len());
-                                            }
-                                            Err(error) => {
-                                                audio_errors = audio_errors.saturating_add(1);
-                                                audio_metrics.record_error();
-                                                tracing::error!(%error, "failed to publish audio frame");
-                                            }
+                                        let packet_len = packet.len();
+                                        if queue_media_publish(&media_publish_tx, &audio_topic, packet) {
+                                            audio_count = audio_count.saturating_add(1);
+                                            audio_metrics.record(started.elapsed(), packet_len);
+                                        } else {
+                                            audio_metrics.record_drops(1);
                                         }
                                         if let Some(snapshot) = audio_metrics.snapshot_if_due() {
                                             tracing::info!(metric="audio_pipeline", stage="rover_zenoh_publish",
@@ -573,16 +670,12 @@ async fn main() -> Result<()> {
 
                                 match result {
                                     Ok((audio_metadata, frame_age_ms, packet)) => {
-                                        match playback_audio_pub.put(&packet).await {
-                                            Ok(_) => {
-                                                audio_count = audio_count.saturating_add(1);
-                                                audio_metrics.record(started.elapsed(), packet.len());
-                                            }
-                                            Err(error) => {
-                                                audio_errors = audio_errors.saturating_add(1);
-                                                audio_metrics.record_error();
-                                                tracing::error!(%error, "failed to publish playback audio frame");
-                                            }
+                                        let packet_len = packet.len();
+                                        if queue_media_publish(&media_publish_tx, &playback_audio_topic, packet) {
+                                            audio_count = audio_count.saturating_add(1);
+                                            audio_metrics.record(started.elapsed(), packet_len);
+                                        } else {
+                                            audio_metrics.record_drops(1);
                                         }
                                         if let Some(snapshot) = audio_metrics.snapshot_if_due() {
                                             tracing::info!(metric="audio_pipeline", stage="rover_zenoh_publish_playback",
@@ -633,14 +726,59 @@ async fn main() -> Result<()> {
                                             "lifecycle_capabilities" => {
                                                 let _ = lifecycle_capabilities_pub.put(bytes).await;
                                             }
+                                            "power_status" => {
+                                                if serde_json::from_slice::<PowerStatus>(bytes)
+                                                    .is_ok_and(|status| status.validates_for(LifecycleRole::Rover, &entity_id).is_ok())
+                                                {
+                                                    let _ = power_status_pub.put(bytes).await;
+                                                }
+                                            }
+                                            "power_snapshot" => {
+                                                if serde_json::from_slice::<PowerAuthoritySnapshot>(bytes)
+                                                    .is_ok_and(|snapshot| snapshot.validates_for(LifecycleRole::Rover, &entity_id).is_ok())
+                                                {
+                                                    let now_ms = current_time_ms().unwrap_or_default();
+                                                    match SignedPowerEnvelope::new(
+                                                        SignedPowerEnvelopeKind::Snapshot,
+                                                        LifecycleRole::Rover,
+                                                        entity_id.clone(),
+                                                        now_ms,
+                                                        serde_json::from_slice::<PowerAuthoritySnapshot>(bytes)?,
+                                                    ).sign(&power_command_key) {
+                                                        Ok(snapshot) => {
+                                                            let _ = power_snapshot_pub.put(serde_json::to_vec(&snapshot)?).await;
+                                                        }
+                                                        Err(error) => tracing::warn!(%error, "failed to sign rover power snapshot"),
+                                                    }
+                                                }
+                                            }
+                                            "power_journal_record" => {
+                                                if serde_json::from_slice::<JournalRecord>(bytes)
+                                                    .is_ok_and(|record| record.validate().is_ok() && record.event.role == LifecycleRole::Rover && record.event.entity_id == entity_id)
+                                                {
+                                                    let _ = power_event_pub.put(bytes).await;
+                                                }
+                                            }
                                             "detections" => {
-                                                let _ = detections_pub.put(bytes).await;
+                                                let _ = queue_media_publish(
+                                                    &media_publish_tx,
+                                                    &detections_topic,
+                                                    bytes.to_vec(),
+                                                );
                                             }
                                             "tracked_detections" => {
-                                                let _ = tracked_detections_pub.put(bytes).await;
+                                                let _ = queue_media_publish(
+                                                    &media_publish_tx,
+                                                    &tracked_detections_topic,
+                                                    bytes.to_vec(),
+                                                );
                                             }
                                             "tracking_telemetry" => {
-                                                let _ = tracking_telemetry_pub.put(bytes).await;
+                                                let _ = queue_media_publish(
+                                                    &media_publish_tx,
+                                                    &tracking_telemetry_topic,
+                                                    bytes.to_vec(),
+                                                );
                                             }
                                             "voice_status" => {
                                                 if let Err(error) = voice_status_pub.put(bytes).await {
@@ -805,6 +943,57 @@ async fn main() -> Result<()> {
                 let _ = node.send_output(lifecycle_status_query_output.clone(), Default::default(), BinaryArray::from_vec(vec![payload.as_ref()]));
             }
 
+            Ok(sample) = power_command_sub.recv_async() => {
+                let payload = sample.payload().to_bytes();
+                match serde_json::from_slice::<SignedPowerCommand>(&payload) {
+                    Ok(envelope)
+                        if envelope.verify(&power_command_key, current_time_ms().unwrap_or_default()).is_ok()
+                            && envelope.validates_for(SignedPowerEnvelopeKind::Command, LifecycleRole::Rover, &entity_id).is_ok()
+                            && envelope.payload.validates_for(LifecycleRole::Rover, &entity_id).is_ok() => {
+                        let command = serde_json::to_vec(&envelope.payload)?;
+                        let arrow_data = BinaryArray::from_vec(vec![command.as_slice()]);
+                        if let Err(error) = node.send_output(power_command_output.clone(), Default::default(), arrow_data) {
+                            tracing::warn!(%error, "failed to forward rover power command");
+                        }
+                    }
+                    _ => tracing::warn!("rejected invalid or misrouted power command"),
+                }
+            }
+
+            Ok(_sample) = power_snapshot_request_sub.recv_async() => {
+                // The coordinator emits its authoritative snapshot after every input,
+                // including this explicit reconnect request.
+                let arrow_data = BinaryArray::from_vec(vec![b"{}".as_slice()]);
+                if let Err(error) = node.send_output(power_snapshot_request_output.clone(), Default::default(), arrow_data) {
+                    tracing::warn!(%error, "failed to forward power snapshot request");
+                }
+            }
+
+            Ok(sample) = power_event_ack_sub.recv_async() => {
+                let payload = sample.payload().to_bytes();
+                match serde_json::from_slice::<SignedPowerJournalAcknowledgement>(&payload) {
+                    Ok(envelope)
+                        if envelope.verify(&power_command_key, current_time_ms().unwrap_or_default()).is_ok()
+                            && envelope.validates_for(
+                                SignedPowerEnvelopeKind::JournalAcknowledgement,
+                                LifecycleRole::Rover,
+                                &entity_id,
+                            ).is_ok()
+                            && envelope
+                                .payload
+                                .validates_for(&entity_id, Some(&power_deployment_id))
+                                .is_ok() => {
+                        let acknowledgement = serde_json::to_vec(&envelope.payload)?;
+                        let _ = node.send_output(
+                            power_event_ack_output.clone(),
+                            Default::default(),
+                            BinaryArray::from_vec(vec![acknowledgement.as_slice()]),
+                        );
+                    }
+                    _ => tracing::warn!("rejected invalid or stale remote power journal acknowledgement"),
+                }
+            }
+
             Ok(sample) = protected_work_occurrence_sub.recv_async() => {
                 let payload = sample.payload().to_bytes();
                 if let Some(occurrence) = verified_protected_work_occurrence(
@@ -881,6 +1070,30 @@ fn protected_work_key_from_env() -> Result<Vec<u8>> {
     Ok(key.into_bytes())
 }
 
+fn power_command_key_from_env() -> Result<Vec<u8>> {
+    let key = std::env::var("POWER_COMMAND_HMAC_KEY")
+        .map_err(|_| eyre::eyre!("POWER_COMMAND_HMAC_KEY is required"))?;
+    if key.len() < 32 {
+        return Err(eyre::eyre!(
+            "POWER_COMMAND_HMAC_KEY must be at least 32 bytes"
+        ));
+    }
+    Ok(key.into_bytes())
+}
+
+fn power_deployment_id_from_env() -> Result<String> {
+    let deployment_id = std::env::var("POWER_DEPLOYMENT_ID").unwrap_or_else(|_| "default".into());
+    if deployment_id.is_empty()
+        || deployment_id.len() > 128
+        || !deployment_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(eyre::eyre!("invalid POWER_DEPLOYMENT_ID"));
+    }
+    Ok(deployment_id)
+}
+
 fn protected_work_snapshot_request(
     entity_id: &str,
     key: &[u8],
@@ -940,6 +1153,90 @@ fn current_time_ms() -> Result<u64, String> {
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "system clock is before Unix epoch".into())
         .map(|duration| duration.as_millis() as u64)
+}
+
+const CONTROL_INGRESS_CAPACITY: usize = 64;
+const MEDIA_INGRESS_CAPACITY: usize = 8;
+const MEDIA_PUBLISH_CAPACITY: usize = 8;
+
+struct MediaPublish {
+    topic: String,
+    payload: Vec<u8>,
+}
+
+fn queue_media_publish(
+    sender: &flume::Sender<MediaPublish>,
+    topic: &str,
+    payload: Vec<u8>,
+) -> bool {
+    if sender
+        .try_send(MediaPublish {
+            topic: topic.into(),
+            payload,
+        })
+        .is_err()
+    {
+        tracing::debug!("dropped saturated rover media publish");
+        false
+    } else {
+        true
+    }
+}
+
+#[derive(Default)]
+struct LatestPowerUpdates {
+    status: Option<Event>,
+    snapshot: Option<Event>,
+}
+
+fn is_high_rate_dora_ingress(event: &Event) -> bool {
+    matches!(event, Event::Input { id, .. } if is_high_rate_input_id(id.as_str()))
+}
+
+fn is_high_rate_input_id(id: &str) -> bool {
+    matches!(
+        id,
+        "video_frame"
+            | "audio_frame"
+            | "playback_audio"
+            | "detections"
+            | "tracked_detections"
+            | "tracking_telemetry"
+    )
+}
+
+fn is_coalesced_power_update(event: &Event) -> bool {
+    matches!(event, Event::Input { id, .. } if is_coalesced_power_update_id(id.as_str()))
+}
+
+fn is_coalesced_power_update_id(id: &str) -> bool {
+    matches!(id, "power_status" | "power_snapshot")
+}
+
+async fn receive_dora_event(
+    control_rx: &flume::Receiver<Event>,
+    power_update_rx: &flume::Receiver<()>,
+    power_update_tx: &flume::Sender<()>,
+    latest_power_updates: &Arc<Mutex<LatestPowerUpdates>>,
+    media_rx: &flume::Receiver<Event>,
+) -> Option<Event> {
+    loop {
+        tokio::select! {
+            biased;
+            event = control_rx.recv_async() => return event.ok(),
+            _ = power_update_rx.recv_async() => {
+                let mut updates = latest_power_updates.lock().expect("power update mutex poisoned");
+                let event = updates.snapshot.take().or_else(|| updates.status.take());
+                if updates.snapshot.is_some() || updates.status.is_some() {
+                    let _ = power_update_tx.try_send(());
+                }
+                if event.is_some() {
+                    return event;
+                }
+            }
+            event = media_rx.recv_async() => return event.ok(),
+        }
+    }
 }
 
 fn frame_metadata(
@@ -1087,5 +1384,36 @@ mod lifecycle_command_tests {
         let payload = serde_json::to_vec(&envelope).unwrap();
         assert!(super::verified_protected_work_occurrence(&payload, "rover-kiwi", key).is_some());
         assert!(super::verified_protected_work_occurrence(&payload, "rover-other", key).is_none());
+    }
+
+    #[test]
+    fn saturated_media_ingress_cannot_take_the_control_plane() {
+        assert!(super::is_high_rate_input_id("video_frame"));
+        assert!(super::is_high_rate_input_id("audio_frame"));
+        assert!(!super::is_high_rate_input_id("power_command"));
+        assert!(!super::is_high_rate_input_id("power_snapshot_request"));
+        assert!(!super::is_high_rate_input_id("power_journal_record"));
+        assert!(super::is_coalesced_power_update_id("power_status"));
+        assert!(super::is_coalesced_power_update_id("power_snapshot"));
+        assert!(!super::is_coalesced_power_update_id("power_command"));
+    }
+
+    #[test]
+    fn a_stalled_media_publisher_cannot_fill_the_control_queue() {
+        let (control_tx, control_rx) = flume::bounded(1);
+        let (media_tx, media_rx) = flume::bounded(1);
+        assert!(super::queue_media_publish(
+            &media_tx,
+            "rover/test/media",
+            vec![1]
+        ));
+        assert!(!super::queue_media_publish(
+            &media_tx,
+            "rover/test/media",
+            vec![2]
+        ));
+        assert!(control_tx.try_send(()).is_ok());
+        assert_eq!(control_rx.len(), 1);
+        assert_eq!(media_rx.len(), 1);
     }
 }

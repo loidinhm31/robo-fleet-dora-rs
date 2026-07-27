@@ -77,6 +77,18 @@ impl EventJournal {
     pub fn next_epoch(&self) -> u64 {
         self.meta.last_epoch.saturating_add(1).max(1)
     }
+    /// Persists authority observed from a remote coordinator before any later
+    /// local command can use a newer epoch after restart.
+    pub fn observe_epoch(&mut self, epoch: u64) -> Result<(), String> {
+        if epoch > self.meta.last_epoch {
+            self.meta.last_epoch = epoch;
+            write_meta(
+                &self.config.directory.join("power-journal.meta"),
+                &self.meta,
+            )?;
+        }
+        Ok(())
+    }
     pub fn pending(&self) -> impl Iterator<Item = &JournalRecord> {
         self.records.iter().filter(|item| {
             !self

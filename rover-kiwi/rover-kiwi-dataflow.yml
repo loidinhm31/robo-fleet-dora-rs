@@ -148,11 +148,18 @@ nodes:
       protected_work_snapshot:
         source: zenoh-bridge/protected_work_snapshot
         queue_size: 16
+      power_command:
+        source: zenoh-bridge/power_command
+        queue_size: 16
+      power_event_ack: zenoh-bridge/power_event_ack
+      power_snapshot_request: zenoh-bridge/power_snapshot_request
       tick: dora/timer/millis/1000
     outputs:
       - lifecycle_command
       - lifecycle_status_query
       - power_status
+      - power_snapshot
+      - power_event
       - power_transition
       - power_command_result
       - power_journal_record
@@ -350,6 +357,11 @@ nodes:
       detections: gst-camera/detections                   # DetectionFrame (detection-only mode)
       tracked_detections: gst-camera/tracked_detections   # DetectionFrame with tracking IDs
       tracking_telemetry: gst-camera/tracking_telemetry   # TrackingTelemetry
+      power_status: power-coordinator/power_status
+      power_snapshot: power-coordinator/power_snapshot
+      power_journal_record:
+        source: power-coordinator/power_journal_record
+        queue_size: 32
     outputs:
       - camera_command
       - audio_command
@@ -365,9 +377,14 @@ nodes:
       - lifecycle_status_query
       - recording_occurrence_status
       - protected_work_snapshot
+      - power_command
+      - power_event_ack
+      - power_snapshot_request
     env:
       RUST_LOG: info
       ZENOH_MODE: "peer"
       ENTITY_ID: "rover-kiwi"
       ZENOH_CONFIG: "${ROVER_ZENOH_CONFIG:-zenoh_bridge/zenoh_config.json5}"
       POWER_PROTECTED_WORK_HMAC_KEY: "${POWER_PROTECTED_WORK_HMAC_KEY:-}"
+      POWER_COMMAND_HMAC_KEY: "${POWER_COMMAND_HMAC_KEY:-}"
+      POWER_DEPLOYMENT_ID: "${POWER_DEPLOYMENT_ID:-default}"

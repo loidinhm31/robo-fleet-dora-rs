@@ -294,9 +294,29 @@ impl PowerCoordinator {
     }
 
     pub fn next_authority(&self) -> PowerAuthority {
-        PowerAuthority {
-            epoch: self.authority.epoch,
-            sequence: self.authority.sequence.saturating_add(1),
+        self.authority
+            .next_sequence()
+            .or_else(|| self.authority.next_epoch())
+            .unwrap_or(self.authority)
+    }
+
+    pub fn authority_epoch(&self) -> u64 {
+        self.authority.epoch
+    }
+
+    /// Produces the bounded, target-scoped observation used by a remote
+    /// authority gate. It contains no policy command and is safe to repeat.
+    pub fn authority_snapshot(&self, now_ms: u64) -> PowerAuthoritySnapshot {
+        PowerAuthoritySnapshot {
+            protocol_version: POWER_PROTOCOL_VERSION,
+            snapshot_id: Uuid::new_v4().hyphenated().to_string(),
+            role: self.config.role,
+            entity_id: self.config.entity_id.clone(),
+            authority: self.authority,
+            state: self.state,
+            effective_profile: self.effective,
+            captured_at_ms: now_ms,
+            expires_at_ms: now_ms.saturating_add(30_000),
         }
     }
 
@@ -322,8 +342,16 @@ impl PowerCoordinator {
         let Some(gate) = self.authority_gate.as_mut() else {
             return PowerAuthorityDecision::ObserveOnly;
         };
+        let observed_authority = snapshot.authority;
         match gate.observe(snapshot, now_ms) {
             Ok(()) => {
+                if observed_authority.epoch >= self.authority.epoch {
+                    let Some(next_epoch) = observed_authority.next_epoch() else {
+                        self.authority_gate_reason = Some(PowerReasonCode::InvalidAuthority);
+                        return PowerAuthorityDecision::ObserveOnly;
+                    };
+                    self.authority = next_epoch;
+                }
                 self.authority_gate_reason = None;
                 PowerAuthorityDecision::ObserveOnly
             }
@@ -362,8 +390,8 @@ impl PowerCoordinator {
         now: CoordinatorTime,
     ) -> Result<(), String> {
         command.validates_for(self.config.role, &self.config.entity_id)?;
-        if command.authority != self.authority {
-            return Err("power command authority is stale".into());
+        if !self.authority.accepts_command_authority(command.authority) {
+            return Err("power command authority is not the exact successor".into());
         }
         if command.expires_at_ms <= now.wall_ms || command.not_before_ms > now.wall_ms {
             return Err("power command is not active".into());
@@ -425,14 +453,17 @@ impl PowerCoordinator {
         let accepted = command
             .validates_for(self.config.role, &self.config.entity_id)
             .and_then(|_| {
-                if command.authority != self.authority {
-                    return Err("power command authority is stale".into());
+                if !self.authority.accepts_command_authority(command.authority) {
+                    return Err("power command authority is not the exact successor".into());
                 }
                 if command.expires_at_ms <= now.wall_ms {
                     return Err("power command expired".into());
                 }
                 if command.not_before_ms > now.wall_ms {
                     return Err("power command is not active".into());
+                }
+                if command.authority != self.authority {
+                    self.authority = command.authority;
                 }
                 match &command.action {
                     PowerCommandAction::SetPolicy { policy } => {
@@ -677,6 +708,11 @@ impl PowerCoordinator {
             self.effective = self.requested;
             return;
         }
+        if self.catalog.rank(self.requested) < self.catalog.rank(from) {
+            // A sleep/quiesce epoch fences transient control replay. A wake
+            // must arrive as a newly authorized command, never from cache.
+            self.command_replays.clear();
+        }
         let id = Uuid::new_v4().hyphenated().to_string();
         self.bump_authority();
         self.announced = Some(PowerTransition {
@@ -862,7 +898,11 @@ impl PowerCoordinator {
     }
 
     fn bump_authority(&mut self) -> PowerAuthority {
-        self.authority.sequence = self.authority.sequence.saturating_add(1);
+        self.authority = self
+            .authority
+            .next_sequence()
+            .or_else(|| self.authority.next_epoch())
+            .unwrap_or(self.authority);
         self.authority
     }
 }
@@ -1331,6 +1371,7 @@ mod tests {
             item.observe_authority_snapshot(valid, 2),
             PowerAuthorityDecision::ObserveOnly
         );
+        assert_eq!(item.authority_epoch(), 2);
         assert_ne!(
             item.tick(time(2, 2)).status.state,
             PowerState::AuthorityUnknown
@@ -1347,6 +1388,17 @@ mod tests {
             item.authorize_remote_profile_command(proposed, 2),
             PowerAuthorityDecision::ObserveOnly
         );
+    }
+
+    #[test]
+    fn authority_snapshot_is_scoped_and_has_a_bounded_freshness_window() {
+        let item = coordinator();
+        let snapshot = item.authority_snapshot(1_000);
+
+        assert_eq!(snapshot.role, LifecycleRole::Rover);
+        assert_eq!(snapshot.entity_id, "rover");
+        assert_eq!(snapshot.expires_at_ms - snapshot.captured_at_ms, 30_000);
+        assert!(snapshot.validate().is_ok());
     }
 
     #[test]
@@ -1383,6 +1435,84 @@ mod tests {
             Some(PowerReasonCode::DuplicateMismatch)
         );
         assert_eq!(item.current_status(3).authority, accepted.authority);
+    }
+
+    #[test]
+    fn rover_rejects_gapped_or_reordered_authority_but_accepts_exact_epoch_reconciliation() {
+        let mut item = coordinator();
+        let mut command = PowerCommand {
+            protocol_version: POWER_PROTOCOL_VERSION,
+            command_id: "f4f3e2d1-c0b9-48a7-9615-141312111021".into(),
+            role: LifecycleRole::Rover,
+            entity_id: "rover".into(),
+            authority: PowerAuthority {
+                epoch: 3,
+                sequence: 9,
+            },
+            action: PowerCommandAction::SetPolicy {
+                policy: PowerPolicy::Auto,
+            },
+            issued_at_ms: 1,
+            not_before_ms: 1,
+            expires_at_ms: 100,
+            detail: None,
+        };
+        assert_eq!(
+            item.apply_command(command.clone(), time(2, 2)).reason_code,
+            Some(PowerReasonCode::StaleAuthority)
+        );
+
+        command.command_id = "f4f3e2d1-c0b9-48a7-9615-141312111022".into();
+        command.authority = PowerAuthority {
+            epoch: 2,
+            sequence: 2,
+        };
+        assert!(!item.apply_command(command.clone(), time(2, 2)).accepted);
+
+        command.command_id = "f4f3e2d1-c0b9-48a7-9615-141312111023".into();
+        command.authority = PowerAuthority {
+            epoch: 2,
+            sequence: 1,
+        };
+        let accepted = item.apply_command(command, time(2, 2));
+        assert!(accepted.accepted);
+        assert_eq!(
+            accepted.authority,
+            PowerAuthority {
+                epoch: 2,
+                sequence: 2
+            }
+        );
+    }
+
+    #[test]
+    fn quiesce_transition_clears_replay_cache_and_fences_old_commands() {
+        let mut item = coordinator();
+        item.effective = PowerProfile::NormalRover;
+        item.requested = PowerProfile::NormalRover;
+        let command = PowerCommand {
+            protocol_version: POWER_PROTOCOL_VERSION,
+            command_id: "f4f3e2d1-c0b9-48a7-9615-141312111020".into(),
+            role: LifecycleRole::Rover,
+            entity_id: "rover".into(),
+            authority: item.authority,
+            action: PowerCommandAction::SetPolicy {
+                policy: PowerPolicy::Sleep,
+            },
+            issued_at_ms: 1,
+            not_before_ms: 1,
+            expires_at_ms: 2,
+            detail: None,
+        };
+
+        assert!(item.apply_command(command.clone(), time(1, 1)).accepted);
+        assert_eq!(item.command_replays.len(), 1);
+        item.tick(time(1, 1));
+        assert!(item.command_replays.is_empty());
+        assert_eq!(
+            item.apply_command(command, time(1, 1)).reason_code,
+            Some(PowerReasonCode::StaleAuthority)
+        );
     }
 
     #[test]

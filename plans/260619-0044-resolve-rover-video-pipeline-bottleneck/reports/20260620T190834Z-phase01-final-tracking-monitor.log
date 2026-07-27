@@ -1,0 +1,167 @@
+scenario=phase01-final-tracking
+timestamp_utc=20260620T190834Z
+duration_seconds=600
+sample_seconds=5
+nano_cpus=3000000000 memory=4294967296 oom_killed=false
+cgroup_start
+usage_usec 66804879
+user_usec 58669314
+system_usec 8135565
+nice_usec 988
+core_sched.force_idle_usec 0
+nr_periods 418
+nr_throttled 190
+throttled_usec 14520517
+nr_bursts 0
+burst_usec 0
+176099328
+177917952
+low 0
+high 0
+max 0
+oom 0
+oom_kill 0
+oom_group_kill 0
+sock_throttled 0
+samples_begin
+sample_utc=2026-06-20T19:08:34Z	cpu=159.09%	memory=118MB / 4.295GB
+sample_utc=2026-06-20T19:08:39Z	cpu=174.20%	memory=117.2MB / 4.295GB
+sample_utc=2026-06-20T19:08:44Z	cpu=186.41%	memory=139.2MB / 4.295GB
+sample_utc=2026-06-20T19:08:49Z	cpu=196.49%	memory=117.1MB / 4.295GB
+sample_utc=2026-06-20T19:08:54Z	cpu=204.79%	memory=146.2MB / 4.295GB
+sample_utc=2026-06-20T19:08:59Z	cpu=212.03%	memory=152.7MB / 4.295GB
+sample_utc=2026-06-20T19:09:04Z	cpu=218.07%	memory=131.6MB / 4.295GB
+sample_utc=2026-06-20T19:09:09Z	cpu=223.48%	memory=159.8MB / 4.295GB
+sample_utc=2026-06-20T19:09:14Z	cpu=228.11%	memory=118.4MB / 4.295GB
+sample_utc=2026-06-20T19:09:19Z	cpu=232.29%	memory=118.3MB / 4.295GB
+sample_utc=2026-06-20T19:09:24Z	cpu=235.98%	memory=118.5MB / 4.295GB
+sample_utc=2026-06-20T19:09:29Z	cpu=239.31%	memory=158.9MB / 4.295GB
+sample_utc=2026-06-20T19:09:34Z	cpu=242.27%	memory=121.1MB / 4.295GB
+sample_utc=2026-06-20T19:09:39Z	cpu=244.98%	memory=118.5MB / 4.295GB
+sample_utc=2026-06-20T19:09:44Z	cpu=247.44%	memory=158.9MB / 4.295GB
+sample_utc=2026-06-20T19:09:49Z	cpu=249.71%	memory=118.9MB / 4.295GB
+sample_utc=2026-06-20T19:09:55Z	cpu=251.79%	memory=118.9MB / 4.295GB
+sample_utc=2026-06-20T19:10:00Z	cpu=253.66%	memory=147.1MB / 4.295GB
+sample_utc=2026-06-20T19:10:05Z	cpu=255.44%	memory=159.6MB / 4.295GB
+sample_utc=2026-06-20T19:10:10Z	cpu=257.04%	memory=145.2MB / 4.295GB
+sample_utc=2026-06-20T19:10:15Z	cpu=258.58%	memory=132.2MB / 4.295GB
+sample_utc=2026-06-20T19:10:20Z	cpu=259.98%	memory=149.3MB / 4.295GB
+sample_utc=2026-06-20T19:10:25Z	cpu=261.31%	memory=159.9MB / 4.295GB
+sample_utc=2026-06-20T19:10:30Z	cpu=262.53%	memory=132.3MB / 4.295GB
+sample_utc=2026-06-20T19:10:35Z	cpu=263.71%	memory=132.5MB / 4.295GB
+sample_utc=2026-06-20T19:10:40Z	cpu=264.77%	memory=160.4MB / 4.295GB
+sample_utc=2026-06-20T19:10:45Z	cpu=265.82%	memory=132.3MB / 4.295GB
+sample_utc=2026-06-20T19:10:50Z	cpu=266.79%	memory=118.6MB / 4.295GB
+sample_utc=2026-06-20T19:10:55Z	cpu=267.69%	memory=119.4MB / 4.295GB
+sample_utc=2026-06-20T19:11:00Z	cpu=268.57%	memory=119.7MB / 4.295GB
+sample_utc=2026-06-20T19:11:05Z	cpu=269.38%	memory=119.5MB / 4.295GB
+sample_utc=2026-06-20T19:11:10Z	cpu=270.17%	memory=119.1MB / 4.295GB
+sample_utc=2026-06-20T19:11:15Z	cpu=270.89%	memory=159.9MB / 4.295GB
+sample_utc=2026-06-20T19:11:20Z	cpu=271.60%	memory=131.4MB / 4.295GB
+sample_utc=2026-06-20T19:11:25Z	cpu=272.26%	memory=159.6MB / 4.295GB
+sample_utc=2026-06-20T19:11:31Z	cpu=272.93%	memory=127.4MB / 4.295GB
+sample_utc=2026-06-20T19:11:36Z	cpu=273.52%	memory=119.3MB / 4.295GB
+sample_utc=2026-06-20T19:11:41Z	cpu=274.12%	memory=160MB / 4.295GB
+sample_utc=2026-06-20T19:11:46Z	cpu=274.66%	memory=149.6MB / 4.295GB
+sample_utc=2026-06-20T19:11:51Z	cpu=275.20%	memory=160.2MB / 4.295GB
+sample_utc=2026-06-20T19:11:56Z	cpu=275.73%	memory=160.7MB / 4.295GB
+sample_utc=2026-06-20T19:12:01Z	cpu=276.20%	memory=146.3MB / 4.295GB
+sample_utc=2026-06-20T19:12:06Z	cpu=276.69%	memory=128.9MB / 4.295GB
+sample_utc=2026-06-20T19:12:11Z	cpu=277.13%	memory=160.2MB / 4.295GB
+sample_utc=2026-06-20T19:12:16Z	cpu=277.58%	memory=119.3MB / 4.295GB
+sample_utc=2026-06-20T19:12:21Z	cpu=277.98%	memory=137.5MB / 4.295GB
+sample_utc=2026-06-20T19:12:26Z	cpu=278.40%	memory=147.4MB / 4.295GB
+sample_utc=2026-06-20T19:12:31Z	cpu=278.79%	memory=125.4MB / 4.295GB
+sample_utc=2026-06-20T19:12:36Z	cpu=279.17%	memory=147.3MB / 4.295GB
+sample_utc=2026-06-20T19:12:41Z	cpu=279.53%	memory=119.4MB / 4.295GB
+sample_utc=2026-06-20T19:12:46Z	cpu=279.88%	memory=136.8MB / 4.295GB
+sample_utc=2026-06-20T19:12:51Z	cpu=280.22%	memory=160.2MB / 4.295GB
+sample_utc=2026-06-20T19:12:56Z	cpu=280.55%	memory=119.4MB / 4.295GB
+sample_utc=2026-06-20T19:13:02Z	cpu=280.86%	memory=119.8MB / 4.295GB
+sample_utc=2026-06-20T19:13:07Z	cpu=281.17%	memory=137.4MB / 4.295GB
+sample_utc=2026-06-20T19:13:12Z	cpu=281.46%	memory=147.3MB / 4.295GB
+sample_utc=2026-06-20T19:13:17Z	cpu=281.76%	memory=160.6MB / 4.295GB
+sample_utc=2026-06-20T19:13:22Z	cpu=282.03%	memory=119.4MB / 4.295GB
+sample_utc=2026-06-20T19:13:27Z	cpu=282.31%	memory=147MB / 4.295GB
+sample_utc=2026-06-20T19:13:32Z	cpu=282.57%	memory=120.4MB / 4.295GB
+sample_utc=2026-06-20T19:13:37Z	cpu=282.83%	memory=119.4MB / 4.295GB
+sample_utc=2026-06-20T19:13:42Z	cpu=283.06%	memory=147.3MB / 4.295GB
+sample_utc=2026-06-20T19:13:47Z	cpu=283.31%	memory=160.6MB / 4.295GB
+sample_utc=2026-06-20T19:13:52Z	cpu=283.55%	memory=119.2MB / 4.295GB
+sample_utc=2026-06-20T19:13:57Z	cpu=283.77%	memory=160.5MB / 4.295GB
+sample_utc=2026-06-20T19:14:02Z	cpu=283.99%	memory=119.7MB / 4.295GB
+sample_utc=2026-06-20T19:14:07Z	cpu=284.21%	memory=137.7MB / 4.295GB
+sample_utc=2026-06-20T19:14:12Z	cpu=284.42%	memory=119.5MB / 4.295GB
+sample_utc=2026-06-20T19:14:17Z	cpu=284.62%	memory=119.1MB / 4.295GB
+sample_utc=2026-06-20T19:14:22Z	cpu=284.82%	memory=135.7MB / 4.295GB
+sample_utc=2026-06-20T19:14:27Z	cpu=285.01%	memory=146.2MB / 4.295GB
+sample_utc=2026-06-20T19:14:32Z	cpu=285.20%	memory=132.4MB / 4.295GB
+sample_utc=2026-06-20T19:14:37Z	cpu=285.39%	memory=154.5MB / 4.295GB
+sample_utc=2026-06-20T19:14:43Z	cpu=285.57%	memory=120.2MB / 4.295GB
+sample_utc=2026-06-20T19:14:48Z	cpu=285.74%	memory=137MB / 4.295GB
+sample_utc=2026-06-20T19:14:53Z	cpu=285.91%	memory=120.8MB / 4.295GB
+sample_utc=2026-06-20T19:14:58Z	cpu=286.08%	memory=138MB / 4.295GB
+sample_utc=2026-06-20T19:15:03Z	cpu=286.25%	memory=120MB / 4.295GB
+sample_utc=2026-06-20T19:15:08Z	cpu=286.40%	memory=160.6MB / 4.295GB
+sample_utc=2026-06-20T19:15:13Z	cpu=286.56%	memory=161.2MB / 4.295GB
+sample_utc=2026-06-20T19:15:18Z	cpu=286.70%	memory=119.8MB / 4.295GB
+sample_utc=2026-06-20T19:15:23Z	cpu=286.86%	memory=147.9MB / 4.295GB
+sample_utc=2026-06-20T19:15:28Z	cpu=287.00%	memory=119.6MB / 4.295GB
+sample_utc=2026-06-20T19:15:33Z	cpu=287.15%	memory=119.4MB / 4.295GB
+sample_utc=2026-06-20T19:15:38Z	cpu=287.28%	memory=147.6MB / 4.295GB
+sample_utc=2026-06-20T19:15:43Z	cpu=287.42%	memory=147.5MB / 4.295GB
+sample_utc=2026-06-20T19:15:48Z	cpu=287.54%	memory=119.3MB / 4.295GB
+sample_utc=2026-06-20T19:15:53Z	cpu=287.69%	memory=120.5MB / 4.295GB
+sample_utc=2026-06-20T19:15:58Z	cpu=287.81%	memory=120.2MB / 4.295GB
+sample_utc=2026-06-20T19:16:03Z	cpu=287.94%	memory=132.8MB / 4.295GB
+sample_utc=2026-06-20T19:16:08Z	cpu=288.06%	memory=119.7MB / 4.295GB
+sample_utc=2026-06-20T19:16:13Z	cpu=288.18%	memory=161.2MB / 4.295GB
+sample_utc=2026-06-20T19:16:19Z	cpu=288.29%	memory=151.5MB / 4.295GB
+sample_utc=2026-06-20T19:16:24Z	cpu=288.42%	memory=147.3MB / 4.295GB
+sample_utc=2026-06-20T19:16:29Z	cpu=288.52%	memory=161.3MB / 4.295GB
+sample_utc=2026-06-20T19:16:34Z	cpu=288.64%	memory=137.6MB / 4.295GB
+sample_utc=2026-06-20T19:16:39Z	cpu=288.75%	memory=120.2MB / 4.295GB
+sample_utc=2026-06-20T19:16:44Z	cpu=288.85%	memory=119.8MB / 4.295GB
+sample_utc=2026-06-20T19:16:49Z	cpu=288.96%	memory=120.4MB / 4.295GB
+sample_utc=2026-06-20T19:16:54Z	cpu=289.06%	memory=137.3MB / 4.295GB
+sample_utc=2026-06-20T19:16:59Z	cpu=289.16%	memory=120.2MB / 4.295GB
+sample_utc=2026-06-20T19:17:04Z	cpu=289.26%	memory=126.5MB / 4.295GB
+sample_utc=2026-06-20T19:17:09Z	cpu=289.35%	memory=147.8MB / 4.295GB
+sample_utc=2026-06-20T19:17:14Z	cpu=289.46%	memory=160.9MB / 4.295GB
+sample_utc=2026-06-20T19:17:19Z	cpu=289.55%	memory=119.9MB / 4.295GB
+sample_utc=2026-06-20T19:17:24Z	cpu=289.64%	memory=147.3MB / 4.295GB
+sample_utc=2026-06-20T19:17:29Z	cpu=289.73%	memory=120.5MB / 4.295GB
+sample_utc=2026-06-20T19:17:34Z	cpu=289.82%	memory=146MB / 4.295GB
+sample_utc=2026-06-20T19:17:39Z	cpu=289.91%	memory=161MB / 4.295GB
+sample_utc=2026-06-20T19:17:44Z	cpu=289.99%	memory=160.6MB / 4.295GB
+sample_utc=2026-06-20T19:17:49Z	cpu=290.08%	memory=119.4MB / 4.295GB
+sample_utc=2026-06-20T19:17:54Z	cpu=290.15%	memory=148.5MB / 4.295GB
+sample_utc=2026-06-20T19:18:00Z	cpu=290.25%	memory=121.2MB / 4.295GB
+sample_utc=2026-06-20T19:18:05Z	cpu=290.32%	memory=161.1MB / 4.295GB
+sample_utc=2026-06-20T19:18:10Z	cpu=290.40%	memory=132.7MB / 4.295GB
+sample_utc=2026-06-20T19:18:15Z	cpu=290.47%	memory=148.2MB / 4.295GB
+sample_utc=2026-06-20T19:18:20Z	cpu=290.56%	memory=161.1MB / 4.295GB
+sample_utc=2026-06-20T19:18:25Z	cpu=290.63%	memory=148.4MB / 4.295GB
+sample_utc=2026-06-20T19:18:30Z	cpu=290.71%	memory=120.4MB / 4.295GB
+samples_end
+cgroup_end
+usage_usec 1870700694
+user_usec 1719205646
+system_usec 151495047
+nice_usec 988
+core_sched.force_idle_usec 0
+nr_periods 6431
+nr_throttled 6203
+throttled_usec 486665453
+nr_bursts 0
+burst_usec 0
+139747328
+181989376
+low 0
+high 0
+max 0
+oom 0
+oom_kill 0
+oom_group_kill 0
+sock_throttled 0
+nano_cpus=3000000000 memory=4294967296 oom_killed=false

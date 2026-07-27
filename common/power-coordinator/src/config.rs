@@ -6,6 +6,7 @@ pub const MIN_AUTO_IDLE_GRACE_MS: u64 = 300_000;
 pub struct CoordinatorConfig {
     pub role: LifecycleRole,
     pub entity_id: String,
+    pub remote_authority_entity_id: Option<String>,
     pub idle_grace_ms: u64,
     pub min_awake_ms: u64,
     pub resource_freshness_ms: u64,
@@ -31,6 +32,9 @@ impl CoordinatorConfig {
         let config = Self {
             role,
             entity_id: required("ENTITY_ID")?,
+            remote_authority_entity_id: std::env::var("POWER_REMOTE_AUTHORITY_ENTITY_ID")
+                .ok()
+                .filter(|entity_id| !entity_id.is_empty()),
             idle_grace_ms: number("POWER_IDLE_GRACE_MS", MIN_AUTO_IDLE_GRACE_MS)?,
             min_awake_ms: number("POWER_MIN_AWAKE_MS", 30_000)?,
             resource_freshness_ms: number("POWER_RESOURCE_FRESHNESS_MS", 15_000)?,
@@ -58,6 +62,7 @@ impl CoordinatorConfig {
         Self {
             role,
             entity_id: entity_id.into(),
+            remote_authority_entity_id: None,
             idle_grace_ms: MIN_AUTO_IDLE_GRACE_MS,
             min_awake_ms: 0,
             resource_freshness_ms: 15_000,
@@ -80,6 +85,10 @@ impl CoordinatorConfig {
     fn validate(&self) -> Result<(), String> {
         if self.entity_id.is_empty()
             || self.entity_id.len() > 128
+            || self
+                .remote_authority_entity_id
+                .as_ref()
+                .is_some_and(|entity_id| entity_id.len() > 128)
             || self.idle_grace_ms < MIN_AUTO_IDLE_GRACE_MS
             || self.resource_freshness_ms == 0
             || self.required_low_samples == 0

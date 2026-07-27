@@ -1,5 +1,21 @@
 use super::*;
 
+#[test]
+fn power_v1_topics_are_entity_scoped_and_versioned() {
+    assert_eq!(
+        power_v1_topic("rover-kiwi", PowerTopic::Command),
+        "rover/rover-kiwi/power/v1/command"
+    );
+    assert_eq!(
+        power_v1_topic("rover-kiwi", PowerTopic::Snapshot),
+        "rover/rover-kiwi/power/v1/snapshot"
+    );
+    assert_eq!(
+        power_v1_topic("rover-kiwi", PowerTopic::SnapshotRequest),
+        "rover/rover-kiwi/power/v1/snapshot-request"
+    );
+}
+
 fn demand() -> PowerDemand {
     PowerDemand {
         protocol_version: POWER_PROTOCOL_VERSION,
@@ -45,6 +61,141 @@ fn power_fixture_round_trips_and_validates() {
     }
     assert_eq!(event.context.lifecycle_targets[0].node_id, "kornia-capture");
     assert_eq!(serde_json::to_value(command).unwrap(), fixture["command"]);
+}
+
+#[test]
+fn signed_power_command_rejects_tampering_and_expiry() {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../../test-data/contracts/power-v1.json")).unwrap();
+    let command: PowerCommand = serde_json::from_value(fixture["command"].clone()).unwrap();
+    let key = b"0123456789abcdef0123456789abcdef";
+    let signed = SignedPowerEnvelope::new(
+        SignedPowerEnvelopeKind::Command,
+        LifecycleRole::Rover,
+        "rover-kiwi".into(),
+        100,
+        command,
+    )
+    .sign(key)
+    .unwrap();
+
+    assert!(signed.verify(key, 101).is_ok());
+    assert!(signed.verify(key, signed.expires_at_ms).is_err());
+
+    let mut tampered = signed;
+    tampered.target_entity_id = "rover-other".into();
+    assert!(tampered.verify(key, 101).is_err());
+}
+
+#[test]
+fn signed_snapshot_and_ack_are_type_target_and_deployment_bound() {
+    let key = b"0123456789abcdef0123456789abcdef";
+    let snapshot = PowerAuthoritySnapshot {
+        protocol_version: POWER_PROTOCOL_VERSION,
+        snapshot_id: "33333333-3333-4333-8333-333333333333".into(),
+        role: LifecycleRole::Rover,
+        entity_id: "rover-kiwi".into(),
+        authority: PowerAuthority {
+            epoch: 7,
+            sequence: 2,
+        },
+        state: PowerState::Active,
+        effective_profile: PowerProfile::NormalRover,
+        captured_at_ms: 100,
+        expires_at_ms: 200,
+    };
+    let signed_snapshot = SignedPowerEnvelope::new(
+        SignedPowerEnvelopeKind::Snapshot,
+        LifecycleRole::Rover,
+        "rover-kiwi".into(),
+        100,
+        snapshot,
+    )
+    .sign(key)
+    .unwrap();
+    assert!(signed_snapshot.verify(key, 101).is_ok());
+    assert!(signed_snapshot
+        .validates_for(
+            SignedPowerEnvelopeKind::Snapshot,
+            LifecycleRole::Rover,
+            "rover-kiwi",
+        )
+        .is_ok());
+    assert!(signed_snapshot
+        .validates_for(
+            SignedPowerEnvelopeKind::Command,
+            LifecycleRole::Rover,
+            "rover-kiwi",
+        )
+        .is_err());
+
+    let signed_ack = SignedPowerEnvelope::new(
+        SignedPowerEnvelopeKind::JournalAcknowledgement,
+        LifecycleRole::Rover,
+        "rover-kiwi".into(),
+        100,
+        PowerJournalAcknowledgement {
+            protocol_version: POWER_PROTOCOL_VERSION,
+            event_id: "44444444-4444-4444-8444-444444444444".into(),
+            deployment_id: "workstation-a".into(),
+        },
+    )
+    .sign(key)
+    .unwrap();
+    assert!(signed_ack.verify(key, 101).is_ok());
+    assert!(signed_ack
+        .payload
+        .validates_for("rover-kiwi", Some("workstation-a"))
+        .is_ok());
+    assert!(signed_ack
+        .payload
+        .validates_for("rover-kiwi", Some("workstation-b"))
+        .is_err());
+}
+
+#[test]
+fn authority_accepts_only_the_current_stamp_or_next_epoch_reconciliation() {
+    let current = PowerAuthority {
+        epoch: 7,
+        sequence: 2,
+    };
+    assert!(current.accepts_command_authority(current));
+    assert!(current.accepts_command_authority(PowerAuthority {
+        epoch: 8,
+        sequence: 1
+    }));
+    assert!(!current.accepts_command_authority(PowerAuthority {
+        epoch: 7,
+        sequence: 3
+    }));
+    assert!(!current.accepts_command_authority(PowerAuthority {
+        epoch: 8,
+        sequence: 2
+    }));
+    assert!(!current.accepts_command_authority(PowerAuthority {
+        epoch: 9,
+        sequence: 1
+    }));
+}
+
+#[test]
+fn authority_exhaustion_never_wraps_or_creates_a_successor() {
+    let exhausted_epoch = PowerAuthority {
+        epoch: u64::MAX,
+        sequence: 1,
+    };
+    assert_eq!(exhausted_epoch.next_epoch(), None);
+    assert!(!exhausted_epoch.accepts_command_authority(PowerAuthority {
+        epoch: u64::MAX,
+        sequence: 2,
+    }));
+
+    let exhausted_sequence = PowerAuthority {
+        epoch: 7,
+        sequence: u64::MAX,
+    };
+    assert_eq!(exhausted_sequence.next_sequence(), None);
+    assert!(!exhausted_sequence.accepts_command_authority(exhausted_sequence));
 }
 
 #[test]

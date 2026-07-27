@@ -19,7 +19,10 @@ fn main() -> Result<()> {
     }
     while let Some(event) = events.recv() {
         if let Event::Input { id, data, .. } = event {
-            if id.as_str() == "power_journal_record" {
+            if matches!(
+                id.as_str(),
+                "power_journal_record" | "remote_power_journal_record"
+            ) {
                 if let Some(bytes) = binary(&data) {
                     if let Ok(record) = serde_json::from_slice::<JournalRecord>(bytes) {
                         if projector.is_err() {
@@ -42,9 +45,15 @@ fn main() -> Result<()> {
                         if health.healthy {
                             send(
                                 &mut node,
-                                "power_event_ack",
+                                if id.as_str() == "power_journal_record" {
+                                    "power_event_ack"
+                                } else {
+                                    "remote_power_event_ack"
+                                },
                                 &JournalAcknowledgement {
+                                    protocol_version: robo_rover_lib::POWER_PROTOCOL_VERSION,
                                     event_id: record.event.event_id,
+                                    deployment_id: config.deployment_id.clone(),
                                 },
                             )?;
                         } else {

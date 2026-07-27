@@ -201,6 +201,24 @@ For example, generate a Rover secret with `openssl rand -hex 32`, then set the
 Orchestra map to `{"rover-kiwi":"that-same-secret"}`. Hosts must run normal
 time synchronization (for example, chrony or NTP).
 
+### Power transport authentication and isolation
+
+Power commands, Rover authority snapshots, and remote journal acknowledgements
+use the shared, versioned `SignedPowerEnvelope`. Its HMAC signature binds the
+envelope kind, protocol version, sender role, target entity, issue/expiry
+window, and payload. Journal acknowledgements additionally bind the deployment
+identity and event ID. Orchestra verifies a Rover snapshot before forwarding
+its raw payload to the coordinator or persisting its observed epoch; the Rover
+verifies a remote acknowledgement before forwarding it for durable-event
+compaction. Envelope kinds are not interchangeable.
+
+Power control, status, snapshots, and journal events have bounded control-path
+ingress. Status and snapshot observations coalesce to the latest value, while
+pending journal records deduplicate by event ID. Audio/video and other
+high-rate media use separate bounded, lossy ingress and publisher queues, so a
+slow Zenoh media write cannot delay a power command, snapshot request, status,
+acknowledgement, or journal record.
+
 ## Demand and Reservation Contract
 
 ### Power V1 wire contract
@@ -225,12 +243,14 @@ immutable payload is rejected.
 ### Snapshot reconciliation gate
 
 After a Rover reconnect, Orchestra enters `AuthorityUnknown` and may observe
-status only. A matching, fresh `PowerAuthoritySnapshot` must be accepted before
-the gate grants one newer `{ epoch, sequence }` value for a profile command;
-stale, malformed, replayed, or out-of-order observations clear the grant and
-return to observe-only. Re-consuming the same authority is also observe-only.
-This prevents a reconnect from force-taking control or issuing a command from
-an unverified snapshot.
+status only. A matching, fresh, authenticated `PowerAuthoritySnapshot` must be
+accepted before the gate grants the sole reconnect successor
+`{ observed_epoch + 1, sequence: 1 }` for a profile command. Ordinary commands
+carry the Rover's current authority and advance its sequence locally when
+applied; they are not an external successor stream. Gaps, reordering, stale,
+malformed, replayed, or out-of-order observations/commands are rejected, and
+re-consuming the same authority is observe-only. This prevents a reconnect
+from force-taking control or issuing a command from an unverified snapshot.
 
 Conceptual contract:
 

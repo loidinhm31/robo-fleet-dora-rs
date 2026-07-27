@@ -19,3 +19,4 @@ futures = "0.3"
 uuid = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
+power_coordinator = { path = "../../common/power-coordinator" }

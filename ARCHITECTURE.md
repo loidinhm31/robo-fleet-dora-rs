@@ -1006,6 +1006,10 @@ Lifecycle invariants:
 - Every applied power transition has a preceding local journal intent. MongoDB
   stores 90-day append-only history and a sequence-guarded current projection,
   but database/network availability never gates local Rover safety or wake.
+- Power commands, Rover snapshots, and remote journal acknowledgements use
+  role/entity/version/expiry-bound signed envelopes. Fresh Rover snapshots are
+  required before Orchestra can issue the exact reconnect epoch successor, and
+  bounded control queues remain isolated from lossy high-rate media publishing.
 
 ## References
 

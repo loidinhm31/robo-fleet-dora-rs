@@ -103,6 +103,21 @@ impl DurablePowerCoordinator {
     ) {
         self.coordinator.observe_protected_work_snapshot(snapshot);
     }
+    pub fn observe_authority_snapshot(
+        &mut self,
+        snapshot: robo_rover_lib::PowerAuthoritySnapshot,
+        now_ms: u64,
+    ) -> Result<robo_rover_lib::PowerAuthorityDecision, String> {
+        let prior_epoch = self.coordinator.authority_epoch();
+        let decision = self
+            .coordinator
+            .observe_authority_snapshot(snapshot, now_ms);
+        if self.coordinator.authority_epoch() > prior_epoch {
+            self.journal
+                .observe_epoch(self.coordinator.authority_epoch())?;
+        }
+        Ok(decision)
+    }
     pub fn acknowledge(&mut self, event_id: &str) -> Result<(), String> {
         self.journal.acknowledge(event_id)
     }
@@ -114,6 +129,29 @@ impl DurablePowerCoordinator {
     }
     pub fn journal_health(&self) -> crate::JournalHealth {
         self.journal.health()
+    }
+
+    pub fn authority_snapshot(&self, now_ms: u64) -> robo_rover_lib::PowerAuthoritySnapshot {
+        self.coordinator.authority_snapshot(now_ms)
+    }
+    pub fn next_authority(&self) -> robo_rover_lib::PowerAuthority {
+        self.coordinator.next_authority()
+    }
+    pub fn require_authority_snapshot(
+        &mut self,
+        remote_role: robo_rover_lib::LifecycleRole,
+        remote_entity_id: String,
+    ) -> Result<(), String> {
+        self.coordinator
+            .require_authority_snapshot(remote_role, remote_entity_id)
+    }
+    pub fn authorize_remote_profile_command(
+        &mut self,
+        authority: robo_rover_lib::PowerAuthority,
+        now_ms: u64,
+    ) -> robo_rover_lib::PowerAuthorityDecision {
+        self.coordinator
+            .authorize_remote_profile_command(authority, now_ms)
     }
 
     pub fn tick(&mut self, now: CoordinatorTime) -> Result<CoordinatorEffects, String> {

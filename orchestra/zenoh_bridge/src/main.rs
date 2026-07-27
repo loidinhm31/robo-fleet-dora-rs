@@ -4,14 +4,17 @@ use dora_node_api::{
     DoraNode, Event, Parameter,
 };
 use eyre::Result;
+use power_coordinator::{JournalAcknowledgement, JournalRecord};
 use robo_rover_lib::{
-    capture_age_ms, init_tracing, record_capture_age, AudioAction, AudioControl,
+    capture_age_ms, init_tracing, power_v1_topic, record_capture_age, AudioAction, AudioControl,
     AudioFrameMetadata, AudioFrameSequenceTracker, CameraAction, CameraControl, FleetSelectCommand,
     FleetSubscriptionCommand, FrameSequenceTracker, JpegFramePacket, LifecycleCommand,
     LifecycleCommandResult, LifecycleRole, LifecycleStatus, LifecycleWakeLease, MetricWindow,
-    PcmFramePacket, PcmSampleFormat, ProtectedWorkRelayBody, ProtectedWorkRelayEnvelope,
-    ProtectedWorkSnapshot, ProtectedWorkSnapshotRequest, RecordingOccurrence, StreamCommand,
-    StreamControl, TargetedMediaControl, PROTECTED_WORK_RELAY_TTL_MS,
+    PcmFramePacket, PcmSampleFormat, PowerAuthoritySnapshot, PowerCommand, PowerStatus, PowerTopic,
+    ProtectedWorkRelayBody, ProtectedWorkRelayEnvelope, ProtectedWorkSnapshot,
+    ProtectedWorkSnapshotRequest, RecordingOccurrence, SignedPowerEnvelope,
+    SignedPowerEnvelopeKind, SignedPowerSnapshot, StreamCommand, StreamControl,
+    TargetedMediaControl, PROTECTED_WORK_RELAY_TTL_MS,
 };
 use serde_json;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -31,6 +34,7 @@ type ZenohSubscriber =
 // 64 lifecycle status slots retain 15 × 4 remote safe-node reports plus four
 // local Orchestra reports. Keep bridge activation within the same bound.
 const MAX_ACTIVE_ROVERS: usize = 15;
+const MAX_PENDING_REMOTE_POWER_EVENTS: usize = 1_024;
 
 /// Subscriptions for a single rover
 struct RoverSubscriptions {
@@ -52,6 +56,9 @@ struct RoverSubscriptions {
     lifecycle_status_sub: ZenohSubscriber,
     lifecycle_result_sub: ZenohSubscriber,
     lifecycle_capabilities_sub: ZenohSubscriber,
+    power_status_sub: ZenohSubscriber,
+    power_snapshot_sub: ZenohSubscriber,
+    power_event_sub: ZenohSubscriber,
     protected_work_request_sub: ZenohSubscriber,
 }
 
@@ -178,6 +185,27 @@ async fn subscribe_to_rover(
                 e
             )
         })?;
+    let power_status_topic = power_v1_topic(entity_id, PowerTopic::Status);
+    let power_status_sub = session
+        .declare_subscriber(&power_status_topic)
+        .await
+        .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", power_status_topic, e))?;
+    let power_snapshot_topic = power_v1_topic(entity_id, PowerTopic::Snapshot);
+    let power_snapshot_sub = session
+        .declare_subscriber(&power_snapshot_topic)
+        .await
+        .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", power_snapshot_topic, e))?;
+    let power_event_topic = power_v1_topic(entity_id, PowerTopic::Event);
+    let power_event_sub = session
+        .declare_subscriber(&power_event_topic)
+        .await
+        .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", power_event_topic, e))?;
+    let snapshot_request_topic = power_v1_topic(entity_id, PowerTopic::SnapshotRequest);
+    session
+        .put(&snapshot_request_topic, b"{}")
+        .await
+        .map_err(|e| eyre::eyre!("Failed to request {}: {}", snapshot_request_topic, e))?;
+    tracing::info!(%entity_id, "requested fresh power authority snapshot");
     let protected_work_request_topic = format!("rover/{entity_id}/power/protected-work/request/v1");
     let protected_work_request_sub = session
         .declare_subscriber(&protected_work_request_topic)
@@ -207,6 +235,9 @@ async fn subscribe_to_rover(
         lifecycle_status_sub,
         lifecycle_result_sub,
         lifecycle_capabilities_sub,
+        power_status_sub,
+        power_snapshot_sub,
+        power_event_sub,
         protected_work_request_sub,
     })
 }
@@ -436,6 +467,8 @@ async fn main() -> Result<()> {
 
     tracing::info!("Zenoh session ID: {}", session.zid());
     let protected_work_keys = protected_work_keys_from_env()?;
+    let power_command_keys = power_command_keys_from_env()?;
+    let power_deployment_id = power_deployment_id_from_env()?;
     if let Some(entity_id) = initial_rovers
         .iter()
         .find(|entity_id| !protected_work_keys.contains_key(*entity_id))
@@ -489,6 +522,9 @@ async fn main() -> Result<()> {
     let lifecycle_status_output = DataId::from("lifecycle_status".to_owned());
     let lifecycle_result_output = DataId::from("lifecycle_command_result".to_owned());
     let lifecycle_capabilities_output = DataId::from("lifecycle_capabilities".to_owned());
+    let power_status_output = DataId::from("power_status".to_owned());
+    let power_authority_snapshot_output = DataId::from("power_authority_snapshot".to_owned());
+    let power_journal_record_output = DataId::from("power_journal_record".to_owned());
     let protected_work_snapshot_request_output =
         DataId::from("protected_work_snapshot_request".to_owned());
 
@@ -506,14 +542,32 @@ async fn main() -> Result<()> {
     let mut audio_errors = 0u64;
     let mut audio_sequence_drops = 0u64;
     let mut latest_voice_config: Option<Vec<u8>> = None;
+    let mut fresh_power_snapshots: HashMap<String, PowerAuthoritySnapshot> = HashMap::new();
+    let mut remote_event_owners: HashMap<String, String> = HashMap::new();
 
-    // Create channel to bridge Dora's sync events to async
-    let (dora_tx, dora_rx) = flume::unbounded();
+    // High-rate browser audio must never occupy the control plane's ingress.
+    // Media is lossy by design; power, lifecycle and journal inputs are not.
+    let (control_tx, control_rx) = flume::bounded(CONTROL_INGRESS_CAPACITY);
+    let (media_tx, media_rx) = flume::bounded(MEDIA_INGRESS_CAPACITY);
+    let (media_publish_tx, media_publish_rx) =
+        flume::bounded::<MediaPublish>(MEDIA_PUBLISH_CAPACITY);
+    let media_session = Arc::clone(&session);
+    tokio::spawn(async move {
+        while let Ok(publish) = media_publish_rx.recv_async().await {
+            if let Err(error) = media_session.put(publish.topic, publish.payload).await {
+                tracing::debug!(%error, "dropped failed Orchestra media publish");
+            }
+        }
+    });
 
     // Spawn task to read Dora events
     std::thread::spawn(move || {
         while let Some(event) = events.recv() {
-            if dora_tx.send(event).is_err() {
+            if is_high_rate_dora_ingress(&event) {
+                if media_tx.try_send(event).is_err() {
+                    tracing::debug!("dropped saturated high-rate Dora media ingress");
+                }
+            } else if control_tx.send(event).is_err() {
                 break;
             }
         }
@@ -529,7 +583,7 @@ async fn main() -> Result<()> {
         // Build select! branches dynamically for all active rovers
         tokio::select! {
             // Handle Dora events (commands and fleet management)
-            Ok(event) = dora_rx.recv_async() => {
+            Ok(event) = receive_dora_event(&control_rx, &media_rx) => {
                 match event {
                     Event::Input { id, data, metadata } => {
                         match id.as_str() {
@@ -629,6 +683,95 @@ async fn main() -> Result<()> {
                                 }
                             }
 
+                            // Remote profile commands are single-use after a fresh
+                            // Rover observation. This prevents reconnect force-takeover
+                            // even if a local producer retries a stale command.
+                            "power_command" => {
+                                if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                                    if binary_array.len() == 1 {
+                                        let bytes = binary_array.value(0);
+                                        if let Ok(command) = serde_json::from_slice::<PowerCommand>(bytes) {
+                                            let now_ms = current_time_ms().unwrap_or_default();
+                                            let target = command.entity_id.clone();
+                                            let allowed = active_rovers.contains_key(&target)
+                                                && fresh_power_snapshots.get(&target).is_some_and(|snapshot| {
+                                                    power_command_is_snapshot_fenced(&command, snapshot, now_ms)
+                                                });
+                                            if allowed {
+                                                let topic = power_v1_topic(&target, PowerTopic::Command);
+                                                let Some(key) = power_command_keys.get(&target) else {
+                                                    tracing::warn!(entity_id = %target, "rejected power command without a configured transport key");
+                                                    continue;
+                                                };
+                                                let signed = match SignedPowerEnvelope::new(
+                                                    SignedPowerEnvelopeKind::Command,
+                                                    LifecycleRole::Rover,
+                                                    target.clone(),
+                                                    now_ms,
+                                                    command.clone(),
+                                                ).sign(key) {
+                                                    Ok(signed) => signed,
+                                                    Err(error) => {
+                                                        tracing::warn!(%error, entity_id = %target, "failed to sign power command");
+                                                        continue;
+                                                    }
+                                                };
+                                                match session.put(topic, serde_json::to_vec(&signed)?).await {
+                                                    Ok(_) => {
+                                                        fresh_power_snapshots.remove(&target);
+                                                        tracing::info!(entity_id = %target, command_id = %command.command_id, "published snapshot-fenced power command");
+                                                    }
+                                                    Err(error) => tracing::warn!(%error, entity_id = %target, "failed to publish power command"),
+                                                }
+                                            } else {
+                                                tracing::warn!(entity_id = %target, "rejected power command without a fresh, newer Rover snapshot");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            "remote_power_event_ack" => {
+                                if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                                    if binary_array.len() == 1 {
+                                        let bytes = binary_array.value(0);
+                                        if let Ok(ack) = serde_json::from_slice::<JournalAcknowledgement>(bytes) {
+                                            if let Some(entity_id) = remote_event_owners.get(&ack.event_id).cloned() {
+                                                let Some(key) = power_command_keys.get(&entity_id) else {
+                                                    tracing::warn!(%entity_id, "rejected rover journal acknowledgement without a configured transport key");
+                                                    continue;
+                                                };
+                                                if ack.validates_for(&entity_id, Some(&power_deployment_id)).is_err() {
+                                                    tracing::warn!(%entity_id, "rejected invalid rover journal acknowledgement");
+                                                    continue;
+                                                }
+                                                let now_ms = current_time_ms().unwrap_or_default();
+                                                let signed = match SignedPowerEnvelope::new(
+                                                    SignedPowerEnvelopeKind::JournalAcknowledgement,
+                                                    LifecycleRole::Rover,
+                                                    entity_id.clone(),
+                                                    now_ms,
+                                                    ack,
+                                                ).sign(key) {
+                                                    Ok(signed) => signed,
+                                                    Err(error) => {
+                                                        tracing::warn!(%error, %entity_id, "failed to sign rover journal acknowledgement");
+                                                        continue;
+                                                    }
+                                                };
+                                                let topic = power_v1_topic(&entity_id, PowerTopic::EventAck);
+                                                match session.put(topic, serde_json::to_vec(&signed)?).await {
+                                                    Ok(_) => {
+                                                        remote_event_owners.remove(&signed.payload.event_id);
+                                                    }
+                                                    Err(error) => tracing::warn!(%error, %entity_id, "failed to relay rover power event acknowledgement"),
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             "lifecycle_command_authorized" => {
                                 if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
                                     if binary_array.len() == 1 {
@@ -683,9 +826,7 @@ async fn main() -> Result<()> {
                                                     float32_array.values().as_ref(),
                                                 ) {
                                                     Ok(packet) => {
-                                                        if let Err(error) = session.put(audio_stream_topic, packet).await {
-                                                            tracing::error!(%error, "failed to publish speaker audio");
-                                                        }
+                                                        queue_media_publish(&media_publish_tx, &audio_stream_topic, packet);
                                                     }
                                                     Err(error) => tracing::warn!(%error, "rejected invalid walkie frame"),
                                                 }
@@ -1154,6 +1295,72 @@ async fn main() -> Result<()> {
                 }
             }
 
+            result = receive_from_rovers(&active_rovers, |subs| &subs.power_status_sub) => {
+                if let Some((entity_id, sample)) = result {
+                    let payload = sample.payload().to_bytes();
+                    if serde_json::from_slice::<PowerStatus>(&payload)
+                        .is_ok_and(|status| status.validates_for(LifecycleRole::Rover, &entity_id).is_ok())
+                    {
+                        forward_binary_output(&mut node, &power_status_output, sample);
+                    }
+                }
+            }
+
+            result = receive_from_rovers(&active_rovers, |subs| &subs.power_snapshot_sub) => {
+                if let Some((entity_id, sample)) = result {
+                    let payload = sample.payload().to_bytes();
+                    if let Ok(envelope) = serde_json::from_slice::<SignedPowerSnapshot>(&payload) {
+                        let Some(key) = power_command_keys.get(&entity_id) else {
+                            tracing::warn!(%entity_id, "rejected rover snapshot without a configured transport key");
+                            continue;
+                        };
+                        let now_ms = current_time_ms().unwrap_or(u64::MAX);
+                        if envelope.verify(key, now_ms).is_err()
+                            || envelope.validates_for(
+                                SignedPowerEnvelopeKind::Snapshot,
+                                LifecycleRole::Rover,
+                                &entity_id,
+                            ).is_err()
+                            || envelope.payload.validates_for(LifecycleRole::Rover, &entity_id).is_err()
+                            || envelope.payload.expires_at_ms <= now_ms
+                        {
+                            tracing::warn!(%entity_id, "rejected invalid or stale rover power snapshot");
+                            continue;
+                        }
+                        let snapshot_payload = serde_json::to_vec(&envelope.payload)?;
+                        fresh_power_snapshots.insert(entity_id.clone(), envelope.payload);
+                        node.send_output(
+                            power_authority_snapshot_output.clone(),
+                            Default::default(),
+                            BinaryArray::from_vec(vec![snapshot_payload.as_slice()]),
+                        )?;
+                    }
+                }
+            }
+
+            result = receive_from_rovers(&active_rovers, |subs| &subs.power_event_sub) => {
+                if let Some((entity_id, sample)) = result {
+                    let payload = sample.payload().to_bytes();
+                    if let Ok(record) = serde_json::from_slice::<JournalRecord>(&payload) {
+                        if record.validate().is_ok()
+                            && record.event.role == LifecycleRole::Rover
+                            && record.event.entity_id == entity_id
+                        {
+                            if remote_event_owners.contains_key(&record.event.event_id) {
+                                tracing::debug!(event_id = %record.event.event_id, "deduplicated pending rover power event");
+                                continue;
+                            }
+                            if remote_event_owners.len() >= MAX_PENDING_REMOTE_POWER_EVENTS {
+                                tracing::warn!(max_pending = MAX_PENDING_REMOTE_POWER_EVENTS, "remote power event acknowledgement map is full; retaining event for retry");
+                                continue;
+                            }
+                            remote_event_owners.insert(record.event.event_id.clone(), entity_id);
+                            forward_binary_output(&mut node, &power_journal_record_output, sample);
+                        }
+                    }
+                }
+            }
+
             result = receive_from_rovers(&active_rovers, |subs| &subs.protected_work_request_sub) => {
                 if let Some((entity_id, sample)) = result {
                     let payload = sample.payload().to_bytes();
@@ -1317,6 +1524,35 @@ fn protected_work_keys_from_env() -> Result<BTreeMap<String, Vec<u8>>> {
         .into_iter()
         .map(|(entity_id, key)| (entity_id, key.into_bytes()))
         .collect())
+}
+
+fn power_command_keys_from_env() -> Result<BTreeMap<String, Vec<u8>>> {
+    let raw = std::env::var("POWER_COMMAND_HMAC_KEYS")
+        .map_err(|_| eyre::eyre!("POWER_COMMAND_HMAC_KEYS is required"))?;
+    let keys = serde_json::from_str::<BTreeMap<String, String>>(&raw)
+        .map_err(|_| eyre::eyre!("POWER_COMMAND_HMAC_KEYS must be a JSON object"))?;
+    if keys.is_empty() || keys.values().any(|key| key.len() < 32) {
+        return Err(eyre::eyre!(
+            "power-command HMAC keys must be at least 32 bytes"
+        ));
+    }
+    Ok(keys
+        .into_iter()
+        .map(|(entity_id, key)| (entity_id, key.into_bytes()))
+        .collect())
+}
+
+fn power_deployment_id_from_env() -> Result<String> {
+    let deployment_id = std::env::var("POWER_DEPLOYMENT_ID").unwrap_or_else(|_| "default".into());
+    if deployment_id.is_empty()
+        || deployment_id.len() > 128
+        || !deployment_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(eyre::eyre!("invalid POWER_DEPLOYMENT_ID"));
+    }
+    Ok(deployment_id)
 }
 
 fn signed_protected_work_envelope(
@@ -1587,6 +1823,62 @@ fn current_time_ms() -> Result<u64, String> {
         .map_err(|_| "current timestamp exceeds u64".into())
 }
 
+const CONTROL_INGRESS_CAPACITY: usize = 64;
+const MEDIA_INGRESS_CAPACITY: usize = 8;
+const MEDIA_PUBLISH_CAPACITY: usize = 8;
+
+struct MediaPublish {
+    topic: String,
+    payload: Vec<u8>,
+}
+
+fn queue_media_publish(sender: &flume::Sender<MediaPublish>, topic: &str, payload: Vec<u8>) {
+    if sender
+        .try_send(MediaPublish {
+            topic: topic.into(),
+            payload,
+        })
+        .is_err()
+    {
+        tracing::debug!("dropped saturated Orchestra media publish");
+    }
+}
+
+fn is_high_rate_dora_ingress(event: &Event) -> bool {
+    matches!(event, Event::Input { id, .. } if is_high_rate_input_id(id.as_str()))
+}
+
+fn is_high_rate_input_id(id: &str) -> bool {
+    id == "audio_stream_web"
+}
+
+async fn receive_dora_event(
+    control_rx: &flume::Receiver<Event>,
+    media_rx: &flume::Receiver<Event>,
+) -> Result<Event, flume::RecvError> {
+    tokio::select! {
+        biased;
+        event = control_rx.recv_async() => event,
+        event = media_rx.recv_async() => event,
+    }
+}
+
+fn power_command_is_snapshot_fenced(
+    command: &PowerCommand,
+    snapshot: &PowerAuthoritySnapshot,
+    now_ms: u64,
+) -> bool {
+    command
+        .validates_for(LifecycleRole::Rover, &snapshot.entity_id)
+        .is_ok()
+        && snapshot
+            .validates_for(LifecycleRole::Rover, &snapshot.entity_id)
+            .is_ok()
+        && snapshot.captured_at_ms <= now_ms
+        && snapshot.expires_at_ms > now_ms
+        && snapshot.authority.next_epoch() == Some(command.authority)
+}
+
 #[cfg(test)]
 mod audio_tests {
     use super::*;
@@ -1620,8 +1912,10 @@ mod audio_tests {
 #[cfg(test)]
 mod routing_tests {
     use robo_rover_lib::{
-        CameraAction, CameraControl, ProtectedWorkRelayBody, ProtectedWorkRelayEnvelope,
-        StreamCommand, StreamControl, TargetedMediaControl, PROTECTED_WORK_RELAY_TTL_MS,
+        CameraAction, CameraControl, PowerAuthority, PowerAuthoritySnapshot, PowerCommand,
+        PowerCommandAction, PowerPolicy, PowerProfile, PowerState, ProtectedWorkRelayBody,
+        ProtectedWorkRelayEnvelope, StreamCommand, StreamControl, TargetedMediaControl,
+        POWER_PROTOCOL_VERSION, PROTECTED_WORK_RELAY_TTL_MS,
     };
 
     /// Returns true if the given Dora input id is classified as a parser input
@@ -1666,6 +1960,24 @@ mod routing_tests {
         assert!(!is_parser_input("audio_stream_web"));
         assert!(!is_parser_input("fleet_subscription_command"));
         assert!(!is_parser_input("fleet_select_command"));
+    }
+
+    #[test]
+    fn saturated_media_ingress_is_not_classified_as_control() {
+        assert!(super::is_high_rate_input_id("audio_stream_web"));
+        assert!(!super::is_high_rate_input_id("power_command"));
+        assert!(!super::is_high_rate_input_id("remote_power_event_ack"));
+    }
+
+    #[test]
+    fn a_stalled_media_publisher_cannot_fill_the_control_queue() {
+        let (control_tx, control_rx) = flume::bounded(1);
+        let (media_tx, media_rx) = flume::bounded(1);
+        media_tx.try_send(()).unwrap();
+        assert!(media_tx.try_send(()).is_err());
+        assert!(control_tx.try_send(()).is_ok());
+        assert_eq!(control_rx.len(), 1);
+        assert_eq!(media_rx.len(), 1);
     }
 
     // --- Target extraction from JSON ---
@@ -1842,6 +2154,59 @@ mod routing_tests {
         let stream = serde_json::from_slice::<StreamControl>(&commands[1].1).unwrap();
         assert!(matches!(stream.command, StreamCommand::Stop));
         assert!(!stream.video_enabled);
+    }
+
+    #[test]
+    fn power_command_requires_a_fresh_snapshot_and_exact_epoch_reconciliation() {
+        let snapshot = PowerAuthoritySnapshot {
+            protocol_version: POWER_PROTOCOL_VERSION,
+            snapshot_id: "f4f3e2d1-c0b9-48a7-9615-141312111000".into(),
+            role: robo_rover_lib::LifecycleRole::Rover,
+            entity_id: "rover-kiwi".into(),
+            authority: PowerAuthority {
+                epoch: 7,
+                sequence: 2,
+            },
+            state: PowerState::Active,
+            effective_profile: PowerProfile::NormalRover,
+            captured_at_ms: 100,
+            expires_at_ms: 200,
+        };
+        let mut command = PowerCommand {
+            protocol_version: POWER_PROTOCOL_VERSION,
+            command_id: "f4f3e2d1-c0b9-48a7-9615-141312111001".into(),
+            role: robo_rover_lib::LifecycleRole::Rover,
+            entity_id: "rover-kiwi".into(),
+            authority: PowerAuthority {
+                epoch: 7,
+                sequence: 2,
+            },
+            action: PowerCommandAction::SetPolicy {
+                policy: PowerPolicy::Auto,
+            },
+            issued_at_ms: 100,
+            not_before_ms: 100,
+            expires_at_ms: 150,
+            detail: None,
+        };
+
+        assert!(!super::power_command_is_snapshot_fenced(
+            &command, &snapshot, 101
+        ));
+        command.authority = PowerAuthority {
+            epoch: 8,
+            sequence: 1,
+        };
+        assert!(super::power_command_is_snapshot_fenced(
+            &command, &snapshot, 101
+        ));
+        command.authority.sequence = 2;
+        assert!(!super::power_command_is_snapshot_fenced(
+            &command, &snapshot, 101
+        ));
+        assert!(!super::power_command_is_snapshot_fenced(
+            &command, &snapshot, 200
+        ));
     }
 
     #[test]

@@ -11,7 +11,7 @@
 
 ## Overview
 
-- Date: 2026-07-26; priority: P1; implementation/review: Pending.
+- Date: 2026-07-26; priority: P1; implementation: Complete; review: Passed, accepted 2026-07-27.
 - Add dedicated power transport and snapshot-first reconciliation without overloading movement/media or lifecycle-lease topics.
 
 ## Key Insights
@@ -44,17 +44,48 @@ Split: Orchestra coordinator → Orchestra bridge → Zenoh → Rover bridge →
 
 ## Implementation Steps
 
-1. Add dedicated topic helpers, Dora ports, bounded serialization, and per-entity routing tests.
-2. Implement snapshot request/reply/reconcile reducer; do not expose a timeout force-takeover operation.
-3. Persist `max(local, observed)+1` only after snapshot; retain safety veto and stale/reordered counters.
-4. Fence pre-sleep command caches and wire equivalent direct dataflows.
-5. Test partition, bridge restart, snapshot loss, duplicate/reordered commands, inactive rover, and queue saturation.
+1. Complete — dedicated topics/ports, per-entity routing, signed power-command envelope, and bounded bridge ingress.
+2. Complete — snapshot request/reply/reconcile path; no timeout force-takeover operation.
+3. Complete — observed authority epoch high-water persists before later restart; stale/reordered snapshots remain gated.
+4. Complete — quiesce fences replay cache; direct flow includes the same durable projector acknowledgement path.
+5. Complete — exact authority reconciliation, signed snapshot/ACK transport, and control-plane isolation are covered by focused tests. All three Dora graphs validate.
 
 ## Todo list
 
-- [ ] Add power topics and ports.
-- [ ] Add `AuthorityUnknown` reconnect gate.
-- [ ] Wire split/direct parity and replay fence tests.
+- [x] Add power topics and ports.
+- [x] Add `AuthorityUnknown` reconnect gate and snapshot-request trigger.
+- [x] Wire split/direct durable journal acknowledgement parity and replay fence tests.
+- [x] Authenticate Rover authority snapshots before Orchestra accepts them for reconciliation.
+- [x] Authenticate journal acknowledgements before Rover compacts its durable event journal.
+- [x] Isolate bounded power-control/event ingress from high-rate video/audio traffic.
+- [x] Reconcile and document an exact-successor authority rule that preserves current command semantics.
+
+## Current status / review blockers (2026-07-27)
+
+Implemented changes remain uncommitted. An ordinary command must carry the
+Rover's current authority and advances it on apply; reconnect is the sole
+epoch transition and must be exactly `{snapshot.epoch + 1, sequence: 1}`.
+This keeps the existing command/result semantics while rejecting all gaps and
+reordering. Orchestra accepts only signed, fresh Rover snapshots before it
+forwards their raw payload to the coordinator or stores observed epoch state.
+Remote ACKs are similarly signed over target, role, version, deployment ID,
+event ID, and lifetime before the Rover bridge releases raw ACK data locally.
+
+Rover control and media Dora ingress now use independent bounded queues,
+control is selected first, and media is sent through a separate bounded lossy
+publisher task so a slow Zenoh media write cannot stall control. Status/snapshot
+updates coalesce to their newest value. Pending remote journal records remain
+deduplicated by event ID.
+
+Validation passed: 36 `power_coordinator` tests, 78 `robo_rover_lib` tests,
+24 Orchestra bridge tests, 10 Rover bridge tests, projector offline checks,
+`cargo check` for all affected packages, `cargo fmt --check`, `git diff --check`,
+and all three Dora graphs. Mongo duplicate/reorder integration remains
+intentionally skipped without `POWER_PROJECTOR_TEST_MONGODB_URI`.
+
+Fresh code review passed with no actionable findings. The final review also
+verified that Rover video/audio/playback metrics count only accepted bounded
+media handoffs and record rejected handoffs as drops.
 
 ## Success Criteria
 
@@ -73,3 +104,8 @@ Split: Orchestra coordinator → Orchestra bridge → Zenoh → Rover bridge →
 ## Next steps
 
 Phase 05 makes scheduler a reservation producer; Phase 06 adds local KWS demand.
+
+## Unresolved questions
+
+- Run the opt-in Mongo duplicate/reorder integration when
+  `POWER_PROJECTOR_TEST_MONGODB_URI` is available.

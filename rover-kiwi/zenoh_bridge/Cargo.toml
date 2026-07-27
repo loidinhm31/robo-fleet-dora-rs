@@ -18,3 +18,4 @@ flume = "0.11"
 uuid = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
+power_coordinator = { path = "../../common/power-coordinator" }
