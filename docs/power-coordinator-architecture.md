@@ -600,6 +600,19 @@ response as proof that the rover is ready or awake.
 
 ## Acceptance Targets
 
+The source-controlled gate commands are `make validate-power-faults`, `make
+test-power-faults`, `make smoke-power-workstation`, and (after startup) `make
+check-power-workstation`. `make smoke-power-workstation-stack` is the exclusive
+build/start/health/log/cleanup gate and refuses to disturb existing named
+containers. The basic smoke target runs a Docker-compatible real container
+smoke plus compose preflight; the check target requires healthy Orchestra and
+Rover containers and verifies their process tables. An amd64 workstation cannot
+validate Rover camera, audio, KWS, thermals, or power draw. Target
+evidence is written only by the ARM-only profile and KWS harnesses after an
+operator supplies a checksum-pinned, target-local corpus and a command that
+waits for authoritative status. Empty corpus templates and absent target
+hardware fail rather than generating passing evidence.
+
 - prerecorded wake acknowledgment under 1.5 s p95;
 - `NormalRover` ready under 5 s p95;
 - schedule prewarm from measured p95 plus safety margin;
@@ -612,6 +625,38 @@ response as proof that the rover is ready or awake.
 - no stale replay under restart, reordering, or partition injection;
 - every applied transition has a preceding local journal intent;
 - 90-day history query and projection cannot regress from old replication.
+
+Phase 08 automated fault coverage is not physical acceptance. Physical-release
+blockers remain the measured profile/KWS percentiles, controlled-noise error
+rates, frozen operating thresholds, direct/split restart evidence, and an
+approved staged rollback drill.
+
+### Target evidence harnesses
+
+The ARM-only evidence commands are intentionally explicit about their inputs:
+
+```bash
+POWER_PROFILE_COMMAND='...' \
+POWER_PROFILE_PIDS='pid1,pid2' \
+POWER_HARDWARE_ID='...' POWER_ROVER_ID='...' POWER_TOPOLOGY=split \
+POWER_MODEL_CHECKSUM='sha256...' POWER_CONFIG_FILE=/path/to/config \
+make benchmark-rover-power-profiles \
+  POWER_PROFILE_BENCHMARK_ARGS='--output artifacts/power-profiles.json'
+
+KWS_TRIAL_COMMAND='...' \
+POWER_HARDWARE_ID='...' POWER_ROVER_ID='...' POWER_TOPOLOGY=split \
+POWER_CONFIG_FILE=/path/to/config \
+make benchmark-rover-kws \
+  KWS_BENCHMARK_ARGS='--output artifacts/kws.json --manifest /path/to/populated-manifest.json'
+```
+
+The adapters must wait for authoritative terminal status; synthetic sleeps are
+not evidence. The profile harness records transition latency, CPU/RSS, thermal
+and optional power-proxy samples. The KWS harness verifies SHA-256-bound,
+target-local samples and records wake-ack p95 plus false accepts/rejects.
+Both scripts refuse non-ARM hosts, missing identity/configuration, or empty
+template corpora. Keep raw recordings and generated evidence outside version
+control unless a release process explicitly archives them.
 
 ## Deferred Decisions
 

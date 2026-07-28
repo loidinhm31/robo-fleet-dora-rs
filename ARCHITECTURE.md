@@ -1010,6 +1010,10 @@ Lifecycle invariants:
   role/entity/version/expiry-bound signed envelopes. Fresh Rover snapshots are
   required before Orchestra can issue the exact reconnect epoch successor, and
   bounded control queues remain isolated from lossy high-rate media publishing.
+- Docker-compatible health checks require power coordinator, projector (on
+  Orchestra), and KWS (on Rover) processes in addition to the control spine.
+  Workstation evidence remains packaging/topology-only; ARM acoustic and power
+  acceptance requires target-produced benchmark evidence.
 
 ## References
 

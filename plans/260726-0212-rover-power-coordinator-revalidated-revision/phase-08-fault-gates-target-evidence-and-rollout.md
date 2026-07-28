@@ -8,8 +8,16 @@
 
 ## Overview
 
-- Date: 2026-07-26; priority: P1; implementation/review: Pending.
+- Date: 2026-07-26; priority: P1; implementation/review: In progress (status review 2026-07-28).
 - Prove authority safety, data durability, measured savings, acoustic behavior, and reversible release sequencing.
+
+## Status note — 2026-07-28
+
+Approved implementation automation is complete for the currently runnable
+gates: automated validation passed, Mongo integration passed, and Podman/Docker
+workstation preflight passed. Phase 08 remains **not complete**. Release is
+blocked on physical ARM KWS/profile evidence, live direct and split-topology
+evidence, an exclusive-stack smoke run, and staged rollout plus rollback drill.
 
 ## Key Insights
 
@@ -45,10 +53,11 @@ One harness drives fake-clock/contract faults, then Dora/Zenoh topology, Docker-
 
 ## Todo list
 
-- [ ] Pass contracts, browser, projector, Docker/direct/split gates.
+- [ ] Pass contracts, browser, projector, Docker/direct/split gates (automated,
+      Mongo, and Podman preflight portions passed; live topology evidence remains).
 - [ ] Pass partition/restart/disk/database schedule fault matrix.
-- [ ] Collect physical Rover KWS/power evidence and freeze values.
-- [ ] Complete staged rollout and rollback drill.
+- [ ] Collect physical Rover KWS/power/profile evidence and freeze values.
+- [ ] Run exclusive-stack smoke and complete staged rollout/rollback drill.
 
 ## Success Criteria
 

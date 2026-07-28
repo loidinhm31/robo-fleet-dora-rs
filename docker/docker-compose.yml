@@ -103,12 +103,13 @@ services:
       POWER_JOURNAL_WAKE_RESERVE_BYTES: ${POWER_JOURNAL_WAKE_RESERVE_BYTES:-1048576}
       POWER_JOURNAL_WAKE_RESERVE_RECORDS: ${POWER_JOURNAL_WAKE_RESERVE_RECORDS:-10}
       POWER_PROTECTED_WORK_HMAC_KEYS: '${POWER_PROTECTED_WORK_HMAC_KEYS:?Set POWER_PROTECTED_WORK_HMAC_KEYS}'
+      POWER_COMMAND_HMAC_KEYS: '${POWER_COMMAND_HMAC_KEYS:?Set POWER_COMMAND_HMAC_KEYS}'
     restart: unless-stopped
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "test ! -e /recordings/.image-layer-recording-root-marker && test -d /recordings && test -w /recordings && test -x /usr/bin/ffmpeg && test -x /usr/bin/ffprobe && ffmpeg -hide_banner -encoders 2>/dev/null | grep -Eq '[[:space:]]libx264[[:space:]]' && ffmpeg -hide_banner -encoders 2>/dev/null | grep -Eq '[[:space:]]aac[[:space:]]' && ffmpeg -hide_banner -muxers 2>/dev/null | grep -Eq '[[:space:]]E[[:space:]]mp4[[:space:]]' && ffprobe -version >/dev/null 2>&1 && available_kb=$$(df -Pk /recordings | awk 'NR==2 {print $$4}') && test \"$$available_kb\" -ge \"$$((RECORDING_MIN_FREE_BYTES / 1024))\" && probe=$$(mktemp /recordings/.healthcheck.XXXXXX) && printf ready > \"$$probe\" && sync -f \"$$probe\" && mv \"$$probe\" \"$$probe.renamed\" && test \"$$(cat \"$$probe.renamed\")\" = ready && rm -f \"$$probe.renamed\" && grep -azq '/app/bin/resource_monitor' /proc/*/cmdline && grep -azq '/app/bin/lifecycle_manager' /proc/*/cmdline && grep -azq '/app/bin/central_speech_recognizer' /proc/*/cmdline && grep -azq '/app/bin/command_parser' /proc/*/cmdline && grep -azq '/app/bin/media_recorder' /proc/*/cmdline && grep -azq '/app/bin/orchestra_zenoh_bridge' /proc/*/cmdline && grep -azq '/app/bin/web_bridge' /proc/*/cmdline && { test \"$$RECORDING_SCHEDULER_ENABLED\" != true || grep -azq '/app/bin/recording_scheduler' /proc/*/cmdline; }",
+          "test ! -e /recordings/.image-layer-recording-root-marker && test -d /recordings && test -w /recordings && test -x /usr/bin/ffmpeg && test -x /usr/bin/ffprobe && ffmpeg -hide_banner -encoders 2>/dev/null | grep -Eq '[[:space:]]libx264[[:space:]]' && ffmpeg -hide_banner -encoders 2>/dev/null | grep -Eq '[[:space:]]aac[[:space:]]' && ffmpeg -hide_banner -muxers 2>/dev/null | grep -Eq '[[:space:]]E[[:space:]]mp4[[:space:]]' && ffprobe -version >/dev/null 2>&1 && available_kb=$$(df -Pk /recordings | awk 'NR==2 {print $$4}') && test \"$$available_kb\" -ge \"$$((RECORDING_MIN_FREE_BYTES / 1024))\" && probe=$$(mktemp /recordings/.healthcheck.XXXXXX) && printf ready > \"$$probe\" && sync -f \"$$probe\" && mv \"$$probe\" \"$$probe.renamed\" && test \"$$(cat \"$$probe.renamed\")\" = ready && rm -f \"$$probe.renamed\" && grep -azq '/app/bin/resource_monitor' /proc/*/cmdline && grep -azq '/app/bin/lifecycle_manager' /proc/*/cmdline && grep -azq '/app/bin/power_coordinator' /proc/*/cmdline && grep -azq '/app/bin/power_event_projector' /proc/*/cmdline && grep -azq '/app/bin/central_speech_recognizer' /proc/*/cmdline && grep -azq '/app/bin/command_parser' /proc/*/cmdline && grep -azq '/app/bin/media_recorder' /proc/*/cmdline && grep -azq '/app/bin/orchestra_zenoh_bridge' /proc/*/cmdline && grep -azq '/app/bin/web_bridge' /proc/*/cmdline && { test \"$$RECORDING_SCHEDULER_ENABLED\" != true || grep -azq '/app/bin/recording_scheduler' /proc/*/cmdline; }",
         ]
       interval: 30s
       timeout: 10s
@@ -202,12 +203,13 @@ services:
       POWER_JOURNAL_WAKE_RESERVE_BYTES: ${POWER_JOURNAL_WAKE_RESERVE_BYTES:-1048576}
       POWER_JOURNAL_WAKE_RESERVE_RECORDS: ${POWER_JOURNAL_WAKE_RESERVE_RECORDS:-10}
       POWER_PROTECTED_WORK_HMAC_KEY: '${POWER_PROTECTED_WORK_HMAC_KEY:?Set POWER_PROTECTED_WORK_HMAC_KEY}'
+      POWER_COMMAND_HMAC_KEY: '${POWER_COMMAND_HMAC_KEY:?Set POWER_COMMAND_HMAC_KEY}'
     restart: unless-stopped
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "grep -azq '/app/bin/resource_monitor' /proc/*/cmdline && grep -azq '/app/bin/lifecycle_manager' /proc/*/cmdline && grep -azq '/app/bin/kornia_capture' /proc/*/cmdline && grep -azq '/app/bin/edge_voice' /proc/*/cmdline && grep -azq '/app/bin/audio_capture' /proc/*/cmdline && grep -azq '/app/bin/audio_playback' /proc/*/cmdline && grep -azq '/app/bin/rover_zenoh_bridge' /proc/*/cmdline",
+          "grep -azq '/app/bin/resource_monitor' /proc/*/cmdline && grep -azq '/app/bin/lifecycle_manager' /proc/*/cmdline && grep -azq '/app/bin/power_coordinator' /proc/*/cmdline && grep -azq '/app/bin/voice_wake' /proc/*/cmdline && grep -azq '/app/bin/kornia_capture' /proc/*/cmdline && grep -azq '/app/bin/edge_voice' /proc/*/cmdline && grep -azq '/app/bin/audio_capture' /proc/*/cmdline && grep -azq '/app/bin/audio_playback' /proc/*/cmdline && if test \"$$ROVER_MODE\" = direct; then grep -azq '/app/bin/web_bridge' /proc/*/cmdline && grep -azq '/app/bin/power_event_projector' /proc/*/cmdline; else grep -azq '/app/bin/rover_zenoh_bridge' /proc/*/cmdline; fi",
         ]
       interval: 30s
       timeout: 10s

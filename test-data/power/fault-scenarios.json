@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "description": "Power-coordinator fault gates. Automated cases map to focused tests; operator cases require a running topology.",
+  "scenarios": [
+    { "id": "contracts-and-authority", "mode": "automated", "covers": ["forged entity", "stale authority", "duplicate", "reorder", "absent snapshot"] },
+    { "id": "coordinator-lifecycle", "mode": "automated", "covers": ["authority unknown", "timeout", "partial lifecycle failure", "stale resource sample"] },
+    { "id": "journal-recovery", "mode": "automated", "covers": ["torn tail", "full journal", "restart", "journal before apply"] },
+    { "id": "projector-outage", "mode": "automated", "covers": ["Mongo outage", "monotonic projection", "duplicate replication"] },
+    { "id": "reservation-mutation", "mode": "automated", "covers": ["delete", "edit", "supersession", "prewarm release", "allowlisted retry"] },
+    { "id": "wake-safety", "mode": "automated", "covers": ["IdleListening gate", "bounded local demand", "one-shot WakeAck", "no actuator command"] },
+    { "id": "split-topology-restart", "mode": "operator", "covers": ["bridge restart", "coordinator restart", "partition", "reconciliation"] },
+    { "id": "direct-topology-restart", "mode": "operator", "covers": ["direct routing", "manager restart", "projector restart", "reconciliation"] }
+  ]
+}

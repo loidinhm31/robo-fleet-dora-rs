@@ -7,7 +7,9 @@
 .PHONY: help models models-reset check-models build-orchestra build-rover build-all up-orchestra up-rover \
         up-rover-direct up-mongodb down-mongodb logs-mongodb up-workstation down logs-orchestra \
         logs-rover shell-orchestra shell-rover status clean build-rover-cross format format-check \
-        format-file validate-recording-path validate-compose validate-workstation-compose validate-edge-voice-x86 test-power-projector-mongo
+        format-file validate-recording-path validate-compose validate-workstation-compose validate-edge-voice-x86 test-power-projector-mongo \
+        validate-power-faults test-power-faults test-power-faults-mongo smoke-power-workstation check-power-workstation smoke-power-workstation-stack \
+        benchmark-rover-power-profiles benchmark-rover-kws
 
 # Default target
 .DEFAULT_GOAL := help
@@ -52,6 +54,13 @@ help:
 	@echo "  make status          - Check Dora node status in containers"
 	@echo "  make validate-edge-voice-x86 - Run the native x86 edge-voice benchmark"
 	@echo "  make test-power-projector-mongo - Run the required Mongo projection integration gate"
+	@echo "  make validate-power-faults - Validate the declarative power fault matrix"
+	@echo "  make test-power-faults - Run automated power contract/fault gates"
+	@echo "  make smoke-power-workstation - Run Docker/Podman smoke plus compose preflight"
+	@echo "  make check-power-workstation - Check a running workstation stack health/processes"
+	@echo "  make smoke-power-workstation-stack - Exclusive gate; needs recording path + test HMAC env"
+	@echo "  make benchmark-rover-power-profiles - Run target-only profile evidence harness"
+	@echo "  make benchmark-rover-kws - Run target-only KWS evidence harness"
 	@echo ""
 	@echo "Shell Access:"
 	@echo "  make shell-orchestra - Open bash shell in orchestra container"
@@ -85,6 +94,7 @@ help:
 	@echo "  RECORDING_*          - Bounded media recorder safety limits"
 	@echo "  RECORDING_SCHEDULER_ENABLED - Enable schedule API/process health checks (default: false)"
 	@echo "  RECORDING_SCHEDULER_* - Scheduler horizon, limits, and reconciliation interval"
+	@echo "  POWER_COMMAND_HMAC_KEY(S) - Required 32-byte command signing key(s)"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make up-mongodb && make build-orchestra && make up-orchestra"
@@ -153,6 +163,30 @@ up-mongodb:
 
 test-power-projector-mongo:
 	POWER_PROJECTOR_TEST_MONGODB_URI=$${POWER_PROJECTOR_TEST_MONGODB_URI:-mongodb://127.0.0.1:$${MONGODB_PORT:-27017}} cargo test -p power_event_projector --test mongo-integration -- --ignored
+
+validate-power-faults:
+	./scripts/test-power-coordinator-faults.sh --validate
+
+test-power-faults:
+	./scripts/test-power-coordinator-faults.sh
+
+test-power-faults-mongo:
+	./scripts/test-power-coordinator-faults.sh --with-mongo
+
+smoke-power-workstation:
+	./scripts/test-power-coordinator-faults.sh --docker-smoke
+
+check-power-workstation:
+	./scripts/test-power-coordinator-faults.sh --workstation-health
+
+smoke-power-workstation-stack:
+	./scripts/test-power-coordinator-faults.sh --stack-smoke
+
+benchmark-rover-power-profiles:
+	./scripts/benchmark-rover-power-profiles.sh $${POWER_PROFILE_BENCHMARK_ARGS:?set POWER_PROFILE_BENCHMARK_ARGS, including --output FILE}
+
+benchmark-rover-kws:
+	./scripts/benchmark-rover-kws.sh $${KWS_BENCHMARK_ARGS:?set KWS_BENCHMARK_ARGS, including --output FILE}
 
 # @env: SOURCE_URI SOURCE_TYPE
 up-rover-direct:  ## Start rover in direct-connect mode (web UI on rover, no Zenoh)

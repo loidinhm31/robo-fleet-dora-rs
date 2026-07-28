@@ -27,6 +27,7 @@ members = [
 
     # Direct-connect mode additions
     "common/web_bridge",
+    "orchestra/power-event-projector",
 ]
 
 [workspace.dependencies]

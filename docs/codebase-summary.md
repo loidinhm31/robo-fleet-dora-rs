@@ -89,3 +89,9 @@ Snapshot date: 2026-07-17
 - `ARCHITECTURE.md` is the main system reference.
 - `README.md` is the quick-start and feature entry point.
 - `SETUP_ENVIRONMENT.md` is the local dependency checklist.
+- `make test-power-faults` runs the declarative power fault matrix; its
+  physical-Rover and operator topology cases stay skipped until explicit
+  target commands/evidence are supplied. `make smoke-power-workstation`
+  verifies Docker/Podman compatibility and compose rendering; after starting
+  the stack, `make check-power-workstation` validates container health and
+  processes. Neither is ARM or acoustic acceptance.

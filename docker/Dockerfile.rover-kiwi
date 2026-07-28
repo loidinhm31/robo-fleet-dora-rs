@@ -28,6 +28,7 @@ COPY robo_rover_lib/Cargo.toml robo_rover_lib/
 COPY common/lifecycle_manager/Cargo.toml common/lifecycle_manager/
 COPY common/power-coordinator/Cargo.toml common/power-coordinator/
 COPY common/resource_monitor/Cargo.toml common/resource_monitor/
+COPY orchestra/power-event-projector/Cargo.toml orchestra/power-event-projector/
 
 # Copy rover-kiwi node Cargo.toml files
 COPY rover-kiwi/kornia_capture/Cargo.toml rover-kiwi/kornia_capture/
@@ -89,6 +90,8 @@ RUN mkdir -p rover-kiwi/kornia_capture/src && \
     echo "fn main() {}" > common/power-coordinator/src/main.rs && \
     mkdir -p common/resource_monitor/src && \
     echo "fn main() {}" > common/resource_monitor/src/main.rs && \
+    mkdir -p orchestra/power-event-projector/src && \
+    echo "fn main() {}" > orchestra/power-event-projector/src/main.rs && \
     mkdir -p rover-kiwi/zenoh_bridge/src && \
     echo "fn main() {}" > rover-kiwi/zenoh_bridge/src/main.rs && \
     mkdir -p rover-kiwi/sim_interface/src && \
@@ -109,6 +112,7 @@ RUN cargo build --release \
 COPY robo_rover_lib robo_rover_lib/
 COPY common common/
 COPY rover-kiwi rover-kiwi/
+COPY orchestra/power-event-projector orchestra/power-event-projector/
 
 # Build all rover nodes
 RUN cargo build --release \
@@ -127,6 +131,7 @@ RUN cargo build --release \
     -p lifecycle_manager \
     -p power_coordinator \
     -p resource_monitor \
+    -p power_event_projector \
     -p rover_zenoh_bridge \
     -p sim_interface \
     -p web_bridge \
@@ -199,6 +204,7 @@ COPY --from=builder /build/target/release/rover_controller ./bin/
 COPY --from=builder /build/target/release/lifecycle_manager ./bin/
 COPY --from=builder /build/target/release/power_coordinator ./bin/
 COPY --from=builder /build/target/release/resource_monitor ./bin/
+COPY --from=builder /build/target/release/power_event_projector ./bin/
 COPY --from=builder /build/target/release/rover_zenoh_bridge ./bin/
 COPY --from=builder /build/target/release/sim_interface ./bin/
 COPY --from=builder /build/target/release/web_bridge ./bin/
