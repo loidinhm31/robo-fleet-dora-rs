@@ -34,7 +34,7 @@ Implement the power coordinator specified in [the revalidated architecture](../.
 | 4 | [Zenoh authority and direct-mode routing](./phase-04-zenoh-authority-and-direct-routing.md) | Done — accepted 2026-07-27 | 100% accepted | 34h | 1–3 |
 | 5 | [Scheduler reservations and bounded prewarm](./phase-05-scheduler-reservations-and-bounded-prewarm.md) | Done — accepted 2026-07-27 | 100% accepted | 34h | 1–4 |
 | 6 | [Rover KWS and WakeAck](./phase-06-rover-kws-and-wake-ack.md) | Done — implementation accepted 2026-07-28 | 100% implementation | 30h | 1–4 |
-| 7 | [Authenticated power API and UI](./phase-07-authenticated-power-api-and-ui.md) | Pending | 0% | 28h | 1–5 |
+| 7 | [Authenticated power API and UI](./phase-07-authenticated-power-api-and-ui.md) | Done — accepted 2026-07-28 | 100% accepted | 28h | 1–5 |
 | 8 | [Fault gates, target evidence, rollout](./phase-08-fault-gates-target-evidence-and-rollout.md) | Pending | 0% | 22h | 1–7 |
 | 9 | [Manual Rover KWS and WakeAck acceptance](./phase-09-manual-rover-kws-and-wakeack-acceptance.md) | Pending — user-operated | 0% | 4h | 6 |
 
@@ -65,6 +65,15 @@ accepted until its revised success criteria pass.
   release work across schedule invalidation, activation-to-Ready p95 timing,
   final recorder-admission validation, an explicit recorder/storage retry
   allowlist, and fault coverage for these boundaries.
+- Phase 07 acceptance completed 2026-07-28: authenticated exact-target power
+  policy/wake API, bounded UI demand cleanup, monotonic live status/history
+  separation, and reconnect handling passed 118 web-bridge tests, 80 shared
+  tests (including one Rust doctest), 13 UI tests, one E2E flow, fixture/typecheck,
+  and lint validation.
+
+Cutover TODO: carry Phase 05's durable reservation-command outbox/ack path and
+recorder fault gates into Phase 08 validation; retain Phase 07 evidence above
+as the API/UI baseline.
 
 Phase 01 owns the snapshot gate contract and coordinator state-machine
 behavior. Phase 04 owns Zenoh/direct ports, snapshot request/reply, and proof

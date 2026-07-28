@@ -531,6 +531,25 @@ window (default 50, maximum 100 events) with a time/event cursor. The returned
 `power_status` and its `(epoch, sequence)` always outrank historical data;
 historical or delayed Mongo results must never overwrite newer live state.
 
+The browser state is reset on Socket.IO disconnect/reconnect and when the
+selected entity or authentication changes. On a fresh authenticated connection
+it requests history again, then accepts only status/transitions for the current
+entity and only newer authority stamps. Pending requests are not rendered as
+applied state; they settle on the matching result or time out after 30 seconds.
+
+Power timestamps are untrusted millisecond values at the UI boundary. Invalid
+or non-finite values render as `unavailable timestamp`; valid values are shown
+with the browser locale and exposed with an ISO `datetime` attribute. This
+keeps the display readable without allowing malformed history data to produce
+misleading dates.
+
+Power controls are keyboard and assistive-technology usable: policy actions are
+buttons in a labelled fieldset with `aria-pressed` state, wake/history controls
+use descriptive labels and `aria-expanded`, status and pending-request changes
+are announced through live regions, and controls are disabled until an
+authenticated live authority is available. The history panel exposes a named
+region and provides an explicit action to load older events.
+
 ## Signed transition relay and direct mode
 
 Rover transitions are not trusted merely because they arrived over Zenoh. The

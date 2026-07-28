@@ -9,7 +9,7 @@
 
 ## Overview
 
-- Date: 2026-07-26; priority: P1; implementation/review: Pending.
+- Date: 2026-07-26; priority: P1; implementation/review: Done — accepted 2026-07-28 (Asia/Ho_Chi_Minh).
 - Expose exact-target authenticated policy/Wake controls, live authority status, and bounded 90-day history across shared web/Tauri UI.
 
 ## Key Insights
@@ -46,15 +46,27 @@ UI → `common/web_bridge` → local Orchestra/direct Rover coordinator. `power_
 
 ## Todo list
 
-- [ ] Add backend Socket.IO/history contracts and limiter.
-- [ ] Add shared fixture and normalized store.
-- [ ] Add controls/history views and auth/reconnect tests.
+- [x] Add backend Socket.IO/history contracts and limiter.
+- [x] Add shared fixture and normalized store.
+- [x] Add controls/history views and auth/reconnect tests.
 
 ## Success Criteria
 
 - Any authenticated session can set policy only for its server-pinned active rover, with rate/audit enforcement.
 - Wake from Sleep becomes Auto plus a two-minute demand; it never shows Ready before authority confirms it.
 - Historical data cannot overwrite live effective state.
+
+## Acceptance evidence
+
+- 118 web-bridge tests passed.
+- 80 shared-package tests passed, including one Rust doctest.
+- 13 UI tests passed.
+- 1 E2E flow passed.
+- Fixture compatibility, typecheck, and lint passed.
+
+Phase 07 accepted 2026-07-28 (Asia/Ho_Chi_Minh). API/UI controls, exact-target
+auth, bounded demand cleanup, monotonic live state, history isolation, and
+reconnect behavior meet the revised criteria.
 
 ## Risk Assessment
 
