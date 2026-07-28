@@ -99,6 +99,7 @@ nodes:
       - lifecycle_capabilities
       - protected_work_snapshot_request
       - power_status
+      - power_transition
       - power_command_result
       - power_authority_snapshot
       - power_journal_record
@@ -297,6 +298,9 @@ nodes:
       power_command:
         source: recording-scheduler/scheduled_power_command
         queue_size: 16
+      local_power_command:
+        source: web-bridge/power_command
+        queue_size: 16
       resource_snapshot: resource-monitor/resource_snapshot
       lifecycle_status:
         source: lifecycle-manager/lifecycle_status
@@ -415,6 +419,13 @@ nodes:
         source: lifecycle-manager/lifecycle_status
         queue_size: 64
       lifecycle_capabilities: lifecycle-manager/lifecycle_capabilities
+      power_status: power-coordinator/power_status
+      rover_power_status: orchestra-bridge/power_status
+      power_transition: power-coordinator/power_transition
+      rover_power_transition: orchestra-bridge/power_transition
+      power_command_result: power-coordinator/power_command_result
+      rover_power_command_result: orchestra-bridge/power_command_result
+      power_authority_snapshot: orchestra-bridge/power_authority_snapshot
       # Browser lifecycle state is emitted by Orchestra's lifecycle manager,
       # which owns the command epoch for relayed Rover operations.
 
@@ -502,6 +513,7 @@ nodes:
       - recording_reconciliation_snapshot
       - lifecycle_command
       - lifecycle_status_query
+      - power_command
     env:
       RUST_LOG: info
 
@@ -532,6 +544,7 @@ nodes:
       RATE_LIMIT_AUTH_PER_MINUTE: "5"
       RATE_LIMIT_COMMANDS_PER_SECOND: "100"
       RATE_LIMIT_TTS_CONFIG_PER_SECOND: "4"
+      RATE_LIMIT_POWER_PER_SECOND: "4"
       WEB_STT_QUEUE_CAPACITY: "64"          # 8x central decode queue; newest audio drops
       WEB_STT_STREAM_IDLE_SECONDS: "30"
       WEB_STT_CLOSING_SECONDS: "30"

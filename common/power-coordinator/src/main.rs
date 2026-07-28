@@ -54,7 +54,10 @@ fn main() -> Result<()> {
                 }
             }
             Event::Input { id, data, .. }
-                if matches!(id.as_str(), "power_command" | "local_power_command") =>
+                if matches!(
+                    id.as_str(),
+                    "power_command" | "local_power_command" | "web_power_command"
+                ) =>
             {
                 if let Some(bytes) = binary(&data) {
                     if let Ok(command) = serde_json::from_slice::<PowerCommand>(bytes) {

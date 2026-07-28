@@ -17,7 +17,8 @@ use robo_rover_lib::{
     AudioAction, AudioControl, AudioFrameMetadata, AudioFrameSequenceTracker, CameraAction,
     CameraControl, CommandMetadata, CommandPriority, FrameSequenceTracker, InputSource,
     LifecycleCapability, LifecycleCommand, LifecycleCommandResult, LifecycleReasonCode,
-    LifecycleRole, LifecycleStatus, MetricWindow, PcmSampleFormat, RecordingClipQueryResult,
+    LifecycleRole, LifecycleStatus, MetricWindow, PcmSampleFormat, PowerAuthoritySnapshot,
+    PowerCommandResult, PowerStatus, PowerTransition, RecordingClipQueryResult,
     RecordingCoordinatorFeedback, RecordingReasonCode, RecordingReconciliationRequest,
     RecordingReconciliationSnapshot, RecordingSessionCommandResult, RecordingSessionStatus,
     RoverCommand, RoverCommandWithMetadata, ScheduledRecordingIntent, StreamControl,
@@ -80,6 +81,18 @@ use media_demand_registry::{MediaDemandRegistry, MediaDemandTransition, MediaRes
 #[path = "lifecycle-socket.rs"]
 mod lifecycle_socket;
 use lifecycle_socket::LifecycleSocketState;
+
+#[path = "power-history-gateway.rs"]
+mod power_history_gateway;
+#[path = "power-queues.rs"]
+mod power_queues;
+#[cfg(test)]
+#[path = "power-queues-tests.rs"]
+mod power_queues_tests;
+#[path = "power-socket.rs"]
+mod power_socket;
+use power_history_gateway::PowerHistoryGateway;
+use power_queues::PowerSocketState;
 
 mod stt_bridge;
 mod stt_ingress;
@@ -531,6 +544,7 @@ struct SharedState {
     pub auth_rate_limiter: Arc<AuthRateLimiter>,
     pub ip_rate_limiter: Arc<IpRateLimiter>,
     pub command_rate_limiter: Arc<CommandRateLimiter>,
+    pub power_rate_limiter: Arc<CommandRateLimiter>,
     pub tts_config_rate_limiter: Arc<CommandRateLimiter>,
     pub session_registry: Arc<SessionRegistry>,
     pub fleet_status: Arc<Mutex<FleetStatus>>,
@@ -547,10 +561,15 @@ struct SharedState {
     pub scheduled_coordinator: Arc<Mutex<ScheduledRecordingCoordinator>>,
     pub recording_access: Arc<RecordingAccess>,
     pub lifecycle: LifecycleSocketState,
+    pub power: PowerSocketState,
+    pub power_history: PowerHistoryGateway,
 }
 
 impl SharedState {
-    fn new(schedule_feedback_spool: RecordingScheduleFeedbackSpool) -> Self {
+    fn new(
+        schedule_feedback_spool: RecordingScheduleFeedbackSpool,
+        database: mongodb::Database,
+    ) -> Self {
         // Read fleet configuration from environment variables
         let selected_entity =
             env::var("SELECTED_ENTITY_ID").unwrap_or_else(|_| "rover-kiwi".to_string());
@@ -599,6 +618,7 @@ impl SharedState {
             auth_rate_limiter: Arc::new(AuthRateLimiter::new()),
             ip_rate_limiter: Arc::new(IpRateLimiter::new()),
             command_rate_limiter: Arc::new(CommandRateLimiter::new()),
+            power_rate_limiter: Arc::new(CommandRateLimiter::new_power()),
             tts_config_rate_limiter: Arc::new(CommandRateLimiter::new_tts_config()),
             session_registry: Arc::new(SessionRegistry::new()),
             fleet_status: Arc::new(Mutex::new(fleet_status)),
@@ -612,6 +632,8 @@ impl SharedState {
             scheduled_coordinator: Arc::new(Mutex::new(ScheduledRecordingCoordinator::default())),
             recording_access: Arc::new(RecordingAccess::from_env()),
             lifecycle: LifecycleSocketState::default(),
+            power: PowerSocketState::default(),
+            power_history: PowerHistoryGateway::new(database),
         }
     }
 }
@@ -807,6 +829,7 @@ fn setup_socketio(
         }
         recording_schedule_gateway::register(&socket, &socket_id, shared_state.clone());
         shared_state.lifecycle.register(&socket, &socket_id, &shared_state);
+        power_socket::register(&socket, &socket_id, shared_state.clone());
 
         let shared_state_clone = shared_state.clone();
         let socket_id_clone = socket_id.clone();
@@ -1707,6 +1730,7 @@ fn setup_socketio(
 
                     // A selected rover is also routing authority for browser demand.
                     if fleet_status.fleet_roster.contains(&select_cmd.entity_id) && target_is_active {
+                        let selection_changed = fleet_status.selected_entity != select_cmd.entity_id;
                         fleet_status.selected_entity = select_cmd.entity_id.clone();
                         fleet_status.timestamp = select_cmd.timestamp;
 
@@ -1718,6 +1742,9 @@ fn setup_socketio(
                         // Migrate only this browser's owned demand. Recorder demand stays pinned.
                         let status_clone = fleet_status.clone();
                         drop(fleet_status); // Release lock before async operation
+                        if selection_changed {
+                            shared_state_clone.power.release_socket(&socket_id_clone, unix_now_ms().max(0) as u64);
+                        }
                         move_browser_media_demand(&shared_state_clone, &socket_id_clone, &select_cmd.entity_id);
 
                         io_for_fleet_clone.emit("fleet_status", status_clone).ok();
@@ -1869,6 +1896,7 @@ fn setup_socketio(
             tracing::info!("Client disconnected: {}", socket_id);
 
             remove_browser_media_demand(&shared_state_clone, &socket_id);
+            shared_state_clone.power.release_socket(&socket_id, unix_now_ms().max(0) as u64);
             let stopped_voice_streams = shared_state_clone.stt_bridge.close_owner(&socket_id);
             if stopped_voice_streams > 0 {
                 tracing::info!(
@@ -2004,9 +2032,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         DataId::from("recording_reconciliation_snapshot".to_owned());
     let lifecycle_command_output = DataId::from("lifecycle_command".to_owned());
     let lifecycle_status_query_output = DataId::from("lifecycle_status_query".to_owned());
+    let power_command_output = DataId::from("power_command".to_owned());
 
     let node_handle = Arc::new(Mutex::new(node));
-    let shared_state = SharedState::new(schedule_feedback_spool);
+    let shared_state = SharedState::new(schedule_feedback_spool, db.clone());
     let (io, layer) = setup_socketio(
         shared_state.clone(),
         node_handle.clone(),
@@ -2252,10 +2281,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node_clone_recording = node_clone_arm.clone();
     let node_clone_schedule = node_clone_arm.clone();
     let node_clone_lifecycle = node_clone_arm.clone();
+    let node_clone_power = node_clone_arm.clone();
     let state_clone_arm = shared_state.clone();
 
     let state_clone_recording = shared_state.clone();
     let state_clone_lifecycle = shared_state.clone();
+    let state_clone_power = shared_state.clone();
     let _lifecycle_processor = tokio::spawn(async move {
         loop {
             state_clone_lifecycle
@@ -2279,6 +2310,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Default::default(),
                         BinaryArray::from_vec(vec![b"{}".as_slice()]),
                     );
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+    let _power_processor = tokio::spawn(async move {
+        loop {
+            let now_ms = unix_now_ms().max(0) as u64;
+            state_clone_power.power.sweep(now_ms);
+            if let Some(command) = state_clone_power.power.next_command() {
+                if let Ok(bytes) = serde_json::to_vec(&command) {
+                    if let Ok(mut node) = node_clone_power.lock() {
+                        let _ = node.send_output(
+                            power_command_output.clone(),
+                            Default::default(),
+                            BinaryArray::from_vec(vec![bytes.as_slice()]),
+                        );
+                    }
                 }
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -3441,6 +3490,104 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             "Failed to deserialize servo telemetry: {}",
                                             e
                                         );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "power_status" | "rover_power_status" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                if let Ok(status) =
+                                    serde_json::from_slice::<PowerStatus>(binary_array.value(0))
+                                {
+                                    if state_for_video.power.cache_status(status.clone()) {
+                                        if let Some(namespace) = io_for_video
+                                            .lock()
+                                            .ok()
+                                            .and_then(|io| io.clone())
+                                            .and_then(|io| io.of("/"))
+                                        {
+                                            emit_authenticated(
+                                                namespace,
+                                                &state_for_video.session_registry,
+                                                "power_status",
+                                                serde_json::to_value(status).unwrap_or(Value::Null),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "power_transition" | "rover_power_transition" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                if let Ok(transition) =
+                                    serde_json::from_slice::<PowerTransition>(binary_array.value(0))
+                                {
+                                    if transition.validate().is_ok() {
+                                        if let Some(namespace) = io_for_video
+                                            .lock()
+                                            .ok()
+                                            .and_then(|io| io.clone())
+                                            .and_then(|io| io.of("/"))
+                                        {
+                                            emit_authenticated(
+                                                namespace,
+                                                &state_for_video.session_registry,
+                                                "power_transition",
+                                                serde_json::to_value(transition)
+                                                    .unwrap_or(Value::Null),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "power_authority_snapshot" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                if let Ok(snapshot) = serde_json::from_slice::<PowerAuthoritySnapshot>(
+                                    binary_array.value(0),
+                                ) {
+                                    state_for_video
+                                        .power
+                                        .observe_snapshot(snapshot, unix_now_ms().max(0) as u64);
+                                }
+                            }
+                        }
+                    }
+                    "power_command_result" | "rover_power_command_result" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                if let Ok(result) = serde_json::from_slice::<PowerCommandResult>(
+                                    binary_array.value(0),
+                                ) {
+                                    if result.validate().is_ok() {
+                                        if let Some((socket_id, event, payload)) =
+                                            power_socket::handle_result(
+                                                &state_for_video.power,
+                                                &result,
+                                                unix_now_ms().max(0) as u64,
+                                            )
+                                        {
+                                            if let Some(namespace) = io_for_video
+                                                .lock()
+                                                .ok()
+                                                .and_then(|io| io.clone())
+                                                .and_then(|io| io.of("/"))
+                                            {
+                                                if let Some(socket) = socket_id
+                                                    .parse()
+                                                    .ok()
+                                                    .and_then(|id| namespace.get_socket(id))
+                                                {
+                                                    socket.emit(event, payload).ok();
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }

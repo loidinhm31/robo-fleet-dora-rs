@@ -112,6 +112,10 @@ impl CommandRateLimiter {
         Self::from_env("RATE_LIMIT_TTS_CONFIG_PER_SECOND", 4)
     }
 
+    pub fn new_power() -> Self {
+        Self::from_env("RATE_LIMIT_POWER_PER_SECOND", 4)
+    }
+
     fn from_env(env_key: &str, default: u32) -> Self {
         let max_commands = env::var(env_key)
             .ok()

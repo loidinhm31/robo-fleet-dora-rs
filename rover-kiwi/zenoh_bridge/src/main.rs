@@ -11,7 +11,7 @@ use robo_rover_lib::{
     AudioFrameMetadata, AudioFrameSequenceTracker, FrameSequenceTracker, JpegFramePacket,
     LifecycleCommand, LifecycleCommandResult, LifecycleRole, LifecycleStatus, LifecycleWakeLease,
     MetricWindow, PcmFramePacket, PcmSampleFormat, PowerAuthoritySnapshot, PowerCommandResult,
-    PowerStatus, PowerTopic, ProtectedWorkRelayBody, ProtectedWorkRelayEnvelope,
+    PowerStatus, PowerTopic, PowerTransition, ProtectedWorkRelayBody, ProtectedWorkRelayEnvelope,
     ProtectedWorkSnapshotRequest, RecordingOccurrence, SignedPowerCommand, SignedPowerEnvelope,
     SignedPowerEnvelopeKind, SignedPowerJournalAcknowledgement, VideoFrameMetadata,
     PROTECTED_WORK_REQUEST_TTL_MS,
@@ -200,6 +200,17 @@ async fn main() -> Result<()> {
         .declare_publisher(&power_status_topic)
         .await
         .map_err(|e| eyre::eyre!("Failed to declare publisher {}: {}", power_status_topic, e))?;
+    let power_transition_topic = power_v1_topic(&entity_id, PowerTopic::Transition);
+    let power_transition_pub = session
+        .declare_publisher(&power_transition_topic)
+        .await
+        .map_err(|e| {
+            eyre::eyre!(
+                "Failed to declare publisher {}: {}",
+                power_transition_topic,
+                e
+            )
+        })?;
     let power_command_result_topic = power_v1_topic(&entity_id, PowerTopic::CommandResult);
     let power_command_result_pub = session
         .declare_publisher(&power_command_result_topic)
@@ -743,6 +754,23 @@ async fn main() -> Result<()> {
                                                     .is_ok_and(|status| status.validates_for(LifecycleRole::Rover, &entity_id).is_ok())
                                                 {
                                                     let _ = power_status_pub.put(bytes).await;
+                                                }
+                                            }
+                                            "power_transition" => {
+                                                if serde_json::from_slice::<PowerTransition>(bytes)
+                                                    .is_ok_and(|transition| transition.validates_for(LifecycleRole::Rover, &entity_id).is_ok())
+                                                {
+                                                    let now_ms = current_time_ms().unwrap_or_default();
+                                                    match SignedPowerEnvelope::new(
+                                                        SignedPowerEnvelopeKind::Transition,
+                                                        LifecycleRole::Rover,
+                                                        entity_id.clone(),
+                                                        now_ms,
+                                                        serde_json::from_slice::<PowerTransition>(bytes)?,
+                                                    ).sign(&power_command_key) {
+                                                        Ok(transition) => { let _ = power_transition_pub.put(serde_json::to_vec(&transition)?).await; }
+                                                        Err(error) => tracing::warn!(%error, "failed to sign rover power transition"),
+                                                    }
                                                 }
                                             }
                                             "power_command_result" => {

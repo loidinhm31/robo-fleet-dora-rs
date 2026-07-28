@@ -1,6 +1,7 @@
 use super::{
     validation::{validate_id, validate_uuid},
-    PowerAuthoritySnapshot, PowerCommand, PowerCommandResult, POWER_PROTOCOL_VERSION,
+    PowerAuthoritySnapshot, PowerCommand, PowerCommandResult, PowerTransition,
+    POWER_PROTOCOL_VERSION,
 };
 use crate::types::lifecycle_types::LifecycleRole;
 use hmac::{Hmac, Mac};
@@ -22,6 +23,7 @@ pub enum SignedPowerEnvelopeKind {
     Command,
     CommandResult,
     Snapshot,
+    Transition,
     JournalAcknowledgement,
 }
 
@@ -135,6 +137,7 @@ impl<T: Serialize> SignedPowerEnvelope<T> {
 pub type SignedPowerCommand = SignedPowerEnvelope<PowerCommand>;
 pub type SignedPowerCommandResult = SignedPowerEnvelope<PowerCommandResult>;
 pub type SignedPowerSnapshot = SignedPowerEnvelope<PowerAuthoritySnapshot>;
+pub type SignedPowerTransition = SignedPowerEnvelope<PowerTransition>;
 pub type SignedPowerJournalAcknowledgement = SignedPowerEnvelope<PowerJournalAcknowledgement>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

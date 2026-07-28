@@ -153,6 +153,9 @@ nodes:
       local_power_command:
         source: voice-wake/power_command
         queue_size: 4
+      web_power_command:
+        source: web-bridge/power_command
+        queue_size: 4
       power_event_ack: power-event-projector/power_event_ack
       tick: dora/timer/millis/1000
     outputs:
@@ -362,6 +365,10 @@ nodes:
         source: lifecycle-manager/lifecycle_status
         queue_size: 64
       lifecycle_capabilities: lifecycle-manager/lifecycle_capabilities
+      power_status: power-coordinator/power_status
+      power_transition: power-coordinator/power_transition
+      power_command_result: power-coordinator/power_command_result
+      power_authority_snapshot: power-coordinator/power_snapshot
       voice_status:
         source: edge-voice/voice_status
         queue_size: 8
@@ -381,6 +388,7 @@ nodes:
       - voice_command_audio
       - lifecycle_command
       - lifecycle_status_query
+      - power_command
     env:
       RUST_LOG: info
       BIND_ADDRESS: "0.0.0.0"
@@ -396,6 +404,7 @@ nodes:
       FLEET_ROSTER: "rover-kiwi"
       RATE_LIMIT_AUTH_PER_MINUTE: "5"
       RATE_LIMIT_COMMANDS_PER_SECOND: "100"
+      RATE_LIMIT_POWER_PER_SECOND: "4"
       RATE_LIMIT_TTS_CONFIG_PER_SECOND: "4"
       MAX_TTS_TEXT_LENGTH: "1000"
       MAX_AUDIO_SAMPLES_PER_MESSAGE: "16000"

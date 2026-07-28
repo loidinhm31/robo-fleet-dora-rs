@@ -13,8 +13,8 @@ use robo_rover_lib::{
     PcmFramePacket, PcmSampleFormat, PowerAuthoritySnapshot, PowerCommand, PowerStatus, PowerTopic,
     ProtectedWorkRelayBody, ProtectedWorkRelayEnvelope, ProtectedWorkSnapshot,
     ProtectedWorkSnapshotRequest, RecordingOccurrence, SignedPowerCommandResult,
-    SignedPowerEnvelope, SignedPowerEnvelopeKind, SignedPowerSnapshot, StreamCommand,
-    StreamControl, TargetedMediaControl, PROTECTED_WORK_RELAY_TTL_MS,
+    SignedPowerEnvelope, SignedPowerEnvelopeKind, SignedPowerSnapshot, SignedPowerTransition,
+    StreamCommand, StreamControl, TargetedMediaControl, PROTECTED_WORK_RELAY_TTL_MS,
 };
 use serde_json;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -57,6 +57,7 @@ struct RoverSubscriptions {
     lifecycle_result_sub: ZenohSubscriber,
     lifecycle_capabilities_sub: ZenohSubscriber,
     power_status_sub: ZenohSubscriber,
+    power_transition_sub: ZenohSubscriber,
     power_command_result_sub: ZenohSubscriber,
     power_snapshot_sub: ZenohSubscriber,
     power_event_sub: ZenohSubscriber,
@@ -191,6 +192,11 @@ async fn subscribe_to_rover(
         .declare_subscriber(&power_status_topic)
         .await
         .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", power_status_topic, e))?;
+    let power_transition_topic = power_v1_topic(entity_id, PowerTopic::Transition);
+    let power_transition_sub = session
+        .declare_subscriber(&power_transition_topic)
+        .await
+        .map_err(|e| eyre::eyre!("Failed to subscribe to {}: {}", power_transition_topic, e))?;
     let power_command_result_topic = power_v1_topic(entity_id, PowerTopic::CommandResult);
     let power_command_result_sub = session
         .declare_subscriber(&power_command_result_topic)
@@ -248,6 +254,7 @@ async fn subscribe_to_rover(
         lifecycle_result_sub,
         lifecycle_capabilities_sub,
         power_status_sub,
+        power_transition_sub,
         power_command_result_sub,
         power_snapshot_sub,
         power_event_sub,
@@ -536,6 +543,7 @@ async fn main() -> Result<()> {
     let lifecycle_result_output = DataId::from("lifecycle_command_result".to_owned());
     let lifecycle_capabilities_output = DataId::from("lifecycle_capabilities".to_owned());
     let power_status_output = DataId::from("power_status".to_owned());
+    let power_transition_output = DataId::from("power_transition".to_owned());
     let power_command_result_output = DataId::from("power_command_result".to_owned());
     let power_authority_snapshot_output = DataId::from("power_authority_snapshot".to_owned());
     let power_journal_record_output = DataId::from("power_journal_record".to_owned());
@@ -1316,6 +1324,23 @@ async fn main() -> Result<()> {
                         .is_ok_and(|status| status.validates_for(LifecycleRole::Rover, &entity_id).is_ok())
                     {
                         forward_binary_output(&mut node, &power_status_output, sample);
+                    }
+                }
+            }
+
+            result = receive_from_rovers(&active_rovers, |subs| &subs.power_transition_sub) => {
+                if let Some((entity_id, sample)) = result {
+                    let payload = sample.payload().to_bytes();
+                    let Some(key) = power_command_keys.get(&entity_id) else { continue; };
+                    let now_ms = current_time_ms().unwrap_or(u64::MAX);
+                    if let Ok(envelope) = serde_json::from_slice::<SignedPowerTransition>(&payload) {
+                        if envelope.verify(key, now_ms).is_ok()
+                            && envelope.validates_for(SignedPowerEnvelopeKind::Transition, LifecycleRole::Rover, &entity_id).is_ok()
+                            && envelope.payload.validates_for(LifecycleRole::Rover, &entity_id).is_ok()
+                        {
+                            let transition = serde_json::to_vec(&envelope.payload)?;
+                            node.send_output(power_transition_output.clone(), Default::default(), BinaryArray::from_vec(vec![transition.as_slice()]))?;
+                        }
                     }
                 }
             }

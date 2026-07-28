@@ -15,6 +15,10 @@ fn power_v1_topics_are_entity_scoped_and_versioned() {
         "rover/rover-kiwi/power/v1/snapshot"
     );
     assert_eq!(
+        power_v1_topic("rover-kiwi", PowerTopic::Transition),
+        "rover/rover-kiwi/power/v1/transition"
+    );
+    assert_eq!(
         power_v1_topic("rover-kiwi", PowerTopic::SnapshotRequest),
         "rover/rover-kiwi/power/v1/snapshot-request"
     );

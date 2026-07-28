@@ -503,6 +503,61 @@ failed attempts publish degraded health and do not acknowledge the journal
 record until Mongo persistence succeeds. Rover record/ack transport remains
 Phase 04 work, and the Mongo-backed test remains opt-in when its URI is unset.
 
+## Authenticated browser power API (Phase 07)
+
+The web bridge exposes power controls as Socket.IO events on the authenticated
+session. The browser sends a versioned, canonical-UUID request; it does not
+choose the target rover or actor. The bridge derives the target from the
+server-side selected active rover, checks the session and the dedicated power
+command rate limiter, and rejects invalid, stale, duplicate, cross-entity, or
+over-capacity requests before queueing them.
+
+| Event | Request | Result/updates |
+|---|---|---|
+| `power_policy` | `{ protocol_version, request_id, policy }` | `power_command_result` with the coordinator command result and matching `request_id` |
+| `power_wake` | `{ protocol_version, request_id }` | `power_wake_result`; accepted wake changes `Sleep` to `Auto` and owns a bounded two-minute UI demand |
+| `power_history` | `{ protocol_version, request_id, cursor?, limit?, from_ms?, to_ms?, event_type?, reason_code? }` | `power_history_result`; the bridge also emits the current live `power_status` when available |
+| coordinator updates | — | authenticated `power_status` and validated `power_transition` broadcasts |
+
+Wake ownership is released on expiry, disconnect, selected-target change, or
+server cleanup. Admission or command acceptance is not readiness: the UI must
+wait for a live status/transition before showing an effective profile as
+applied. An expired session receives `auth_error` and is disconnected.
+
+History is a bounded, read-only view. `power_lifecycle_events` and
+`power_current_state` are queried for the selected entity within the 90-day
+window (default 50, maximum 100 events) with a time/event cursor. The returned
+`historical_status` is explicitly cold projection data. A live coordinator
+`power_status` and its `(epoch, sequence)` always outrank historical data;
+historical or delayed Mongo results must never overwrite newer live state.
+
+## Signed transition relay and direct mode
+
+Rover transitions are not trusted merely because they arrived over Zenoh. The
+Rover Zenoh bridge validates the `PowerTransition`, wraps it in a
+`SignedPowerEnvelope` of kind `Transition`, and signs it with the configured
+per-Rover command key. The Orchestra bridge accepts only a fresh envelope whose
+kind, protocol version, sender role (`Rover`), target entity, and HMAC validate;
+it then forwards the raw validated transition to the web bridge. The web bridge
+performs schema validation and emits it only to authenticated sockets. Envelope
+kinds are not interchangeable with commands, snapshots, or acknowledgements.
+
+In `ROVER_MODE=direct`, the local web bridge routes the same Socket.IO contract
+straight to the Rover power coordinator. Zenoh and the Orchestra bridge are
+omitted, but session authentication, server-side target pinning, rate limits,
+bounded queues, live-over-history ordering, and transition validation remain
+required. Direct mode is therefore a local/dev routing choice, not a way to
+bypass the browser API security boundary.
+
+### Phase 07 verification boundary
+
+The repository contains backend contract and queue tests, but a complete Phase
+07 acceptance requires the external browser/Tauri UI, reconnect and disconnect
+flows, distributed Zenoh signature rejection, and target-hardware timing. Those
+browser, distributed, and hardware gates are not established by the backend
+unit tests alone; do not treat a `power_command_result` or a Mongo history
+response as proof that the rover is ready or awake.
+
 ## Invariants
 
 - Policy, requested profile, and effective profile are distinct.
