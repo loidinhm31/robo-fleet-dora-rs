@@ -419,6 +419,12 @@ install_cache_archive_asset() {
             archive_sha="$SUPERTONIC_TTS_ARCHIVE_SHA256"
             target_dir="$target_root/${SUPERTONIC_TTS_PATH}"
             ;;
+        kws-hey-kiwi)
+            url="$KWS_URL"
+            archive_name="$KWS_ARCHIVE"
+            archive_sha="$KWS_ARCHIVE_SHA256"
+            target_dir="$target_root/${KWS_PATH}"
+            ;;
         *)
             fail "unsupported archive asset '$asset_id'"
             ;;
@@ -484,6 +490,7 @@ ensure_cache_assets() {
     install_cache_archive_asset sherpa-asr-en "$target_root"
     install_cache_archive_asset sherpa-asr-vi "$target_root"
     install_cache_archive_asset supertonic-tts "$target_root"
+    install_cache_archive_asset kws-hey-kiwi "$target_root"
     ensure_yolo_asset "$target_root"
     ensure_osnet_asset "$target_root"
 }

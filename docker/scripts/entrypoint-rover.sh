@@ -192,12 +192,25 @@ else
     echo "✓ Supertonic TTS model found"
 fi
 
+KWS_DIR="${KWS_MODEL_DIR:-/models/sherpa-onnx/kws/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01}"
+if [ ! -f "$KWS_DIR/encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx" ] || \
+   [ ! -f "$KWS_DIR/decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx" ] || \
+   [ ! -f "$KWS_DIR/joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx" ] || \
+   [ ! -f "$KWS_DIR/tokens.txt" ] || \
+   [ ! -f "$KWS_DIR/bpe.model" ]; then
+    echo "ERROR: KWS model incomplete at $KWS_DIR"
+    MODELS_OK=false
+else
+    echo "✓ KWS model found"
+fi
+
 if [ "$MODELS_OK" = false ]; then
     echo ""
     echo "Please ensure the models are downloaded and mounted correctly:"
     echo "  - Host: ./models/.cache/yolo/yolo12n.onnx"
     echo "  - Host: ./models/.cache/reid/osnet_x0_25.onnx"
     echo "  - Host: ${EDGE_VOICE_MODEL_DIR:-./models/.cache/sherpa-onnx/tts/sherpa-onnx-supertonic-3-tts-int8-2026-05-11/}"
+    echo "  - Host: ${KWS_MODEL_DIR:-./models/.cache/sherpa-onnx/kws/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/}"
     echo ""
     echo "To download and export models, run:"
     echo "  make models"
@@ -250,6 +263,8 @@ sed -i 's|MODEL_PATH: "${ROVER_YOLO_MODEL_PATH:-models/.cache/yolo/yolo12n.onnx}
 sed -i 's|REID_MODEL_PATH: "${ROVER_REID_MODEL_PATH:-models/.cache/reid/osnet_x0_25.onnx}"|REID_MODEL_PATH: "/models/reid/osnet_x0_25.onnx"|g' "$DATAFLOW_TMP"
 escaped_supertonic_dir="$(printf '%s\n' "$SUPERTONIC_DIR" | sed 's/[&\\]/\\&/g')"
 sed -i "s|EDGE_VOICE_MODEL_DIR: \"\${EDGE_VOICE_MODEL_DIR:-models/.cache/sherpa-onnx/tts/sherpa-onnx-supertonic-3-tts-int8-2026-05-11}\"|EDGE_VOICE_MODEL_DIR: \"$escaped_supertonic_dir\"|g" "$DATAFLOW_TMP"
+escaped_kws_dir="$(printf '%s\n' "$KWS_DIR" | sed 's/[&\\]/\\&/g')"
+sed -i "s|KWS_MODEL_DIR: \"\${KWS_MODEL_DIR:-models/.cache/sherpa-onnx/kws/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01}\"|KWS_MODEL_DIR: \"$escaped_kws_dir\"|g" "$DATAFLOW_TMP"
 
 if [ -n "${AUDIO_DEVICE:-}" ]; then
     escaped_audio_device="$(printf '%s\n' "$AUDIO_DEVICE" | sed 's/[&\\]/\\&/g')"

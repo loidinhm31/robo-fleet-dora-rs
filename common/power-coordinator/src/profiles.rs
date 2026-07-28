@@ -58,7 +58,7 @@ impl ProfileCatalog {
                     (PowerProfileKey::Dormant, vec![]),
                     (
                         PowerProfileKey::IdleListening,
-                        vec!["audio-capture", "edge-voice"],
+                        vec!["audio-capture", "voice-wake"],
                     ),
                     (
                         PowerProfileKey::ScheduledCapture,
@@ -68,6 +68,7 @@ impl ProfileCatalog {
                         PowerProfileKey::NormalRover,
                         vec![
                             "audio-capture",
+                            "voice-wake",
                             "edge-voice",
                             "gst-camera",
                             "audio-playback",
@@ -75,6 +76,7 @@ impl ProfileCatalog {
                     ),
                 ]),
                 vec![
+                    ("audio-capture", "voice-wake"),
                     ("audio-capture", "edge-voice"),
                     ("audio-capture", "audio-playback"),
                 ],
@@ -204,6 +206,16 @@ mod tests {
             .targets(PowerProfile::NormalRover)
             .contains(&"rover-controller"));
     }
+
+    #[test]
+    fn idle_listening_keeps_only_capture_and_kws_workloads() {
+        let catalog = ProfileCatalog::for_role(LifecycleRole::Rover).unwrap();
+        assert_eq!(
+            catalog.targets(PowerProfile::IdleListening),
+            ["audio-capture", "voice-wake"]
+        );
+    }
+
     #[test]
     fn sleep_closes_dependents_before_prerequisites() {
         let catalog = ProfileCatalog::for_role(LifecycleRole::Rover).unwrap();

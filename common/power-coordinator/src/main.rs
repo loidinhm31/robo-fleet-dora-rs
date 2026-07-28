@@ -53,7 +53,9 @@ fn main() -> Result<()> {
                     }
                 }
             }
-            Event::Input { id, data, .. } if id.as_str() == "power_command" => {
+            Event::Input { id, data, .. }
+                if matches!(id.as_str(), "power_command" | "local_power_command") =>
+            {
                 if let Some(bytes) = binary(&data) {
                     if let Ok(command) = serde_json::from_slice::<PowerCommand>(bytes) {
                         if config.role == robo_rover_lib::LifecycleRole::Orchestra

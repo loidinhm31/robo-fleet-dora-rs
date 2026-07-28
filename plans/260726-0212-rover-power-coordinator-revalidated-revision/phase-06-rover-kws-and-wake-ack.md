@@ -8,7 +8,7 @@
 
 ## Overview
 
-- Date: 2026-07-26; priority: P1; implementation/review: Pending.
+- Date: 2026-07-26; priority: P1; implementation accepted 2026-07-28; manual target acceptance is tracked separately in [Phase 09](./phase-09-manual-rover-kws-and-wakeack-acceptance.md).
 - Add one low-cost local KWS worker for `Hey Kiwi` and one output-only bundled `I am on` acknowledgement after readiness.
 
 ## Key Insights
@@ -27,9 +27,42 @@
 
 `audio_capture -> voice-wake -> Rover coordinator demand -> lifecycle/profile Ready -> WakeAck trigger -> audio_playback`. No voice-wake edge connects to command parser, controller, tracking, recorder, or media command ports.
 
+## Delivered implementation
+
+- Added the `voice_wake` Dora node. It uses one Sherpa-ONNX Zipformer KWS
+  worker/thread and consumes the `audio_capture` `kws_audio` branch; it never
+  opens a second microphone or emits transcript/actuator/media/recording data.
+- The compiled BPE keyword contract is `Hey Kiwi`; detections are reset after
+  every decoded result and debounced for 10 seconds. Each accepted wake emits
+  one deterministic UUID-v5 `PowerDemandSource::Kws` demand for
+  `NormalRover`, with a five-minute TTL and a 60-second command TTL.
+- `IdleListening` keeps the shared capture device alive while browser audio is
+  stopped; playback suppression and the existing 400 ms tail gate both audio
+  branches, preventing WakeAck self-triggering. `Dormant` quiesces the node.
+- Added the output-only `PlaybackSource::WakeAck` path. The bundled
+  `i-am-on.pcm` asset is f32 mono at 44.1 kHz, resampled by the playback
+  arbiter, and emitted once only when the accepted demand reaches Active /
+  `NormalRover` and playback reports Idle.
+- Split and direct Rover dataflows, Docker packaging, and model setup now wire
+  the node and checksum-pinned model bundle.
+
+## Validation performed
+
+`cargo test -p voice_wake` passes (7 tests), covering model-token contract,
+silence rejection, debounce, bounded demand, one-shot readiness gating, and
+PCM asset validity. Audio capture and playback unit tests also include KWS
+branch, suppression/tail, WakeAck source, bounded-buffer, and resampler cases.
+
+## Deferred manual acceptance
+
+The user-operated physical-Rover checks are intentionally deferred to
+[Phase 09](./phase-09-manual-rover-kws-and-wakeack-acceptance.md). The amd64
+workstation/Docker path proves packaging and topology, not ARM acoustic or
+performance acceptance.
+
 ## Related code files
 
-- Create `/mnt/data/ws/sharing/robo-fleet-dora-rs/rover-kiwi/voice-wake/{Cargo.toml,src/main.rs,src/config.rs,src/kws.rs,src/debounce.rs,src/wake-ack.rs,assets/i-am-on.pcm}`.
+- Implemented `/mnt/data/ws/sharing/robo-fleet-dora-rs/rover-kiwi/voice-wake/{Cargo.toml,src/main.rs,src/config.rs,src/controller.rs,src/kws.rs,src/debounce.rs,src/wake_ack.rs,assets/i-am-on.pcm}`.
 - Modify `/mnt/data/ws/sharing/robo-fleet-dora-rs/rover-kiwi/audio_capture/src/{main.rs,capture_gate.rs}` and `/mnt/data/ws/sharing/robo-fleet-dora-rs/rover-kiwi/audio_playback/src/{protocol.rs,state.rs,arbiter.rs,runtime.rs}`.
 - Modify `/mnt/data/ws/sharing/robo-fleet-dora-rs/models/scripts/{model-manifest.sh,setup-models.sh}`, `models/README.md`, Rover dataflows, Dockerfile, and workspace Cargo manifest.
 
@@ -44,9 +77,9 @@
 
 ## Todo list
 
-- [ ] Pin model/checksum and phrase contract.
-- [ ] Add voice-wake node and bounded demand.
-- [ ] Add WakeAck playback path/suppression tests.
+- [x] Pin model/checksum and phrase contract.
+- [x] Add voice-wake node and bounded demand.
+- [x] Add WakeAck playback path/suppression tests.
 - [ ] Benchmark target hardware/noise.
 
 ## Success Criteria

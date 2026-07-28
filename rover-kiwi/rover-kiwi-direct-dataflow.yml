@@ -18,6 +18,7 @@ nodes:
         queue_size: 2
     outputs:
       - audio  # Float32 audio data
+      - kws_audio # Local-only capture branch; never leaves the Rover
       - lifecycle_component_status
     env:
       SAMPLE_RATE: "16000"
@@ -41,6 +42,9 @@ nodes:
       tts_synthesis_state:
         source: edge-voice/tts_synthesis_state
         queue_size: 8
+      wake_ack_audio:
+        source: voice-wake/wake_ack_audio
+        queue_size: 2
       lifecycle_command:
         source: lifecycle-manager/lifecycle_authorized_command
         queue_size: 2
@@ -94,6 +98,34 @@ nodes:
       TTS_DEFAULT_STEPS: "8"
       TTS_DEFAULT_VOLUME: "0.8"
 
+  - id: voice-wake
+    build: cargo build --release -p voice_wake
+    path: ../target/release/voice_wake
+    inputs:
+      audio_frame:
+        source: audio-capture/kws_audio
+        queue_size: 4
+      power_status:
+        source: power-coordinator/power_status
+        queue_size: 8
+      power_command_result:
+        source: power-coordinator/power_command_result
+        queue_size: 8
+      playback_state:
+        source: audio-playback/playback_state
+        queue_size: 8
+      lifecycle_command:
+        source: lifecycle-manager/lifecycle_authorized_command
+        queue_size: 2
+    outputs:
+      - power_command
+      - wake_ack_audio
+      - lifecycle_component_status
+    env:
+      RUST_LOG: info
+      ENTITY_ID: "rover-kiwi"
+      KWS_MODEL_DIR: "${KWS_MODEL_DIR:-models/.cache/sherpa-onnx/kws/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01}"
+
   # Resource monitor stays active while workload nodes pause.
   - id: resource-monitor
     build: cargo build --release -p resource_monitor
@@ -107,7 +139,7 @@ nodes:
       ENTITY_ID: "rover-kiwi"
       RESOURCE_MONITOR_ROLE: "rover"
       RESOURCE_MONITOR_SCOPE: "${RESOURCE_MONITOR_SCOPE:-}"
-      RESOURCE_MONITOR_NODES: '[{"node_id":"audio-capture","executable":"audio_capture","domain_id":"audio-capture"},{"node_id":"audio-converter","executable":"audio_converter"},{"node_id":"edge-voice","executable":"edge_voice","domain_id":"edge-voice"},{"node_id":"audio-playback","executable":"audio_playback","domain_id":"audio-playback"},{"node_id":"gst-camera","executable":"kornia_capture","domain_id":"gst-camera"},{"node_id":"video-encoder","executable":"video_encoder"},{"node_id":"visual-servo-controller","executable":"visual_servo_controller"},{"node_id":"arm-controller","executable":"arm_controller"},{"node_id":"rover-controller","executable":"rover_controller"},{"node_id":"web-bridge","executable":"web_bridge"}]'
+      RESOURCE_MONITOR_NODES: '[{"node_id":"audio-capture","executable":"audio_capture","domain_id":"audio-capture"},{"node_id":"voice-wake","executable":"voice_wake","domain_id":"voice-wake"},{"node_id":"audio-converter","executable":"audio_converter"},{"node_id":"edge-voice","executable":"edge_voice","domain_id":"edge-voice"},{"node_id":"audio-playback","executable":"audio_playback","domain_id":"audio-playback"},{"node_id":"gst-camera","executable":"kornia_capture","domain_id":"gst-camera"},{"node_id":"video-encoder","executable":"video_encoder"},{"node_id":"visual-servo-controller","executable":"visual_servo_controller"},{"node_id":"arm-controller","executable":"arm_controller"},{"node_id":"rover-controller","executable":"rover_controller"},{"node_id":"web-bridge","executable":"web_bridge"}]'
 
   - id: power-coordinator
     build: cargo build --release -p power_coordinator
@@ -118,6 +150,9 @@ nodes:
         source: lifecycle-manager/lifecycle_status
         queue_size: 64
       lifecycle_command_result: lifecycle-manager/lifecycle_command_result
+      local_power_command:
+        source: voice-wake/power_command
+        queue_size: 4
       power_event_ack: power-event-projector/power_event_ack
       tick: dora/timer/millis/1000
     outputs:
@@ -166,6 +201,7 @@ nodes:
       lifecycle_status_query: web-bridge/lifecycle_status_query
       lifecycle_component_status_camera: gst-camera/lifecycle_component_status
       lifecycle_component_status_audio: audio-capture/lifecycle_component_status
+      lifecycle_component_status_voice_wake: voice-wake/lifecycle_component_status
       lifecycle_component_status_edge_voice: edge-voice/lifecycle_component_status
       lifecycle_component_status_audio_playback: audio-playback/lifecycle_component_status
       tick: dora/timer/millis/1000
@@ -176,7 +212,7 @@ nodes:
       - lifecycle_authorized_command
     env:
       RUST_LOG: info
-      LIFECYCLE_CAPABILITIES: '[{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"gst-camera"},"supported":true,"always_on":false},{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"audio-capture"},"supported":true,"always_on":false},{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"edge-voice"},"supported":true,"always_on":false},{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"audio-playback"},"supported":true,"always_on":false},{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"web-bridge"},"supported":false,"always_on":true}]'
+      LIFECYCLE_CAPABILITIES: '[{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"gst-camera"},"supported":true,"always_on":false},{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"audio-capture"},"supported":true,"always_on":false},{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"voice-wake"},"supported":true,"always_on":false},{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"edge-voice"},"supported":true,"always_on":false},{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"audio-playback"},"supported":true,"always_on":false},{"target":{"role":"rover","entity_id":"${ENTITY_ID:-rover-kiwi}","node_id":"web-bridge"},"supported":false,"always_on":true}]'
 
   # GStreamer camera capture + consolidated vision pipeline
   - id: gst-camera

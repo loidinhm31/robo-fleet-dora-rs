@@ -7775,6 +7775,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "voice_wake"
+version = "0.1.0"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+ "robo_rover_lib",
+ "serde",
+ "serde_json",
+ "sherpa-onnx",
+ "uuid",
+]
+
+[[package]]
 name = "vswhom"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

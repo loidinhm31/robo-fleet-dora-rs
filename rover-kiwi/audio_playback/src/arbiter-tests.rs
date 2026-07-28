@@ -1,5 +1,5 @@
 use crate::arbiter::SourceArbiter;
-use crate::buffers::{PlaybackBuffers, SOURCE_IDLE, SOURCE_TTS};
+use crate::buffers::{PlaybackBuffers, SOURCE_IDLE, SOURCE_TTS, SOURCE_WAKE_ACK, SOURCE_WALKIE};
 use crate::playback_event::ArbiterEvent;
 use crate::protocol::AudioSource;
 use crate::protocol::SourceFrame;
@@ -71,6 +71,36 @@ fn walkie_preempts_tts_and_rejects_new_tts_until_deadline() {
             )
             .unwrap(),
         Some(ArbiterEvent::TtsRejectedWhileWalkie)
+    );
+}
+
+#[test]
+fn walkie_defers_a_queued_wake_ack_without_dropping_it() {
+    let buffers = Arc::new(PlaybackBuffers::new(256, 256));
+    let mut arbiter = SourceArbiter::new(48_000, buffers.clone(), Duration::from_millis(60));
+    let now = Instant::now();
+    arbiter
+        .accept(frame(AudioSource::WakeAck, None, vec![0.2; 16]), now)
+        .unwrap();
+    assert!(buffers.wake_ack_is_active());
+
+    arbiter
+        .accept(frame(AudioSource::Walkie, None, vec![0.7; 16]), now)
+        .unwrap();
+    assert!(buffers.wake_ack_is_active());
+    assert_eq!(
+        buffers.pop_for_output().map(|(source, _)| source),
+        Some(SOURCE_WALKIE)
+    );
+
+    while buffers.pop_for_output().is_some() {}
+    assert_eq!(
+        arbiter.tick(now + Duration::from_millis(251)),
+        Some(ArbiterEvent::WalkieEnded)
+    );
+    assert_eq!(
+        buffers.pop_for_output().map(|(source, _)| source),
+        Some(SOURCE_WAKE_ACK)
     );
 }
 

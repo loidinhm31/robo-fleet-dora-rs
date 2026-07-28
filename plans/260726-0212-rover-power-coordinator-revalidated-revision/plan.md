@@ -33,9 +33,10 @@ Implement the power coordinator specified in [the revalidated architecture](../.
 | 3 | [Local journal and Mongo projection](./phase-03-local-journal-and-mongo-projection.md) | Done — accepted 2026-07-27 | 100% accepted | 34h | 1–2 |
 | 4 | [Zenoh authority and direct-mode routing](./phase-04-zenoh-authority-and-direct-routing.md) | Done — accepted 2026-07-27 | 100% accepted | 34h | 1–3 |
 | 5 | [Scheduler reservations and bounded prewarm](./phase-05-scheduler-reservations-and-bounded-prewarm.md) | Done — accepted 2026-07-27 | 100% accepted | 34h | 1–4 |
-| 6 | [Rover KWS and WakeAck](./phase-06-rover-kws-and-wake-ack.md) | Pending | 0% | 30h | 1–4 |
+| 6 | [Rover KWS and WakeAck](./phase-06-rover-kws-and-wake-ack.md) | Done — implementation accepted 2026-07-28 | 100% implementation | 30h | 1–4 |
 | 7 | [Authenticated power API and UI](./phase-07-authenticated-power-api-and-ui.md) | Pending | 0% | 28h | 1–5 |
 | 8 | [Fault gates, target evidence, rollout](./phase-08-fault-gates-target-evidence-and-rollout.md) | Pending | 0% | 22h | 1–7 |
+| 9 | [Manual Rover KWS and WakeAck acceptance](./phase-09-manual-rover-kws-and-wakeack-acceptance.md) | Pending — user-operated | 0% | 4h | 6 |
 
 Progress is revalidated acceptance progress, not estimated code volume. Existing
 code is retained as a partial implementation baseline, but no carried phase is
@@ -91,7 +92,8 @@ inventory statements.
 
 ## Unresolved questions
 
-- Pin a checksum-verified KWS model and target-hardware false-accept/false-reject limits for `Hey Kiwi`.
+- Complete the user-operated KWS/WakeAck acceptance checklist in Phase 09 and
+  record the resulting target-hardware acoustic/latency evidence.
 - Derive CPU thresholds, sample count, minimum awake hold, journal capacity, and snapshot staleness from Phase 8 evidence.
 - Freeze the allowlist of recorder/storage reason codes that qualifies for bounded retry.
 - Decide the valid Orchestra low-power profile/mapping for explicit Sleep.

@@ -27,6 +27,7 @@ members = [
     "rover-kiwi/audio_capture",
     "rover-kiwi/audio_converter",
     "rover-kiwi/audio_playback",
+    "rover-kiwi/voice-wake",
     "rover-kiwi/visual_servo_controller",
     "rover-kiwi/edge_voice",
     "common/resource_monitor",

@@ -7,7 +7,7 @@ use dora_node_api::{
 use eyre::{eyre, Result};
 use robo_rover_lib::{PlaybackSource, PlaybackState, PlaybackStateKind, VoiceReasonCode};
 
-use crate::buffers::{SOURCE_IDLE, SOURCE_TTS, SOURCE_WALKIE};
+use crate::buffers::{SOURCE_IDLE, SOURCE_TTS, SOURCE_WAKE_ACK, SOURCE_WALKIE};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ReportedState {
@@ -83,6 +83,11 @@ impl StateReporter {
             SOURCE_WALKIE => ReportedState {
                 kind: PlaybackStateKind::Active,
                 source: Some(PlaybackSource::Walkie),
+                command_id: None,
+            },
+            SOURCE_WAKE_ACK => ReportedState {
+                kind: PlaybackStateKind::Active,
+                source: Some(PlaybackSource::WakeAck),
                 command_id: None,
             },
             _ => return Err(eyre!("invalid playback callback source")),

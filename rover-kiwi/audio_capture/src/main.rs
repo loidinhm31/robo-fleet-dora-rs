@@ -66,6 +66,7 @@ fn main() -> Result<()> {
     // Initialize Dora node first — so a failed audio init never cascades to other nodes
     let (mut node, mut events) = DoraNode::init_from_env()?;
     let output_id = DataId::from("audio".to_owned());
+    let kws_output_id = DataId::from("kws_audio".to_owned());
     let lifecycle_status_output = DataId::from("lifecycle_component_status".to_owned());
 
     // Create ring buffer for audio samples (larger buffer to prevent underruns)
@@ -128,7 +129,10 @@ fn main() -> Result<()> {
                     // Keep draining captured samples while playback suppression is active.
                     // This prevents speaker audio queued during the 400 ms tail from leaking
                     // into the first frame published after capture resumes.
-                    if !capture_gate.can_publish(Instant::now()) {
+                    let now = Instant::now();
+                    let publish_audio = capture_gate.can_publish(now);
+                    let publish_kws = capture_gate.can_publish_kws(now);
+                    if !publish_audio && !publish_kws {
                         let flushed = clear_capture_buffers(&consumer, &mut audio_buffer);
                         if flushed > 0 {
                             let flushed = flushed as u64;
@@ -197,15 +201,27 @@ fn main() -> Result<()> {
                                 Parameter::Integer(i64::from(sample_count)),
                             );
 
-                            // Send to Dora
-                            let audio_array = Float32Array::from(chunk);
-                            if let Err(error) =
-                                node.send_output(output_id.clone(), metadata, audio_array)
-                            {
-                                send_errors = send_errors.saturating_add(1);
-                                capture_metrics.record_error();
-                                tracing::error!(%error, %stream_id, frame_id, "failed to send audio frame to Dora");
-                                continue;
+                            if publish_audio {
+                                let audio_array = Float32Array::from(chunk.clone());
+                                if let Err(error) = node.send_output(
+                                    output_id.clone(),
+                                    metadata.clone(),
+                                    audio_array,
+                                ) {
+                                    send_errors = send_errors.saturating_add(1);
+                                    capture_metrics.record_error();
+                                    tracing::error!(%error, %stream_id, frame_id, "failed to send audio frame to Dora");
+                                }
+                            }
+                            if publish_kws {
+                                let kws_array = Float32Array::from(chunk);
+                                if let Err(error) =
+                                    node.send_output(kws_output_id.clone(), metadata, kws_array)
+                                {
+                                    send_errors = send_errors.saturating_add(1);
+                                    capture_metrics.record_error();
+                                    tracing::error!(%error, %stream_id, frame_id, "failed to send KWS audio frame to Dora");
+                                }
                             }
 
                             frames_sent = frames_sent.saturating_add(1);
@@ -276,15 +292,11 @@ fn main() -> Result<()> {
                                     }
                                     AudioAction::Stop => {
                                         capture_gate.set_user_enabled(false);
-                                        if let Some(_stream) = stream_opt.take() {
-                                            preflight_probe
-                                                .log_if_pending("capture_preflight_partial");
-                                            tracing::info!("Stopping audio stream");
-                                            // Stream is dropped here, stopping capture
-                                            // Clear audio buffer
-                                            audio_buffer.clear();
-                                            tracing::info!("Audio stream stopped");
-                                        }
+                                        // Browser streaming and the local KWS branch share one
+                                        // microphone. Keep capture alive for IdleListening; the
+                                        // gate prevents browser-frame publication while KWS still
+                                        // receives the same 16 kHz mono samples.
+                                        tracing::info!("Browser audio stream disabled; local KWS capture remains active");
                                     }
                                 }
                             } else {
@@ -345,9 +357,22 @@ fn main() -> Result<()> {
                         LifecycleTransition::Resume => {
                             clear_capture_buffers(&consumer, &mut audio_buffer);
                             capture_gate.resume_after_lifecycle();
+                            if stream_opt.is_none() {
+                                stream_opt = Some(
+                                    try_open_input_stream(
+                                        sample_rate,
+                                        channels,
+                                        producer.clone(),
+                                        rejected_samples.clone(),
+                                    )
+                                    .map_err(|error| {
+                                        eyre::eyre!("audio capture resume failed: {error}")
+                                    })?,
+                                );
+                            }
                             tracing::info!(
                                 was_enabled_before_pause = ?capture_gate.user_enabled_before_lifecycle_quiesce(),
-                                "audio capture resumed; waiting for fresh AudioAction::Start"
+                                "audio capture resumed for local KWS; browser audio still requires AudioAction::Start"
                             );
                             Ok(())
                         }

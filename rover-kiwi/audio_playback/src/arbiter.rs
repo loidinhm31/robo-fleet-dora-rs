@@ -17,6 +17,7 @@ pub struct SourceArbiter {
     buffers: Arc<PlaybackBuffers>,
     tts: TtsArbiter,
     walkie_resampler: Option<SourceResampler>,
+    wake_ack_resampler: Option<SourceResampler>,
     walkie_deadline: Option<Instant>,
 }
 
@@ -31,6 +32,7 @@ impl SourceArbiter {
             buffers: buffers.clone(),
             tts: TtsArbiter::new(output_rate, buffers, tts_stall_timeout),
             walkie_resampler: None,
+            wake_ack_resampler: None,
             walkie_deadline: None,
         }
     }
@@ -39,6 +41,7 @@ impl SourceArbiter {
         match frame.source {
             AudioSource::Tts => self.tts.accept(frame, now),
             AudioSource::Walkie => self.accept_walkie(frame, now),
+            AudioSource::WakeAck => self.accept_wake_ack(frame),
         }
     }
 
@@ -50,6 +53,9 @@ impl SourceArbiter {
             self.buffers.finish_walkie();
             self.walkie_deadline = None;
             return Some(ArbiterEvent::WalkieEnded);
+        }
+        if self.buffers.wake_ack_is_active() && self.buffers.wake_ack_is_empty() {
+            self.buffers.finish_wake_ack();
         }
         self.tts.tick(now)
     }
@@ -73,6 +79,7 @@ impl SourceArbiter {
         if let Some(resampler) = self.walkie_resampler.as_mut() {
             resampler.reset();
         }
+        self.buffers.finish_wake_ack();
         self.walkie_deadline = None;
         event
     }
@@ -128,5 +135,27 @@ impl SourceArbiter {
         self.buffers.enqueue_walkie(&output);
         self.walkie_deadline = Some(now + WALKIE_HOLD);
         Ok(started.then_some(ArbiterEvent::WalkieStarted { interrupted }))
+    }
+
+    fn accept_wake_ack(&mut self, frame: SourceFrame) -> Result<Option<ArbiterEvent>> {
+        self.tts.preempt();
+        self.buffers.clear_tts();
+        let rate_changed = self
+            .wake_ack_resampler
+            .as_ref()
+            .is_some_and(|resampler| resampler.input_rate() != frame.sample_rate);
+        if self.wake_ack_resampler.is_none() || rate_changed {
+            self.wake_ack_resampler =
+                Some(SourceResampler::new(frame.sample_rate, self.output_rate)?);
+        }
+        let output = self
+            .wake_ack_resampler
+            .as_mut()
+            .expect("WakeAck resampler initialized")
+            .process(&frame.samples)?;
+        if !self.buffers.try_enqueue_wake_ack(&output) {
+            tracing::warn!("discarded WakeAck because its bounded buffer is full");
+        }
+        Ok(None)
     }
 }

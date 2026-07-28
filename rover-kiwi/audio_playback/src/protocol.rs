@@ -14,6 +14,7 @@ const MAX_FRAME_SAMPLES: usize = 65_536;
 pub enum AudioSource {
     Tts,
     Walkie,
+    WakeAck,
 }
 
 impl AudioSource {
@@ -21,6 +22,7 @@ impl AudioSource {
         match self {
             Self::Tts => "tts",
             Self::Walkie => "walkie",
+            Self::WakeAck => "wake_ack",
         }
     }
 }
@@ -67,6 +69,11 @@ pub fn parse_source_frame(
             Some(value.to_owned())
         }
         AudioSource::Walkie => None,
+        AudioSource::WakeAck => {
+            let value = string(parameters, "command_id")?;
+            Uuid::parse_str(value).map_err(|_| eyre!("WakeAck command_id must be a UUID"))?;
+            Some(value.to_owned())
+        }
     };
     let mut normalized_samples = 0;
     let samples = downmix_and_normalize(array.values(), metadata.channels, &mut normalized_samples);
@@ -99,6 +106,7 @@ fn validate_priority(source: AudioSource, parameters: &MetadataParameters) -> Re
     let valid = match source {
         AudioSource::Tts => matches!(priority, "low" | "normal" | "high" | "emergency"),
         AudioSource::Walkie => priority == "high",
+        AudioSource::WakeAck => priority == "high",
     };
     valid
         .then_some(())
@@ -192,5 +200,17 @@ mod tests {
             parse_source_frame(AudioSource::Walkie, &params, &Float32Array::from(vec![0.1]))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn accepts_a_pinned_wake_ack_frame() {
+        let mut params = metadata("wake_ack", 1, 1);
+        params.insert("priority".into(), Parameter::String("high".into()));
+        assert!(parse_source_frame(
+            AudioSource::WakeAck,
+            &params,
+            &Float32Array::from(vec![0.1]),
+        )
+        .is_ok());
     }
 }

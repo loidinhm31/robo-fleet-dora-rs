@@ -101,6 +101,7 @@ impl PlaybackState {
                 validate_command_id(id)
             }
             (PlaybackStateKind::Active, Some(PlaybackSource::Walkie), None, None, None) => Ok(()),
+            (PlaybackStateKind::Active, Some(PlaybackSource::WakeAck), None, None, None) => Ok(()),
             (
                 PlaybackStateKind::Active,
                 Some(PlaybackSource::Walkie),

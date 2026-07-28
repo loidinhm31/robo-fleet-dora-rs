@@ -24,6 +24,12 @@ SUPERTONIC_TTS_PATH="sherpa-onnx/tts/${SUPERTONIC_TTS_BUNDLE}"
 SUPERTONIC_TTS_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/${SUPERTONIC_TTS_ARCHIVE}"
 SUPERTONIC_TTS_ARCHIVE_SHA256="82fa96f91c4ef8abaae3a14a3f4153facf88bed821d1f7331cec2700f432c427"
 
+KWS_BUNDLE="sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"
+KWS_ARCHIVE="${KWS_BUNDLE}.tar.bz2"
+KWS_PATH="sherpa-onnx/kws/${KWS_BUNDLE}"
+KWS_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/${KWS_ARCHIVE}"
+KWS_ARCHIVE_SHA256="f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a"
+
 YOLO12N_PT_URL="https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo12n.pt"
 YOLO12N_PT_SHA256="419ff3dca37d69bacc93a50fa0c186a1c6f9fe62fae0f108b0872829689e9ca6"
 YOLO12N_ONNX_PATH="yolo/yolo12n.onnx"
@@ -53,6 +59,7 @@ silero-vad
 sherpa-asr-en
 sherpa-asr-vi
 supertonic-tts
+kws-hey-kiwi
 yolo12n-onnx
 osnet-x0_25-onnx
 EOF
@@ -116,6 +123,15 @@ e923d60f53f95eb1ce235f1dc33ec56d9c057823c96fa6f8acf98f32b0da6152  ${SUPERTONIC_T
 42078d3aef1cd43ab43021f3c54f47d2d75ceb4e75f627f118890128b06a0d09  ${SUPERTONIC_TTS_PATH}/tts.json
 8402ca48e5189a8950138580b0fff64db6f072f24ac07cd54ba8b2fbb9883b30  ${SUPERTONIC_TTS_PATH}/unicode_indexer.bin
 67d5209b0ee8ce6c74105ffbe12fe6a7628aea3b4ba2fcb308a4a67938a93ce8  ${SUPERTONIC_TTS_PATH}/voice.bin
+EOF
+            ;;
+        kws-hey-kiwi)
+            cat <<EOF
+1e721676515bcd42a186979733981213c66c80db680e1cc582dfedf3be76e678  ${KWS_PATH}/encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx
+e40ff43297abe815e8898494c17e71bba2152d9d40fa3eb803f75d0f7533329a  ${KWS_PATH}/decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx
+eae9da0c7e1e6c6a3f4cc42d167899c388f6c6701b94cb96320e4f55df79624c  ${KWS_PATH}/joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx
+fd2ded4050a55d2b1578870ba8697d02371980217806b7558bd0a5cc60f3ba53  ${KWS_PATH}/tokens.txt
+c8a2a0129c4ab8e463164c142f82d25649661b122c8cd0b7aab5c9e80b90ad24  ${KWS_PATH}/bpe.model
 EOF
             ;;
         *)

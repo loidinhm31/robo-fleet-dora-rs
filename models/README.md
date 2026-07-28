@@ -27,6 +27,8 @@ models/
 │       │   └── sherpa-onnx-zipformer-vi-30M-int8-2026-02-09/...
 │       └── tts/
 │           └── sherpa-onnx-supertonic-3-tts-int8-2026-05-11/...
+│       └── kws/
+│           └── sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/...
 ├── .runtime/
 │   └── onnxruntime-linux-x64-1.16.3/
 └── SUPERTONIC-OPENRAIL-M-NOTICE.txt
@@ -120,3 +122,11 @@ sha256: 82fa96f91c4ef8abaae3a14a3f4153facf88bed821d1f7331cec2700f432c427
 See [SUPERTONIC-OPENRAIL-M-NOTICE.txt](./SUPERTONIC-OPENRAIL-M-NOTICE.txt) for
 the tracked notice file. Legal approval for redistribution remains outside this
 repository's engineering scope.
+
+## Local KWS
+
+`make models` installs the checksum-pinned Sherpa-ONNX English Zipformer KWS
+bundle used only by Rover-local `voice-wake`. Its fixed `Hey Kiwi` token
+contract is compiled into the node; browsers and Zenoh cannot select model
+paths or keywords. Archive SHA-256:
+`f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a`.

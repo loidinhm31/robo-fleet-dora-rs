@@ -39,6 +39,7 @@ COPY rover-kiwi/visual_servo_controller/Cargo.toml rover-kiwi/visual_servo_contr
 COPY rover-kiwi/audio_capture/Cargo.toml rover-kiwi/audio_capture/
 COPY rover-kiwi/audio_converter/Cargo.toml rover-kiwi/audio_converter/
 COPY rover-kiwi/audio_playback/Cargo.toml rover-kiwi/audio_playback/
+COPY rover-kiwi/voice-wake/Cargo.toml rover-kiwi/voice-wake/
 COPY rover-kiwi/edge_voice/Cargo.toml rover-kiwi/edge_voice/
 COPY rover-kiwi/arm_controller/Cargo.toml rover-kiwi/arm_controller/
 COPY rover-kiwi/rover_controller/Cargo.toml rover-kiwi/rover_controller/
@@ -71,6 +72,8 @@ RUN mkdir -p rover-kiwi/kornia_capture/src && \
     echo "fn main() {}" > rover-kiwi/audio_converter/src/main.rs && \
     mkdir -p rover-kiwi/audio_playback/src && \
     echo "fn main() {}" > rover-kiwi/audio_playback/src/main.rs && \
+    mkdir -p rover-kiwi/voice-wake/src && \
+    echo "fn main() {}" > rover-kiwi/voice-wake/src/main.rs && \
     mkdir -p rover-kiwi/edge_voice/src && \
     echo "pub fn dummy() {}" > rover-kiwi/edge_voice/src/lib.rs && \
     echo "fn main() {}" > rover-kiwi/edge_voice/src/main.rs && \
@@ -117,6 +120,7 @@ RUN cargo build --release \
     -p audio_capture \
     -p audio_converter \
     -p audio_playback \
+    -p voice_wake \
     -p edge_voice \
     -p arm_controller \
     -p rover_controller \
@@ -188,6 +192,7 @@ COPY --from=builder /build/target/release/visual_servo_controller ./bin/
 COPY --from=builder /build/target/release/audio_capture ./bin/
 COPY --from=builder /build/target/release/audio_converter ./bin/
 COPY --from=builder /build/target/release/audio_playback ./bin/
+COPY --from=builder /build/target/release/voice_wake ./bin/
 COPY --from=builder /build/target/release/edge_voice ./bin/
 COPY --from=builder /build/target/release/arm_controller ./bin/
 COPY --from=builder /build/target/release/rover_controller ./bin/

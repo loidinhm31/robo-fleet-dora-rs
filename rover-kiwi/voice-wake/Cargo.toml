@@ -1,0 +1,13 @@
+[package]
+name = "voice_wake"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dora-node-api = { workspace = true }
+eyre = { workspace = true }
+robo_rover_lib = { path = "../../robo_rover_lib" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sherpa-onnx = { version = "=1.13.3", default-features = false, features = ["static"] }
+uuid = { workspace = true, features = ["v5"] }

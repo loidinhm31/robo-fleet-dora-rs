@@ -5,6 +5,7 @@ use crossbeam_queue::ArrayQueue;
 pub const SOURCE_IDLE: u8 = 0;
 pub const SOURCE_TTS: u8 = 1;
 pub const SOURCE_WALKIE: u8 = 2;
+pub const SOURCE_WAKE_ACK: u8 = 3;
 const SOURCE_BITS: u32 = 2;
 
 #[derive(Clone, Copy, Debug)]
@@ -22,8 +23,10 @@ pub struct ConsumptionEvent {
 pub struct PlaybackBuffers {
     tts: ArrayQueue<BufferedSample>,
     walkie: ArrayQueue<BufferedSample>,
+    wake_ack: ArrayQueue<BufferedSample>,
     monitor: ArrayQueue<f32>,
     walkie_active: AtomicBool,
+    wake_ack_active: AtomicBool,
     current_consumption: AtomicU64,
     interval_activity: AtomicU64,
     dropped_tts: AtomicU64,
@@ -55,8 +58,10 @@ impl PlaybackBuffers {
         Self {
             tts: ArrayQueue::new(tts_capacity),
             walkie: ArrayQueue::new(walkie_capacity),
+            wake_ack: ArrayQueue::new(tts_capacity.saturating_mul(2)),
             monitor: ArrayQueue::new(monitor_capacity),
             walkie_active: AtomicBool::new(false),
+            wake_ack_active: AtomicBool::new(false),
             current_consumption: AtomicU64::new(0),
             interval_activity: AtomicU64::new(0),
             dropped_tts: AtomicU64::new(0),
@@ -101,6 +106,25 @@ impl PlaybackBuffers {
         }
     }
 
+    pub fn try_enqueue_wake_ack(&self, samples: &[f32]) -> bool {
+        self.finish_wake_ack();
+        if samples.is_empty() || samples.len() > self.wake_ack.capacity() {
+            return false;
+        }
+        for &value in samples {
+            if self
+                .wake_ack
+                .push(BufferedSample { value, token: 0 })
+                .is_err()
+            {
+                self.finish_wake_ack();
+                return false;
+            }
+        }
+        self.wake_ack_active.store(true, Ordering::Release);
+        true
+    }
+
     pub fn preempt_tts(&self) {
         self.walkie_active.store(true, Ordering::Release);
         self.clear_tts();
@@ -118,6 +142,11 @@ impl PlaybackBuffers {
         self.walkie_active.store(false, Ordering::Release);
     }
 
+    pub fn finish_wake_ack(&self) {
+        while self.wake_ack.pop().is_some() {}
+        self.wake_ack_active.store(false, Ordering::Release);
+    }
+
     pub fn clear_walkie(&self) {
         while self.walkie.pop().is_some() {}
     }
@@ -125,12 +154,15 @@ impl PlaybackBuffers {
     pub fn clear_all(&self) {
         self.clear_tts();
         self.clear_walkie();
+        self.finish_wake_ack();
         self.walkie_active.store(false, Ordering::Release);
     }
 
     pub fn pop_for_output(&self) -> Option<(u8, BufferedSample)> {
         if self.walkie_active.load(Ordering::Acquire) {
             self.walkie.pop().map(|sample| (SOURCE_WALKIE, sample))
+        } else if self.wake_ack_active.load(Ordering::Acquire) {
+            self.wake_ack.pop().map(|sample| (SOURCE_WAKE_ACK, sample))
         } else {
             self.tts.pop().map(|sample| {
                 self.tts_retired.fetch_add(1, Ordering::Relaxed);
@@ -191,6 +223,14 @@ impl PlaybackBuffers {
 
     pub fn walkie_is_active(&self) -> bool {
         self.walkie_active.load(Ordering::Acquire)
+    }
+
+    pub fn wake_ack_is_active(&self) -> bool {
+        self.wake_ack_active.load(Ordering::Acquire)
+    }
+
+    pub fn wake_ack_is_empty(&self) -> bool {
+        self.wake_ack.is_empty()
     }
 
     #[cfg(test)]

@@ -39,6 +39,7 @@ fn every_enum_wire_name_is_stable() {
     assert_names(&[
         (PlaybackSource::Tts, "tts"),
         (PlaybackSource::Walkie, "walkie"),
+        (PlaybackSource::WakeAck, "wake_ack"),
     ]);
     assert_names(&[
         (PlaybackStateKind::Idle, "idle"),

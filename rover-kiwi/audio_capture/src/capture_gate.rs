@@ -60,6 +60,7 @@ impl CaptureGate {
         self.user_enabled_before_lifecycle_quiesce
     }
 
+    #[cfg(test)]
     pub fn fresh_start_required(&self) -> bool {
         self.fresh_start_required
     }
@@ -109,6 +110,16 @@ impl CaptureGate {
             self.tail_until = None;
         }
         self.capture_enabled_by_user && !self.playback_suppressed && self.tail_until.is_none()
+    }
+
+    /// KWS owns no microphone and may receive capture frames while browser
+    /// streaming is disabled. It still obeys speaker suppression and its tail
+    /// so the bundled WakeAck cannot self-trigger the local detector.
+    pub fn can_publish_kws(&mut self, now: Instant) -> bool {
+        if self.tail_until.is_some_and(|deadline| now >= deadline) {
+            self.tail_until = None;
+        }
+        !self.playback_suppressed && self.tail_until.is_none()
     }
 
     pub fn metrics(&self) -> CaptureGateMetrics {
@@ -175,6 +186,15 @@ mod tests {
         assert!(!gate.can_publish(now));
         gate.set_user_enabled(true);
         assert!(gate.can_publish(now));
+    }
+
+    #[test]
+    fn kws_can_listen_without_browser_audio_but_never_during_playback() {
+        let now = Instant::now();
+        let mut gate = CaptureGate::new(false);
+        assert!(gate.can_publish_kws(now));
+        gate.observe_playback(&state(PlaybackStateKind::Active, 1), now);
+        assert!(!gate.can_publish_kws(now));
     }
 
     #[test]

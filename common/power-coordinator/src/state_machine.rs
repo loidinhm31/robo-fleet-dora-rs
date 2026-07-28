@@ -1060,6 +1060,7 @@ mod tests {
         let mut domains = BTreeMap::new();
         for domain in [
             "audio-capture",
+            "voice-wake",
             "edge-voice",
             "gst-camera",
             "audio-playback",
@@ -1624,6 +1625,7 @@ mod tests {
         let mut item = coordinator();
         for node in [
             "audio-capture",
+            "voice-wake",
             "edge-voice",
             "gst-camera",
             "audio-playback",
@@ -1639,35 +1641,43 @@ mod tests {
         item.policy = PowerPolicy::Sleep;
 
         let first = single_command(&mut item, 1);
-        assert_eq!(first.target.node_id, "audio-playback");
+        assert_eq!(first.target.node_id, "edge-voice");
         item.observe_lifecycle(status(
-            "audio-playback",
+            "edge-voice",
             first.transition_id,
             LifecycleDesiredState::Quiesced,
             LifecycleEffectiveState::Quiesced,
         ));
         let second = single_command(&mut item, 2);
-        assert_eq!(second.target.node_id, "gst-camera");
+        assert_eq!(second.target.node_id, "audio-playback");
         item.observe_lifecycle(status(
-            "gst-camera",
+            "audio-playback",
             second.transition_id,
             LifecycleDesiredState::Quiesced,
             LifecycleEffectiveState::Quiesced,
         ));
         let third = single_command(&mut item, 3);
-        assert_eq!(third.target.node_id, "edge-voice");
+        assert_eq!(third.target.node_id, "gst-camera");
         item.observe_lifecycle(status(
-            "edge-voice",
+            "gst-camera",
             third.transition_id,
             LifecycleDesiredState::Quiesced,
             LifecycleEffectiveState::Quiesced,
         ));
-        let quiesce = single_command(&mut item, 4);
+        let fourth = single_command(&mut item, 4);
+        assert_eq!(fourth.target.node_id, "voice-wake");
+        item.observe_lifecycle(status(
+            "voice-wake",
+            fourth.transition_id,
+            LifecycleDesiredState::Quiesced,
+            LifecycleEffectiveState::Quiesced,
+        ));
+        let quiesce = single_command(&mut item, 5);
         assert_eq!(quiesce.target.node_id, "audio-capture");
 
         item.policy = PowerPolicy::Auto;
-        item.ledger.apply(demand(), 5).unwrap();
-        let mut replacement_effects = item.tick(time(5, 5));
+        item.ledger.apply(demand(), 6).unwrap();
+        let mut replacement_effects = item.tick(time(6, 6));
         assert_eq!(
             replacement_effects.status.effective_profile,
             PowerProfile::NormalRover
@@ -1700,7 +1710,7 @@ mod tests {
             detail: None,
         });
         assert!(!item.pending.as_ref().unwrap().issued);
-        let retry = item.tick(time(6, 6)).lifecycle_commands.remove(0);
+        let retry = item.tick(time(7, 7)).lifecycle_commands.remove(0);
         assert_eq!(retry.target.node_id, "audio-capture");
         assert_eq!(retry.desired_state, LifecycleDesiredState::Running);
         assert_eq!(retry.expected_revision, 1);

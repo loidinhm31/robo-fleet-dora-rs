@@ -89,6 +89,7 @@ pub struct VoiceStatus {
 pub enum PlaybackSource {
     Tts,
     Walkie,
+    WakeAck,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

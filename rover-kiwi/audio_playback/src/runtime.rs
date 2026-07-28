@@ -141,9 +141,11 @@ pub fn run() -> Result<()> {
                         last_metric = Instant::now();
                     }
                 }
-                "tts_audio" | "walkie_audio" => {
+                "tts_audio" | "walkie_audio" | "wake_ack_audio" => {
                     let source = if id.as_str() == "tts_audio" {
                         AudioSource::Tts
+                    } else if id.as_str() == "wake_ack_audio" {
+                        AudioSource::WakeAck
                     } else {
                         AudioSource::Walkie
                     };
