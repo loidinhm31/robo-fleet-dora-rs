@@ -39,7 +39,7 @@ named last-known-good rollback profile.
 | PROD-04 | Baseline profile | Logical ID `sherpa-hey-kv-v1` mapped to the current Sherpa last-known-good bundle; release ID and digest remain required | **PARTIAL — logical ID recorded; release ID/digest and approval blocking** |
 | PROD-05 | Production identity | Explicit exact `KWS_PROFILE_ID`; no unset-ID or phrase fallback | **OWNER APPROVED — catalog, implementation, evidence, and release gates remain blocking** |
 | PROD-06 | Engine contract | Sherpa Zipformer transducer/BPE baseline and one approved candidate engine contract; ORT/provider compatibility is allowlisted | **TBD — technical feasibility and release approval blocking** |
-| PROD-07 | Population | Universal/multi-speaker target; language, accent, hearing/speech population, and exclusions | **TBD — product/privacy/data approval blocking** |
+| PROD-07 | Population | Universal/multi-speaker target; English; broad intended accent coverage without a claim until the exact matrix and exclusions are approved | **PARTIAL — matrix and exclusions remain product/privacy/data blockers** |
 | PROD-08 | Out-of-scope behavior | Defer live reload, multi-profile inference, personalization, arbitrary phrase generation, browser selection, ARM acceptance, and fleet rollout | **OWNER APPROVED — release implementation and approval gates remain blocking** |
 
 ## Phrase and baseline record
@@ -92,8 +92,20 @@ recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
 accent_coverage: Broad target-user English accents
 minimum_accent_matrix: TBD [BLOCKING]
 exclusions: TBD [BLOCKING]
+decision: Keep accent matrix pending
 decision_hash: d994953475a14bf2bad216bbf38eea6652ed794b543a9214275b2c24f3f325b0
 state: PARTIAL — broad coverage recorded; matrix and exclusions remain blocking
+```
+
+Owner accent-matrix decision recorded for `PROD-07`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+decision: Keep accent matrix pending
+coverage_claim: broad intended coverage only; no tested accent coverage claimed
+decision_hash: 7f919a399d19fc9c3abb59f935d756b7d507ca8f0bdd1a6d5d17125fa4a0919f
+state: BLOCKING — exact included accent groups and exclusions are not approved
 ```
 
 Owner fallback decision recorded for `PROD-02`:
