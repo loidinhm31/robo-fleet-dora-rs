@@ -17,6 +17,18 @@ modifications, model/data terms, commercial use, redistribution, export or
 processor restrictions, package inclusion, reviewer, date, and decision hash.
 Unknown, transitive, generated, or downloaded content is a release blocker.
 
+Owner license-inventory gate recorded for `LIC-APP-01`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+required_evidence: exact name; version/commit; source; SPDX identifier; license text; notices; modifications; model/data terms; commercial use; redistribution; export/processor restrictions; package inclusion
+unknown_transitive_generated_downloaded_content: release blocker
+aggregate_third_party_row: insufficient
+decision_hash: 7c9d837587c90bbc82fc7eaf3234eda8ae9951d8db0618e561651a7efd8ded93
+state: OWNER APPROVED GATE — every component remains blocked until its evidence is complete and legally reviewed
+```
+
 ## Initial inventory
 
 | Component | Version/source evidence | License/rights | Intended use | Status |
@@ -55,7 +67,7 @@ privacy, legal, and security approval.
 
 | Owner | Approval role | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| loidinhm31 | Legal | LIC-APP-01 | Component/data/model terms and commercial redistribution | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Legal | LIC-APP-01 | Component/data/model terms and commercial redistribution | Owner decision block above | 2026-08-18 | `7c9d837587c90bbc82fc7eaf3234eda8ae9951d8db0618e561651a7efd8ded93` | **PARTIAL — gate approved; component rights and legal review blocking** |
 | loidinhm31 | Privacy | LIC-APP-02 | Human/synthetic data processing and withdrawal impact | TBD | TBD | Not assigned | **BLOCKING** |
 | loidinhm31 | Security | LIC-APP-03 | Provenance, downloads, processor and supply-chain controls | TBD | TBD | Not assigned | **BLOCKING** |
 | loidinhm31 | Release | LIC-APP-04 | Notices, bundle contents, archive and publication scope | TBD | TBD | Not assigned | **BLOCKING** |
