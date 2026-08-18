@@ -58,6 +58,19 @@ approved objective, and record the resulting dataset/model impact. The exact
 withdrawal SLA, re-training trigger, exception handling, and audit evidence are
 **TBD [BLOCKING]**.
 
+Owner consent-and-withdrawal principles recorded for `PRIV-APP-01`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+consent: specific to wake-word training/evaluation; recorded before capture; voluntary; revocable; separate from employment and product access
+consent_notice: purpose; data classes; retention; access; processors; jurisdictions; publication/redistribution; risks; withdrawal contact
+withdrawal: stop future use; cover approved copies and derivatives; remove or quarantine raw audio and directly identifying metadata; record dataset/model impact
+legal_wording_and_sla: TBD [BLOCKING]
+decision_hash: 30afa716344e057ddd015c3693c4663989986e396a3c185bef057a18c930e9e3
+state: OWNER APPROVED PARTIAL — exact consent language, withdrawal SLA, retraining trigger, exception handling, audit evidence, and legal approval remain blocking
+```
+
 ## Storage, access, and blind custody
 
 Raw audio and blind labels must use an approved encrypted store with least
@@ -98,7 +111,7 @@ component has copyleft or attribution obligations are **TBD [BLOCKING]**.
 
 | Owner | Approval role | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| loidinhm31 | Privacy/data owner | PRIV-APP-01 | Data classes, lawful basis, minimization and participant rights | Owner decision block above | 2026-08-18 | `43247047d39d8bd9fd7047e2e708cbf0bb6a6554bf8098a37fddf8c8530d3294` | **PARTIAL — boundary approved; rights and legal details blocking** |
+| loidinhm31 | Privacy/data owner | PRIV-APP-01 | Data classes, lawful basis, minimization and participant rights | Owner decision blocks above | 2026-08-18 | `43247047d39d8bd9fd7047e2e708cbf0bb6a6554bf8098a37fddf8c8530d3294`; `30afa716344e057ddd015c3693c4663989986e396a3c185bef057a18c930e9e3` | **PARTIAL — boundary and consent principles approved; rights and legal details blocking** |
 | loidinhm31 | Legal/licensing owner | PRIV-APP-02 | Jurisdictions, processor terms, licenses and redistribution | TBD | TBD | Not assigned | **BLOCKING** |
 | loidinhm31 | Security owner | PRIV-APP-03 | Encryption, key custody, access, blind custody and audit | TBD | TBD | Not assigned | **BLOCKING** |
 | loidinhm31 | Release owner | PRIV-APP-04 | Artifact publication, notices, deletion impact and archive | TBD | TBD | Not assigned | **BLOCKING** |
