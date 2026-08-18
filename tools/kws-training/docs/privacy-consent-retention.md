@@ -25,6 +25,21 @@ Permitted data classes, only after approval:
 - Sanitized aggregate metrics, hashes, provenance, and adjudication decisions
   without raw audio or direct participant identity.
 
+Owner data-boundary decision recorded for `PRIV-APP-01`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+decision: Approve minimum data-minimization boundary before audio collection
+allowed_data: pseudonymous consent metadata; audio and derived features only for the approved training/evaluation purpose
+storage_exclusions: Git; Docker build contexts; logs; MongoDB; developer-local copies by default
+repository_evidence: sanitized aggregates; hashes; provenance; adjudication decisions only
+prohibited_purpose: personalization; voice identification; biometric verification; arbitrary user phrase generation
+hosted_or_external_processor: written privacy/legal and security approval required
+decision_hash: 43247047d39d8bd9fd7047e2e708cbf0bb6a6554bf8098a37fddf8c8530d3294
+state: OWNER APPROVED PARTIAL — consent language, lawful basis, jurisdictions, storage controls, retention, withdrawal, licensing, and release approval remain blocking
+```
+
 The exact data fields, lawful basis, jurisdictions, age/ability safeguards,
 cross-border transfer rule, and whether any derived feature is biometric data
 are **TBD [BLOCKING]**.
@@ -83,7 +98,7 @@ component has copyleft or attribution obligations are **TBD [BLOCKING]**.
 
 | Owner | Approval role | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| loidinhm31 | Privacy/data owner | PRIV-APP-01 | Data classes, lawful basis, minimization and participant rights | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Privacy/data owner | PRIV-APP-01 | Data classes, lawful basis, minimization and participant rights | Owner decision block above | 2026-08-18 | `43247047d39d8bd9fd7047e2e708cbf0bb6a6554bf8098a37fddf8c8530d3294` | **PARTIAL — boundary approved; rights and legal details blocking** |
 | loidinhm31 | Legal/licensing owner | PRIV-APP-02 | Jurisdictions, processor terms, licenses and redistribution | TBD | TBD | Not assigned | **BLOCKING** |
 | loidinhm31 | Security owner | PRIV-APP-03 | Encryption, key custody, access, blind custody and audit | TBD | TBD | Not assigned | **BLOCKING** |
 | loidinhm31 | Release owner | PRIV-APP-04 | Artifact publication, notices, deletion impact and archive | TBD | TBD | Not assigned | **BLOCKING** |
