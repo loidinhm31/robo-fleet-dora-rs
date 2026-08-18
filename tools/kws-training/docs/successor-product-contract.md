@@ -50,7 +50,7 @@ before Phase 2 begins:
 primary.display_phrase: Hey E.C
 primary.spoken_phrase: Hey Ee Cee
 primary.canonical_pronunciation: Hey Ee Cee
-primary.language_and_accent_scope: English; exact accent coverage and exclusions TBD [BLOCKING]
+primary.language_and_accent_scope: English; broad target-user accents; exact matrix and exclusions TBD [BLOCKING]
 primary.population: Universal/multi-speaker
 fallback.display_phrase: TBD [BLOCKING]
 fallback.spoken_phrase: TBD [BLOCKING]
@@ -80,6 +80,18 @@ accent_coverage: TBD [BLOCKING]
 exclusions: TBD [BLOCKING]
 decision_hash: 14f2ffd4d81d78ada235dfce51d8c36551e26ee6cf9f7b7e761e9634329eb88a
 state: PARTIAL — language/population recorded; accent coverage and exclusions remain blocking
+```
+
+Owner accent input recorded for `PROD-APP-01`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+accent_coverage: Broad target-user English accents
+minimum_accent_matrix: TBD [BLOCKING]
+exclusions: TBD [BLOCKING]
+decision_hash: d994953475a14bf2bad216bbf38eea6652ed794b543a9214275b2c24f3f325b0
+state: PARTIAL — broad coverage recorded; matrix and exclusions remain blocking
 ```
 
 The fallback fields describe a later explicit selection candidate only. Missing,
