@@ -265,6 +265,23 @@ exclusions, soak validity, canary exposure, disable bound, and rollback recovery
 time are **TBD [BLOCKING]** until the statistician/technical, operator, product,
 and release owners sign them.
 
+Owner metric-formula framework recorded for `PROD-APP-03`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+recall: accepted eligible positives / eligible positives
+false_accept_counting: one event after the preregistered cooldown
+false_accept_exposure: H clean-negative hours
+confidence_bound: one-sided 95% Poisson upper rate using the preregistered chi-square form
+partitions: speaker-disjoint train/dev/test
+subgroups: minimum sample size required before subgroup claims
+clocks: documented monotonic anchors
+exclusions: preregister before results
+decision_hash: 83a1e419f3b12b64133aa505810ccae0216217e42964286dcc644dc0b98c1ccf
+state: OWNER APPROVED PARTIAL — exact cooldown, subgroup definitions/sizes, clean-hour exclusions, soak validity, canary/disable bounds, and release approval remain blocking
+```
+
 ## Target and measurement contract
 
 The release target is exact `linux/amd64`/x86_64 hardware. ARM/Raspberry Pi is
@@ -337,7 +354,7 @@ recovery objective, and emergency recovery authority are **TBD [BLOCKING]**.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | loidinhm31 | Product | PROD-APP-01 | Phrase, population, deferrals, numeric SLOs | TBD | TBD | Not assigned | **BLOCKING** |
 | loidinhm31 | Operator | PROD-APP-02 | Target identity, baseline, measurement and rollback procedure | Feasibility-host, baseline, and capture-boundary decision blocks above | 2026-08-18 | `0591809d47077f7844981915a020c3c2a82c08415cbc52634c742139b0526029`; `0ae79d9dfd3ea8a6f9f15fa6156599fff9e2a3c5e6e3d087cdfeaa7148950a9c`; `46577ce643db2e1eeb2d9db4018ec27ab2778178d8bd5c0b42d00cf7e4a437fa` | **PARTIAL — baseline, feasibility host, and detector boundary recorded; exact target and capture details blocking** |
-| loidinhm31 | Statistician/technical | PROD-APP-03 | Formulas, cooldown, exclusions, subgroup and soak rules | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Statistician/technical | PROD-APP-03 | Formulas, cooldown, exclusions, subgroup and soak rules | Owner decision block above | 2026-08-18 | `83a1e419f3b12b64133aa505810ccae0216217e42964286dcc644dc0b98c1ccf` | **PARTIAL — formula framework approved; detailed rules and evidence blocking** |
 | loidinhm31 | Privacy/legal | PROD-APP-04 | Consent, retention, jurisdictions, licenses and redistribution | TBD | TBD | Not assigned | **BLOCKING** |
 | loidinhm31 | Security/release | PROD-APP-05 | Catalog authority, attestation, revocation and recovery | TBD | TBD | Not assigned | **BLOCKING** |
 
