@@ -44,6 +44,18 @@ The exact data fields, lawful basis, jurisdictions, age/ability safeguards,
 cross-border transfer rule, and whether any derived feature is biometric data
 are **TBD [BLOCKING]**.
 
+Owner legal-context decision recorded for `PRIV-APP-01`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+decision: Keep legal context pending
+fields: lawful basis; jurisdictions; age/ability safeguards; cross-border transfer rule; derived-feature biometric classification
+collection_status: not authorized
+decision_hash: cb3e9ee1aa41b607525766254adc0f85fdcd3b99dd2426dbdacb31a7c2344e1d
+state: BLOCKING — no legal context or participant-rights approval recorded
+```
+
 ## Consent and withdrawal
 
 Consent must be informed, specific to wake-word training/evaluation, voluntary,
@@ -156,7 +168,7 @@ component has copyleft or attribution obligations are **TBD [BLOCKING]**.
 
 | Owner | Approval role | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| loidinhm31 | Privacy/data owner | PRIV-APP-01 | Data classes, lawful basis, minimization and participant rights | Owner decision blocks above | 2026-08-18 | `43247047d39d8bd9fd7047e2e708cbf0bb6a6554bf8098a37fddf8c8530d3294`; `30afa716344e057ddd015c3693c4663989986e396a3c185bef057a18c930e9e3`; `7b0a2cf9c614423b339b2656f0702b5ff05287f5759da089aae92d4c6507b0d8` | **PARTIAL — boundary and consent principles approved; retention, rights, and legal details blocking** |
+| loidinhm31 | Privacy/data owner | PRIV-APP-01 | Data classes, lawful basis, minimization and participant rights | Owner decision blocks above | 2026-08-18 | `43247047d39d8bd9fd7047e2e708cbf0bb6a6554bf8098a37fddf8c8530d3294`; `30afa716344e057ddd015c3693c4663989986e396a3c185bef057a18c930e9e3`; `7b0a2cf9c614423b339b2656f0702b5ff05287f5759da089aae92d4c6507b0d8`; `cb3e9ee1aa41b607525766254adc0f85fdcd3b99dd2426dbdacb31a7c2344e1d` | **PARTIAL — boundary and consent principles approved; retention, rights, and legal context blocking** |
 | loidinhm31 | Legal/licensing owner | PRIV-APP-02 | Jurisdictions, processor terms, licenses and redistribution | Owner decision block above | 2026-08-18 | `4e93088f6fb8fdc66004f043ae8adc6056928851da7f9f57d6a9dfe35e0e7503` | **PARTIAL — processing boundary approved; legal and processor details blocking** |
 | loidinhm31 | Security owner | PRIV-APP-03 | Encryption, key custody, access, blind custody and audit | Owner decision block above | 2026-08-18 | `1aba8f1e4a2ce5b5fd7b544228fd92511574f463cf2c63f19a2b1fe0a3bec7e6` | **PARTIAL — controls approved; deployment details and security approval blocking** |
 | loidinhm31 | Release owner | PRIV-APP-04 | Artifact publication, notices, deletion impact and archive | TBD | TBD | Not assigned | **BLOCKING** |
