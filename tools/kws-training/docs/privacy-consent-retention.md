@@ -78,6 +78,26 @@ privilege, separate identity mapping, access logging, and no developer-local
 copy by default. Encryption at rest/in transit, key custody, backup treatment,
 region, access review cadence, and deletion verification are **TBD [BLOCKING]**.
 
+Owner storage-and-blind-custody controls recorded for `PRIV-APP-03`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+storage: encrypted at rest and in transit
+access: least privilege with access logging
+identity_mapping: separate from audio and labels
+blind_labels: independent custodian or equivalent access boundary
+developer_local_copy: prohibited by default
+repository: raw audio and blind labels prohibited
+region: TBD [BLOCKING]
+key_custody: TBD [BLOCKING]
+backup_treatment: TBD [BLOCKING]
+access_review_cadence: TBD [BLOCKING]
+deletion_verification: TBD [BLOCKING]
+decision_hash: 1aba8f1e4a2ce5b5fd7b544228fd92511574f463cf2c63f19a2b1fe0a3bec7e6
+state: OWNER APPROVED PARTIAL — region, key custody, backups, review cadence, deletion verification, and security approval remain blocking
+```
+
 The test partition and blind labels must be held by an independent custodian or
 equivalent access boundary. Training owners must not access blind labels before
 the one-use evaluation. Evidence committed to this repository may contain only
@@ -113,7 +133,7 @@ component has copyleft or attribution obligations are **TBD [BLOCKING]**.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | loidinhm31 | Privacy/data owner | PRIV-APP-01 | Data classes, lawful basis, minimization and participant rights | Owner decision blocks above | 2026-08-18 | `43247047d39d8bd9fd7047e2e708cbf0bb6a6554bf8098a37fddf8c8530d3294`; `30afa716344e057ddd015c3693c4663989986e396a3c185bef057a18c930e9e3` | **PARTIAL — boundary and consent principles approved; rights and legal details blocking** |
 | loidinhm31 | Legal/licensing owner | PRIV-APP-02 | Jurisdictions, processor terms, licenses and redistribution | TBD | TBD | Not assigned | **BLOCKING** |
-| loidinhm31 | Security owner | PRIV-APP-03 | Encryption, key custody, access, blind custody and audit | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Security owner | PRIV-APP-03 | Encryption, key custody, access, blind custody and audit | Owner decision block above | 2026-08-18 | `1aba8f1e4a2ce5b5fd7b544228fd92511574f463cf2c63f19a2b1fe0a3bec7e6` | **PARTIAL — controls approved; deployment details and security approval blocking** |
 | loidinhm31 | Release owner | PRIV-APP-04 | Artifact publication, notices, deletion impact and archive | TBD | TBD | Not assigned | **BLOCKING** |
 
 Approval references must be opaque, least-privilege, and free of private keys
