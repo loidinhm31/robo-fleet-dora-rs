@@ -110,6 +110,19 @@ features, labels, model weights, evaluation reports, access logs, backups, and
 withdrawal records. Each class needs a duration, deletion owner, legal hold
 rule, and verifiable deletion method.
 
+Owner retention decision recorded for `PRIV-APP-01`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+decision: Keep retention pending
+classes: raw audio; consent metadata; derived features; labels; model weights; evaluation reports; access logs; backups; withdrawal records
+required_before_collection: duration; deletion owner; legal-hold rule; verifiable deletion method for every class
+collection_status: not authorized by this decision
+decision_hash: 7b0a2cf9c614423b339b2656f0702b5ff05287f5759da089aae92d4c6507b0d8
+state: BLOCKING — no retention schedule or deletion policy approved
+```
+
 ## Synthetic sources, training code, and redistribution
 
 Synthetic clips may be used only when their generator, voice/style licensing,
@@ -131,7 +144,7 @@ component has copyleft or attribution obligations are **TBD [BLOCKING]**.
 
 | Owner | Approval role | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| loidinhm31 | Privacy/data owner | PRIV-APP-01 | Data classes, lawful basis, minimization and participant rights | Owner decision blocks above | 2026-08-18 | `43247047d39d8bd9fd7047e2e708cbf0bb6a6554bf8098a37fddf8c8530d3294`; `30afa716344e057ddd015c3693c4663989986e396a3c185bef057a18c930e9e3` | **PARTIAL — boundary and consent principles approved; rights and legal details blocking** |
+| loidinhm31 | Privacy/data owner | PRIV-APP-01 | Data classes, lawful basis, minimization and participant rights | Owner decision blocks above | 2026-08-18 | `43247047d39d8bd9fd7047e2e708cbf0bb6a6554bf8098a37fddf8c8530d3294`; `30afa716344e057ddd015c3693c4663989986e396a3c185bef057a18c930e9e3`; `7b0a2cf9c614423b339b2656f0702b5ff05287f5759da089aae92d4c6507b0d8` | **PARTIAL — boundary and consent principles approved; retention, rights, and legal details blocking** |
 | loidinhm31 | Legal/licensing owner | PRIV-APP-02 | Jurisdictions, processor terms, licenses and redistribution | TBD | TBD | Not assigned | **BLOCKING** |
 | loidinhm31 | Security owner | PRIV-APP-03 | Encryption, key custody, access, blind custody and audit | Owner decision block above | 2026-08-18 | `1aba8f1e4a2ce5b5fd7b544228fd92511574f463cf2c63f19a2b1fe0a3bec7e6` | **PARTIAL — controls approved; deployment details and security approval blocking** |
 | loidinhm31 | Release owner | PRIV-APP-04 | Artifact publication, notices, deletion impact and archive | TBD | TBD | Not assigned | **BLOCKING** |
