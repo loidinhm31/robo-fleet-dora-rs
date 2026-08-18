@@ -80,6 +80,18 @@ Any failure is non-zero and fail-closed. There is no search, guessed profile,
 compiled phrase fallback, or silent rollback. The prior last-known-good profile
 is selected only by an explicit catalog/ID change and restart.
 
+Owner manifest-validation contract recorded for `TRUST-APP-03`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+required_checks: supported schema; exact and unique profile ID; Promote decision and approver authority; composite digest; evidence/license references; phrase/token/threshold match; declared file hashes; regular files within approved root; no absolute paths; no traversal; no symlink escapes; known engine/provider; ORT compatibility; exactly one engine; approved public golden-vector smoke check
+failure: non-zero before Dora startup
+fallback: no search; no guessed profile; no compiled phrase fallback; no silent rollback
+decision_hash: ff2d2cb336e8cd11c43f62f00b865cd218adc0a4fbd2f0b34918a7be5a046e64
+state: OWNER APPROVED PARTIAL — schema/catalog implementation, provider allowlist, smoke fixture, evidence, and release approval remain blocking
+```
+
 ## Publication, revocation, and rollback
 
 Publish a new bundle to a new immutable location, compute the canonical
@@ -142,7 +154,7 @@ The retention and access policy is governed by
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | loidinhm31 | Security | TRUST-APP-01 | Threat model, root/path rules, digest and optional PKI decision | Owner decision block above | 2026-08-18 | `796556a3badc20c05ee07b1f0060e4c1085927849026fc85a7ff1e26ffe341d6` | **PARTIAL — attestation boundary approved; authorities, implementation, and threat-model review blocking** |
 | loidinhm31 | Release | TRUST-APP-02 | Catalog publisher, attestation workflow, revocation and archive | Owner decision block above | 2026-08-18 | `7b897e1e3899339bddadad34a86e19ecd4c49810c5fde005a203a6524123ad7f` | **PARTIAL — governance principles approved; named authorities and implementation blocking** |
-| loidinhm31 | Technical | TRUST-APP-03 | Schema, engine/ORT allowlist, canonicalization and startup failure | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Technical | TRUST-APP-03 | Schema, engine/ORT allowlist, canonicalization and startup failure | Owner decision block above | 2026-08-18 | `ff2d2cb336e8cd11c43f62f00b865cd218adc0a4fbd2f0b34918a7be5a046e64` | **PARTIAL — validation contract approved; implementation and fixtures blocking** |
 | loidinhm31 | Operator | TRUST-APP-04 | Install, disable, last-known-good retention and recovery drill | TBD | TBD | Not assigned | **BLOCKING** |
 
 Phase 1 cannot freeze trust or authorize Phase 2 until every row has an
