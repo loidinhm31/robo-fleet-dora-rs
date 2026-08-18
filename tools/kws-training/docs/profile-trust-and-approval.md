@@ -47,10 +47,26 @@ approver role/reference and approval date
 decision = Promote | Reject | Revoke
 ```
 
-Canonical field ordering, digest construction, allowed characters, maximum
-sizes, evidence reference format, and approval identity format are **TBD
-[BLOCKING]**. Do not put keys, private identity, raw audio, or private paths in
-the attestation committed to this repository.
+Canonical field ordering and digest construction are owner-approved below.
+Allowed characters, maximum sizes, evidence reference format, and approval
+identity format remain **TBD [BLOCKING]**. Do not put keys, private identity,
+raw audio, or private paths in the attestation committed to this repository.
+
+Owner canonical-digest decision recorded for `TRUST-APP-01`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+serialization: UTF-8 canonical JSON
+keys: lexicographic
+whitespace: none
+hash: SHA-256
+binding: profile ID; release ID; display/spoken/canonical phrase; threshold; cooldown; engine/provider; complete file inventory
+file_entry: normalized relative POSIX path; byte size; file SHA-256
+reject: aliases; duplicate paths; absolute paths; undeclared runtime files
+decision_hash: 1451768af14484c282032115d4999c4f4bbbea483996133ffaaec722c3b74635
+state: OWNER APPROVED PARTIAL — schema implementation, allowed characters/sizes, evidence references, approval identity, and test vectors remain blocking
+```
 
 ## Catalog, bundle, and startup validation
 
@@ -168,7 +184,7 @@ The retention and access policy is governed by
 
 | Owner | Approval role | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| loidinhm31 | Security | TRUST-APP-01 | Threat model, root/path rules, digest and optional PKI decision | Owner decision block above | 2026-08-18 | `796556a3badc20c05ee07b1f0060e4c1085927849026fc85a7ff1e26ffe341d6` | **PARTIAL — attestation boundary approved; authorities, implementation, and threat-model review blocking** |
+| loidinhm31 | Security | TRUST-APP-01 | Threat model, root/path rules, digest and optional PKI decision | Owner decision blocks above | 2026-08-18 | `796556a3badc20c05ee07b1f0060e4c1085927849026fc85a7ff1e26ffe341d6`; `1451768af14484c282032115d4999c4f4bbbea483996133ffaaec722c3b74635` | **PARTIAL — attestation and digest boundary approved; authorities, implementation, and threat-model review blocking** |
 | loidinhm31 | Release | TRUST-APP-02 | Catalog publisher, attestation workflow, revocation and archive | Owner decision block above | 2026-08-18 | `7b897e1e3899339bddadad34a86e19ecd4c49810c5fde005a203a6524123ad7f` | **PARTIAL — governance principles approved; named authorities and implementation blocking** |
 | loidinhm31 | Technical | TRUST-APP-03 | Schema, engine/ORT allowlist, canonicalization and startup failure | Owner decision block above | 2026-08-18 | `ff2d2cb336e8cd11c43f62f00b865cd218adc0a4fbd2f0b34918a7be5a046e64` | **PARTIAL — validation contract approved; implementation and fixtures blocking** |
 | loidinhm31 | Operator | TRUST-APP-04 | Install, disable, last-known-good retention and recovery drill | Owner decision block above | 2026-08-18 | `07768023a19f802676934d18e888d4a639a092ea5d2a73209f9b5cea5239d409` | **PARTIAL — principles approved; RTO and runbook implementation blocking** |
