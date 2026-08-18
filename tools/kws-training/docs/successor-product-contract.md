@@ -273,6 +273,29 @@ currently **TBD [BLOCKING]**: host/model, CPU, RAM, OS/kernel, container/image,
 microphone/interface, gain, AGC/noise processing, ORT build/provider, and power
 or thermal envelope.
 
+Owner feasibility-host input recorded for `PROD-APP-02`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+scope: feasibility-only; not production target approval
+host: linux
+architecture: x86_64
+kernel: 7.1.7-200.fc44.x86_64
+os: Fedora Linux 44 Server Edition
+cpu: AMD Ryzen 7 8840U with Radeon 780M Graphics; 16 logical CPUs
+ram: 23 GiB visible system memory
+enumerated_capture_devices: HD-Audio Generic / ALC245 Analog; PC-LM1E Camera / USB Audio
+ort_version: 1.16.3
+selected_capture_device: TBD [BLOCKING]
+gain_agc_noise_processing: TBD [BLOCKING]
+container_or_image: TBD [BLOCKING]
+ort_provider: TBD [BLOCKING]
+power_and_thermal_envelope: TBD [BLOCKING]
+decision_hash: 0ae79d9dfd3ea8a6f9f15fa6156599fff9e2a3c5e6e3d087cdfeaa7148950a9c
+state: PARTIAL — host metadata recorded for feasibility; exact rover target and capture/runtime controls remain blocking
+```
+
 The proposed capture contract is 16-kHz mono F32. Any resampling, framing,
 window/hop, VAD/noise suppression, queue/drop behavior, and clock source must be
 recorded before collection. Resource limits for CPU, RSS, peak RSS, temperature,
@@ -297,7 +320,7 @@ recovery objective, and emergency recovery authority are **TBD [BLOCKING]**.
 | Owner | Approval role | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | loidinhm31 | Product | PROD-APP-01 | Phrase, population, deferrals, numeric SLOs | TBD | TBD | Not assigned | **BLOCKING** |
-| loidinhm31 | Operator | PROD-APP-02 | Target identity, baseline, measurement and rollback procedure | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Operator | PROD-APP-02 | Target identity, baseline, measurement and rollback procedure | Feasibility-host and baseline decision blocks above | 2026-08-18 | `0591809d47077f7844981915a020c3c2a82c08415cbc52634c742139b0526029`; `0ae79d9dfd3ea8a6f9f15fa6156599fff9e2a3c5e6e3d087cdfeaa7148950a9c` | **PARTIAL — baseline and feasibility host recorded; exact target and release evidence blocking** |
 | loidinhm31 | Statistician/technical | PROD-APP-03 | Formulas, cooldown, exclusions, subgroup and soak rules | TBD | TBD | Not assigned | **BLOCKING** |
 | loidinhm31 | Privacy/legal | PROD-APP-04 | Consent, retention, jurisdictions, licenses and redistribution | TBD | TBD | Not assigned | **BLOCKING** |
 | loidinhm31 | Security/release | PROD-APP-05 | Catalog authority, attestation, revocation and recovery | TBD | TBD | Not assigned | **BLOCKING** |
