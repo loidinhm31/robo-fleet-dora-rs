@@ -356,6 +356,18 @@ decision_hash: 0ae79d9dfd3ea8a6f9f15fa6156599fff9e2a3c5e6e3d087cdfeaa7148950a9c
 state: PARTIAL — host metadata recorded for feasibility; exact rover target and capture/runtime controls remain blocking
 ```
 
+Owner production-target decision recorded for `PROD-APP-02`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+decision: Keep exact production rover target pending
+current_host: feasibility-only
+required_before_release: rover hardware; selected microphone; gain/AGC/noise path; container/image; ORT provider; power/thermal envelope
+decision_hash: 7a465be654d49c896e8877b0631211f78e7c55d2c6d9ba889f279d82add2db2a
+state: BLOCKING — current host must not be treated as production target
+```
+
 Owner detector-capture boundary input recorded for `PROD-APP-02`:
 
 ```text
@@ -396,7 +408,7 @@ recovery objective, and emergency recovery authority are **TBD [BLOCKING]**.
 | Owner | Approval role | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | loidinhm31 | Product | PROD-APP-01 | Phrase, population, deferrals, numeric SLOs | Owner decision blocks above | 2026-08-18 | `e0f2805543d2957d52a7d9e87868d32888d1910ac4a8158dcbca0509dce77920`; `14f2ffd4d81d78ada235dfce51d8c36551e26ee6cf9f7b7e761e9634329eb88a`; `d994953475a14bf2bad216bbf38eea6652ed794b543a9214275b2c24f3f325b0`; `370b490640774e79be658eeabf8236aada8dfcc58724a70a52b663669775b44e`; `b470e8da7b9f545c21e6143368bc177287e26f613f84454eae41aa0ba64d0cb3`; `d55bbdaad736211358ac77d04216527214505f18fb87a7084f64527c32c77db1`; `a98f145fa623c5b9c49746ee9caa47d2707434c86d8c4b2f04c8dff5c3c1dcac`; `e2a80844304b55226d564836ebae4da5d1ed5721d3750caa23df8197c140cf67` | **PARTIAL — phrase/scope/gates/SLO/workflow recorded; accent, fallback, evidence, and product approval blocking** |
-| loidinhm31 | Operator | PROD-APP-02 | Target identity, baseline, measurement and rollback procedure | Feasibility-host, baseline, capture-boundary, and provenance decision blocks above | 2026-08-18 | `0591809d47077f7844981915a020c3c2a82c08415cbc52634c742139b0526029`; `0ae79d9dfd3ea8a6f9f15fa6156599fff9e2a3c5e6e3d087cdfeaa7148950a9c`; `46577ce643db2e1eeb2d9db4018ec27ab2778178d8bd5c0b42d00cf7e4a437fa`; `129e768ada79562d09bbac52c552f65f9a969d2f83922d75a3e9d89364c6d302` | **PARTIAL — feasibility host and detector boundary recorded; exact target, provenance, release ID/digest, and capture details blocking** |
+| loidinhm31 | Operator | PROD-APP-02 | Target identity, baseline, measurement and rollback procedure | Feasibility-host, baseline, capture-boundary, provenance, and production-target decision blocks above | 2026-08-18 | `0591809d47077f7844981915a020c3c2a82c08415cbc52634c742139b0526029`; `0ae79d9dfd3ea8a6f9f15fa6156599fff9e2a3c5e6e3d087cdfeaa7148950a9c`; `46577ce643db2e1eeb2d9db4018ec27ab2778178d8bd5c0b42d00cf7e4a437fa`; `129e768ada79562d09bbac52c552f65f9a969d2f83922d75a3e9d89364c6d302`; `7a465be654d49c896e8877b0631211f78e7c55d2c6d9ba889f279d82add2db2a` | **PARTIAL — feasibility host and detector boundary recorded; exact target, provenance, release ID/digest, and capture details blocking** |
 | loidinhm31 | Statistician/technical | PROD-APP-03 | Formulas, cooldown, exclusions, subgroup and soak rules | Owner decision block above | 2026-08-18 | `83a1e419f3b12b64133aa505810ccae0216217e42964286dcc644dc0b98c1ccf` | **PARTIAL — formula framework approved; detailed rules and evidence blocking** |
 | loidinhm31 | Privacy/legal | PROD-APP-04 | Consent, retention, jurisdictions, licenses and redistribution | TBD | TBD | Not assigned | **BLOCKING** |
 | loidinhm31 | Security/release | PROD-APP-05 | Catalog authority, attestation, revocation and recovery | TBD | TBD | Not assigned | **BLOCKING** |
