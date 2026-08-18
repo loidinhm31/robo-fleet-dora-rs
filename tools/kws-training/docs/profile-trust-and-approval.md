@@ -94,6 +94,19 @@ Offline recovery must be least-privilege and must not bypass validation. The
 revocation store, publisher, archive retention, recovery time objective,
 disable procedure, and emergency authorization are **TBD [BLOCKING]**.
 
+Owner release-authority principles recorded for `TRUST-APP-02`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+roles: separate named least-privilege catalog publisher; approver; installer; runtime operator; archive authority; revoker; emergency-recovery authority
+release: immutable bundle; atomic activation; no in-place edit
+rollback: explicit profile-ID change and process restart
+revocation_record: profile; release; digest; reason; effective time; authority; replacement/disable action; propagation/audit evidence
+decision_hash: 7b897e1e3899339bddadad34a86e19ecd4c49810c5fde005a203a6524123ad7f
+state: OWNER APPROVED PARTIAL — named assignments, stores, retention, recovery objectives, disable procedure, implementation, and release approval remain blocking
+```
+
 The first-release trust boundary uses a digest-bound attestation without new
 PKI. A security threat model must still explicitly accept this boundary; PKI
 key generation, custody, rotation, verification, revocation, recovery, and
@@ -128,7 +141,7 @@ The retention and access policy is governed by
 | Owner | Approval role | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | loidinhm31 | Security | TRUST-APP-01 | Threat model, root/path rules, digest and optional PKI decision | Owner decision block above | 2026-08-18 | `796556a3badc20c05ee07b1f0060e4c1085927849026fc85a7ff1e26ffe341d6` | **PARTIAL — attestation boundary approved; authorities, implementation, and threat-model review blocking** |
-| loidinhm31 | Release | TRUST-APP-02 | Catalog publisher, attestation workflow, revocation and archive | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Release | TRUST-APP-02 | Catalog publisher, attestation workflow, revocation and archive | Owner decision block above | 2026-08-18 | `7b897e1e3899339bddadad34a86e19ecd4c49810c5fde005a203a6524123ad7f` | **PARTIAL — governance principles approved; named authorities and implementation blocking** |
 | loidinhm31 | Technical | TRUST-APP-03 | Schema, engine/ORT allowlist, canonicalization and startup failure | TBD | TBD | Not assigned | **BLOCKING** |
 | loidinhm31 | Operator | TRUST-APP-04 | Install, disable, last-known-good retention and recovery drill | TBD | TBD | Not assigned | **BLOCKING** |
 
