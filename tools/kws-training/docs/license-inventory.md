@@ -63,12 +63,24 @@ unless their owners explicitly approve sanitized, redistributable fixtures.
 Hosted training or an external data processor is prohibited without written
 privacy, legal, and security approval.
 
+Owner processing-boundary decision recorded for `LIC-APP-02`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+synthetic_data: generator, voice/style licensing, prompt/seed policy, generated-data license, and provenance approval required
+human_consent: synthetic clips never represent human consent or replace the target-rover human gate
+hosted_or_external_processor: prohibited unless written privacy, legal, and security approval covers transfer and retention
+decision_hash: 4f1ea90a9bf196ea7f8bc7f24bb8ae686565ada96155583ca1cb62b11d7ae18f
+state: OWNER APPROVED PARTIAL — exact generator, terms, jurisdictions, transfer, retention, and processor evidence remain blocking
+```
+
 ## Approval register
 
 | Owner | Approval role | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | loidinhm31 | Legal | LIC-APP-01 | Component/data/model terms and commercial redistribution | Owner decision block above | 2026-08-18 | `7c9d837587c90bbc82fc7eaf3234eda8ae9951d8db0618e561651a7efd8ded93` | **PARTIAL — gate approved; component rights and legal review blocking** |
-| loidinhm31 | Privacy | LIC-APP-02 | Human/synthetic data processing and withdrawal impact | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Privacy | LIC-APP-02 | Human/synthetic data processing and withdrawal impact | Owner decision block above | 2026-08-18 | `4f1ea90a9bf196ea7f8bc7f24bb8ae686565ada96155583ca1cb62b11d7ae18f` | **PARTIAL — processing boundary approved; data rights and terms blocking** |
 | loidinhm31 | Security | LIC-APP-03 | Provenance, downloads, processor and supply-chain controls | TBD | TBD | Not assigned | **BLOCKING** |
 | loidinhm31 | Release | LIC-APP-04 | Notices, bundle contents, archive and publication scope | TBD | TBD | Not assigned | **BLOCKING** |
 
