@@ -32,7 +32,7 @@ named last-known-good rollback profile.
 | ID | Decision | Working proposal | Status |
 | --- | --- | --- | --- |
 | PROD-01 | Startup semantics | One profile; restart to switch; no hot reload | **USER MUST APPROVE — blocking** |
-| PROD-02 | Primary/fallback phrase | Primary display `Hey E.C`; spoken/canonical pronunciation `Hey Ee Cee`; fallback remains a separately approved later candidate and never an automatic runtime fallback | **PARTIAL — phrase recorded; scope/evidence approval blocking** |
+| PROD-02 | Primary/fallback phrase | Primary display `Hey E.C`; spoken/canonical pronunciation `Hey Ee Cee`; fallback remains intentionally pending as a separately approved later candidate and never an automatic runtime fallback | **PARTIAL — primary recorded; fallback intentionally pending** |
 | PROD-03 | Candidate eligibility | Prefer a short 2–4 word phrase with distinctive phonemes, stable pronunciation, low ordinary-use collision, and no safety/control vocabulary overlap | **USER MUST APPROVE — blocking** |
 | PROD-04 | Baseline profile | Exact named Sherpa profile ID, release ID, and digest | **TBD — operator/release approval blocking** |
 | PROD-05 | Production identity | Explicit `KWS_PROFILE_ID`; no unset-ID fallback | **USER MUST APPROVE — blocking** |
@@ -92,6 +92,16 @@ minimum_accent_matrix: TBD [BLOCKING]
 exclusions: TBD [BLOCKING]
 decision_hash: d994953475a14bf2bad216bbf38eea6652ed794b543a9214275b2c24f3f325b0
 state: PARTIAL — broad coverage recorded; matrix and exclusions remain blocking
+```
+
+Owner fallback decision recorded for `PROD-02`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+decision: Keep fallback pending
+decision_hash: 370b490640774e79be658eeabf8236aada8dfcc58724a70a52b663669775b44e
+state: BLOCKING — no fallback candidate selected; no runtime fallback permitted
 ```
 
 The fallback fields describe a later explicit selection candidate only. Missing,
