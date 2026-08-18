@@ -36,7 +36,7 @@ named last-known-good rollback profile.
 | PROD-01 | Startup semantics | Exactly one `KWS_PROFILE_ID`; restart to switch; no hot reload; invalid or unapproved identity fails before Dora | **OWNER APPROVED — implementation and release gates remain blocking** |
 | PROD-02 | Primary/fallback phrase | Primary display `Hey E.C`; spoken/canonical pronunciation `Hey Ee Cee`; fallback remains intentionally pending as a separately approved later candidate and never an automatic runtime fallback | **PARTIAL — primary recorded; fallback intentionally pending** |
 | PROD-03 | Candidate eligibility | Require 2–4 spoken words, stable pronunciation, distinctive phonemes, low ordinary-speech collision, no safety/control vocabulary overlap, and no common Rover TTS/command collision | **OWNER APPROVED — acoustic and evidence gates remain blocking** |
-| PROD-04 | Baseline profile | Logical ID `sherpa-hey-kv-v1` mapped to the current Sherpa last-known-good bundle; release ID and digest remain required | **PARTIAL — logical ID recorded; release ID/digest and approval blocking** |
+| PROD-04 | Baseline profile | Logical ID `sherpa-hey-kv-v1` mapped to the current Sherpa last-known-good bundle; release provenance, ID, and digest remain required | **PARTIAL — logical ID recorded; provenance, release ID/digest, and approval blocking** |
 | PROD-05 | Production identity | Explicit exact `KWS_PROFILE_ID`; no unset-ID or phrase fallback | **OWNER APPROVED — catalog, implementation, evidence, and release gates remain blocking** |
 | PROD-06 | Engine contract | Sherpa Zipformer transducer/BPE rollback baseline is approved; successor engine and ORT/provider allowlist remain required | **PARTIAL — successor engine, provider evidence, and release approval blocking** |
 | PROD-07 | Population | Universal/multi-speaker target; English; broad intended accent coverage without a claim until the exact matrix and exclusions are approved | **PARTIAL — matrix and exclusions remain product/privacy/data blockers** |
@@ -180,6 +180,20 @@ release_id: TBD [BLOCKING]
 composite_digest: TBD [BLOCKING]
 decision_hash: 0591809d47077f7844981915a020c3c2a82c08415cbc52634c742139b0526029
 state: PARTIAL — logical ID and current last-known-good mapping recorded; release ID, payload digest, target identity, and operator approval remain blocking
+```
+
+Owner baseline-provenance decision recorded for `PROD-APP-02`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+decision: Keep baseline release identity and composite digest pending
+provenance_conflict: model-manifest.sh pins GitHub KWS archive/hash; bundle README points to ModelScope source
+inventory_conflict: local bundle contains extra non-int8 model and keyword files beyond the current runtime required-file list
+release_id: TBD [BLOCKING]
+composite_digest: TBD [BLOCKING]
+decision_hash: 129e768ada79562d09bbac52c552f65f9a969d2f83922d75a3e9d89364c6d302
+state: BLOCKING — reconcile source authority and complete declared file inventory before release binding
 ```
 
 Owner startup policy input recorded for `PROD-01` and `PROD-05`:
@@ -353,7 +367,7 @@ recovery objective, and emergency recovery authority are **TBD [BLOCKING]**.
 | Owner | Approval role | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | loidinhm31 | Product | PROD-APP-01 | Phrase, population, deferrals, numeric SLOs | TBD | TBD | Not assigned | **BLOCKING** |
-| loidinhm31 | Operator | PROD-APP-02 | Target identity, baseline, measurement and rollback procedure | Feasibility-host, baseline, and capture-boundary decision blocks above | 2026-08-18 | `0591809d47077f7844981915a020c3c2a82c08415cbc52634c742139b0526029`; `0ae79d9dfd3ea8a6f9f15fa6156599fff9e2a3c5e6e3d087cdfeaa7148950a9c`; `46577ce643db2e1eeb2d9db4018ec27ab2778178d8bd5c0b42d00cf7e4a437fa` | **PARTIAL — baseline, feasibility host, and detector boundary recorded; exact target and capture details blocking** |
+| loidinhm31 | Operator | PROD-APP-02 | Target identity, baseline, measurement and rollback procedure | Feasibility-host, baseline, capture-boundary, and provenance decision blocks above | 2026-08-18 | `0591809d47077f7844981915a020c3c2a82c08415cbc52634c742139b0526029`; `0ae79d9dfd3ea8a6f9f15fa6156599fff9e2a3c5e6e3d087cdfeaa7148950a9c`; `46577ce643db2e1eeb2d9db4018ec27ab2778178d8bd5c0b42d00cf7e4a437fa`; `129e768ada79562d09bbac52c552f65f9a969d2f83922d75a3e9d89364c6d302` | **PARTIAL — feasibility host and detector boundary recorded; exact target, provenance, release ID/digest, and capture details blocking** |
 | loidinhm31 | Statistician/technical | PROD-APP-03 | Formulas, cooldown, exclusions, subgroup and soak rules | Owner decision block above | 2026-08-18 | `83a1e419f3b12b64133aa505810ccae0216217e42964286dcc644dc0b98c1ccf` | **PARTIAL — formula framework approved; detailed rules and evidence blocking** |
 | loidinhm31 | Privacy/legal | PROD-APP-04 | Consent, retention, jurisdictions, licenses and redistribution | TBD | TBD | Not assigned | **BLOCKING** |
 | loidinhm31 | Security/release | PROD-APP-05 | Catalog authority, attestation, revocation and recovery | TBD | TBD | Not assigned | **BLOCKING** |
