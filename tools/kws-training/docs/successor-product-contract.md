@@ -222,8 +222,9 @@ creates a new immutable profile and repeats the relevant evidence gates.
 
 ## Proposed SLOs and preregistration
 
-All numbers below are **PROPOSED — USER MUST APPROVE**. A revised value must
-replace the proposal and retain owner/date/decision-hash evidence.
+All numbers below are **OWNER-APPROVED WORKING ACCEPTANCE TARGETS**, not
+results. A revised value must replace the target and retain owner/date/
+decision-hash evidence.
 
 | Measure | Proposed target | Formula/clock that must be frozen |
 | --- | --- | --- |
@@ -239,6 +240,25 @@ replace the proposal and retain owner/date/decision-hash evidence.
 | Phrase-end to `NormalRover` Ready | p95 <5 s | Readiness transition and timeout/error semantics required |
 | Ready to WakeAck start | p95 <1.5 s | Readiness and audio-start clocks from the same monotonic source |
 | Phrase-end to WakeAck start | p95 <6.5 s | Composite target; retries, cancellation, and invalid samples excluded by rule |
+
+Owner SLO-target input recorded for `PROD-APP-01`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+speakers: at least 30 consented speakers
+positives: 10-20 per speaker across sessions
+partitions: speaker-disjoint train/dev/test
+overall_recall: at least 95%
+required_subgroup_recall: at least 90% for every required subgroup
+false_accepts: one-sided 95% upper bound <= 0.05 FA/h
+planning_exposure: initial clean-negative floor >= 100 h
+self_trigger: zero WakeAck/TTS self-triggers
+continuous_soak: at least 24 h on exact target
+latency: warm p99 <= 100 ms; phrase-end-to-detection p95 <= 600 ms; phrase-end-to-NormalRover-Ready p95 < 5 s; Ready-to-WakeAck-start p95 < 1.5 s; phrase-end-to-WakeAck-start p95 < 6.5 s
+decision_hash: a98f145fa623c5b9c49746ee9caa47d2707434c86d8c4b2f04c8dff5c3c1dcac
+state: OWNER APPROVED WORKING GATE — formulas, subgroup definitions, exclusions, evidence, and release approval remain blocking
+```
 
 Threshold, cooldown, confidence-bound method, subgroup definitions, clean-hour
 exclusions, soak validity, canary exposure, disable bound, and rollback recovery
