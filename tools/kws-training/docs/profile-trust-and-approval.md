@@ -64,8 +64,9 @@ Before constructing the engine or processing Dora events, the selector must:
 
 1. Parse the catalog and locate the exact ID; reject unknown, duplicate, or
    revoked identities.
-2. Verify the attestation decision, approver authority, digest binding, and
-   evidence/license references.
+2. Verify the attestation decision is exactly `Promote`, approver authority,
+   digest binding, and evidence/license references; reject missing, `Reject`,
+   and `Revoke` decisions.
 3. Parse a supported manifest schema; reject unknown schema/engine/provider,
    phrase/token/threshold mismatch, missing hashes, extra undeclared required
    files, absolute paths, traversal, and incompatible ORT/provider values.
@@ -93,15 +94,30 @@ Offline recovery must be least-privilege and must not bypass validation. The
 revocation store, publisher, archive retention, recovery time objective,
 disable procedure, and emergency authorization are **TBD [BLOCKING]**.
 
-The preferred first-release proposal is a digest-bound attestation without new
-PKI. A security threat model must explicitly accept this boundary; otherwise
-PKI key generation, custody, rotation, verification, revocation, recovery, and
-test fixtures become mandatory. The PKI decision is **TBD [BLOCKING]**.
+The first-release trust boundary uses a digest-bound attestation without new
+PKI. A security threat model must still explicitly accept this boundary; PKI
+key generation, custody, rotation, verification, revocation, recovery, and
+test fixtures are deferred unless a later threat-model decision requires them.
+
+Owner trust-mechanism decision recorded for `TRUST-APP-01`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+decision: Approve digest-bound attestation without new PKI for first release
+accepted_decision: Promote only
+rejected_decisions: missing; Reject; Revoke
+binding: profile_id; release_id; composite SHA-256 digest; display/spoken/canonical phrase; threshold; cooldown; engine contract; ORT/provider compatibility; evidence; license references; approver role/reference; approval date
+manifest_boolean_alone: insufficient
+pki: deferred unless a later threat-model decision requires it
+decision_hash: 796556a3badc20c05ee07b1f0060e4c1085927849026fc85a7ff1e26ffe341d6
+state: OWNER APPROVED PARTIAL — named authorities, canonical digest construction, catalog implementation, threat model, and release approval remain blocking
+```
 
 ## Observability and privacy
 
 Startup, heartbeat, detection, and evidence envelopes must include
-`profile_id`, `release_id`, digest (or approved digest alias), engine contract,
+`profile_id`, `release_id`, canonical composite digest, engine contract,
 provider, validation result, and rollback reason. Logs must not include raw
 audio, secrets, approval keys, participant identity, or private storage paths.
 The retention and access policy is governed by
@@ -111,7 +127,7 @@ The retention and access policy is governed by
 
 | Owner | Approval role | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| loidinhm31 | Security | TRUST-APP-01 | Threat model, root/path rules, digest and optional PKI decision | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Security | TRUST-APP-01 | Threat model, root/path rules, digest and optional PKI decision | Owner decision block above | 2026-08-18 | `796556a3badc20c05ee07b1f0060e4c1085927849026fc85a7ff1e26ffe341d6` | **PARTIAL — attestation boundary approved; authorities, implementation, and threat-model review blocking** |
 | loidinhm31 | Release | TRUST-APP-02 | Catalog publisher, attestation workflow, revocation and archive | TBD | TBD | Not assigned | **BLOCKING** |
 | loidinhm31 | Technical | TRUST-APP-03 | Schema, engine/ORT allowlist, canonicalization and startup failure | TBD | TBD | Not assigned | **BLOCKING** |
 | loidinhm31 | Operator | TRUST-APP-04 | Install, disable, last-known-good retention and recovery drill | TBD | TBD | Not assigned | **BLOCKING** |
