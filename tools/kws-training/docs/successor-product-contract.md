@@ -296,7 +296,23 @@ decision_hash: 0ae79d9dfd3ea8a6f9f15fa6156599fff9e2a3c5e6e3d087cdfeaa7148950a9c
 state: PARTIAL — host metadata recorded for feasibility; exact rover target and capture/runtime controls remain blocking
 ```
 
-The proposed capture contract is 16-kHz mono F32. Any resampling, framing,
+Owner detector-capture boundary input recorded for `PROD-APP-02`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+detector_input: 16-kHz mono F32
+resampling: TBD [BLOCKING]
+framing: TBD [BLOCKING]
+window_and_hop: TBD [BLOCKING]
+vad_and_noise_suppression: TBD [BLOCKING]
+queue_and_drop_behavior: TBD [BLOCKING]
+clock_source: TBD [BLOCKING]
+decision_hash: 46577ce643db2e1eeb2d9db4018ec27ab2778178d8bd5c0b42d00cf7e4a437fa
+state: OWNER APPROVED PARTIAL — only the detector boundary is frozen; capture pipeline details and target evidence remain blocking
+```
+
+The owner-approved detector boundary is 16-kHz mono F32. Any resampling, framing,
 window/hop, VAD/noise suppression, queue/drop behavior, and clock source must be
 recorded before collection. Resource limits for CPU, RSS, peak RSS, temperature,
 throttling, and power are **TBD [BLOCKING]**. `phrase_end`, `detection`,
@@ -320,7 +336,7 @@ recovery objective, and emergency recovery authority are **TBD [BLOCKING]**.
 | Owner | Approval role | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | loidinhm31 | Product | PROD-APP-01 | Phrase, population, deferrals, numeric SLOs | TBD | TBD | Not assigned | **BLOCKING** |
-| loidinhm31 | Operator | PROD-APP-02 | Target identity, baseline, measurement and rollback procedure | Feasibility-host and baseline decision blocks above | 2026-08-18 | `0591809d47077f7844981915a020c3c2a82c08415cbc52634c742139b0526029`; `0ae79d9dfd3ea8a6f9f15fa6156599fff9e2a3c5e6e3d087cdfeaa7148950a9c` | **PARTIAL — baseline and feasibility host recorded; exact target and release evidence blocking** |
+| loidinhm31 | Operator | PROD-APP-02 | Target identity, baseline, measurement and rollback procedure | Feasibility-host, baseline, and capture-boundary decision blocks above | 2026-08-18 | `0591809d47077f7844981915a020c3c2a82c08415cbc52634c742139b0526029`; `0ae79d9dfd3ea8a6f9f15fa6156599fff9e2a3c5e6e3d087cdfeaa7148950a9c`; `46577ce643db2e1eeb2d9db4018ec27ab2778178d8bd5c0b42d00cf7e4a437fa` | **PARTIAL — baseline, feasibility host, and detector boundary recorded; exact target and capture details blocking** |
 | loidinhm31 | Statistician/technical | PROD-APP-03 | Formulas, cooldown, exclusions, subgroup and soak rules | TBD | TBD | Not assigned | **BLOCKING** |
 | loidinhm31 | Privacy/legal | PROD-APP-04 | Consent, retention, jurisdictions, licenses and redistribution | TBD | TBD | Not assigned | **BLOCKING** |
 | loidinhm31 | Security/release | PROD-APP-05 | Catalog authority, attestation, revocation and recovery | TBD | TBD | Not assigned | **BLOCKING** |
