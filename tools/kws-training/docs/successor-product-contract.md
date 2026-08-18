@@ -38,7 +38,7 @@ named last-known-good rollback profile.
 | PROD-03 | Candidate eligibility | Require 2–4 spoken words, stable pronunciation, distinctive phonemes, low ordinary-speech collision, no safety/control vocabulary overlap, and no common Rover TTS/command collision | **OWNER APPROVED — acoustic and evidence gates remain blocking** |
 | PROD-04 | Baseline profile | Logical ID `sherpa-hey-kv-v1` mapped to the current Sherpa last-known-good bundle; release ID and digest remain required | **PARTIAL — logical ID recorded; release ID/digest and approval blocking** |
 | PROD-05 | Production identity | Explicit exact `KWS_PROFILE_ID`; no unset-ID or phrase fallback | **OWNER APPROVED — catalog, implementation, evidence, and release gates remain blocking** |
-| PROD-06 | Engine contract | Sherpa Zipformer transducer/BPE baseline and one approved candidate engine contract; ORT/provider compatibility is allowlisted | **TBD — technical feasibility and release approval blocking** |
+| PROD-06 | Engine contract | Sherpa Zipformer transducer/BPE rollback baseline is approved; successor engine and ORT/provider allowlist remain required | **PARTIAL — successor engine, provider evidence, and release approval blocking** |
 | PROD-07 | Population | Universal/multi-speaker target; English; broad intended accent coverage without a claim until the exact matrix and exclusions are approved | **PARTIAL — matrix and exclusions remain product/privacy/data blockers** |
 | PROD-08 | Out-of-scope behavior | Defer live reload, multi-profile inference, personalization, arbitrary phrase generation, browser selection, ARM acceptance, and fleet rollout | **OWNER APPROVED — release implementation and approval gates remain blocking** |
 
@@ -144,6 +144,24 @@ in_scope: one profile per voice-wake process; restart-only switching; linux/amd6
 deferred: live reload; multi-profile inference; personalization; arbitrary phrase generation; browser selection; ARM acceptance; fleet rollout
 decision_hash: d55bbdaad736211358ac77d04216527214505f18fb87a7084f64527c32c77db1
 state: OWNER APPROVED — implementation, target evidence, and release approval remain blocking
+```
+
+Owner rollback-engine input recorded for `PROD-06`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+engine: sherpa-onnx 1.13.3 with static feature
+model: Zipformer transducer with BPE tokens
+input: 16-kHz mono F32
+inference_threads: 1
+bundle: sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01
+bundle_archive_sha256: f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a
+repository_ort_version: 1.16.3
+successor_engine: TBD [BLOCKING]
+provider_allowlist: TBD [BLOCKING]
+decision_hash: 6857b7dac18bbefd6329381e31fcf4688e7c694a3af146606528f98969ad22a5
+state: OWNER APPROVED — successor engine, provider/ORT feasibility evidence, and release approval remain blocking
 ```
 
 Owner baseline identity input recorded for `PROD-APP-02`:
