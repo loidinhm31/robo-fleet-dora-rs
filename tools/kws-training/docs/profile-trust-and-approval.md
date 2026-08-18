@@ -106,6 +106,22 @@ Offline recovery must be least-privilege and must not bypass validation. The
 revocation store, publisher, archive retention, recovery time objective,
 disable procedure, and emergency authorization are **TBD [BLOCKING]**.
 
+Owner operator-recovery principles recorded for `TRUST-APP-04`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+install: stage and validate before atomic activation
+last_known_good: retain verified rollback bundle
+disable: auditable catalog action
+rollback: explicit profile-ID change and process restart
+recovery_drill: required; validation bypass prohibited
+recovery_time_objective: TBD [BLOCKING]
+runbook_and_emergency_authority: TBD [BLOCKING]
+decision_hash: 07768023a19f802676934d18e888d4a639a092ea5d2a73209f9b5cea5239d409
+state: OWNER APPROVED PARTIAL — RTO, runbook, emergency authority, implementation, evidence, and release approval remain blocking
+```
+
 Owner release-authority principles recorded for `TRUST-APP-02`:
 
 ```text
@@ -155,7 +171,7 @@ The retention and access policy is governed by
 | loidinhm31 | Security | TRUST-APP-01 | Threat model, root/path rules, digest and optional PKI decision | Owner decision block above | 2026-08-18 | `796556a3badc20c05ee07b1f0060e4c1085927849026fc85a7ff1e26ffe341d6` | **PARTIAL — attestation boundary approved; authorities, implementation, and threat-model review blocking** |
 | loidinhm31 | Release | TRUST-APP-02 | Catalog publisher, attestation workflow, revocation and archive | Owner decision block above | 2026-08-18 | `7b897e1e3899339bddadad34a86e19ecd4c49810c5fde005a203a6524123ad7f` | **PARTIAL — governance principles approved; named authorities and implementation blocking** |
 | loidinhm31 | Technical | TRUST-APP-03 | Schema, engine/ORT allowlist, canonicalization and startup failure | Owner decision block above | 2026-08-18 | `ff2d2cb336e8cd11c43f62f00b865cd218adc0a4fbd2f0b34918a7be5a046e64` | **PARTIAL — validation contract approved; implementation and fixtures blocking** |
-| loidinhm31 | Operator | TRUST-APP-04 | Install, disable, last-known-good retention and recovery drill | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Operator | TRUST-APP-04 | Install, disable, last-known-good retention and recovery drill | Owner decision block above | 2026-08-18 | `07768023a19f802676934d18e888d4a639a092ea5d2a73209f9b5cea5239d409` | **PARTIAL — principles approved; RTO and runbook implementation blocking** |
 
 Phase 1 cannot freeze trust or authorize Phase 2 until every row has an
 accepted/revised/rejected decision, owner, date, and canonical decision hash.
