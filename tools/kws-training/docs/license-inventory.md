@@ -91,6 +91,20 @@ decision_hash: 6b284c6019c4121061975db15b6836ab5480c2ac074a65aeb4e606af66f57de7
 state: OWNER APPROVED PARTIAL — complete provenance, license, notice, and security review remain blocking
 ```
 
+Owner publication-gate decision recorded for `LIC-APP-04`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+promotable_bundle: notices; exact versions/commits; provenance; composite SHA-256 digest; allowed redistribution scope required
+incompatible_terms: exclude component or obtain written exception
+training_and_evaluation_assets: offline unless explicitly approved as sanitized redistributable fixtures
+archive: immutable reference
+current_bundle: blocked until evidence and approvals complete
+decision_hash: 2a55d61b1ffe24949c20f1a38a6bbf749d2e2a4a5760e82e0072bc0a7ed1e976
+state: OWNER APPROVED PARTIAL — bundle evidence, notices, archive implementation, and release approval remain blocking
+```
+
 ## Approval register
 
 | Owner | Approval role | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
@@ -98,7 +112,7 @@ state: OWNER APPROVED PARTIAL — complete provenance, license, notice, and secu
 | loidinhm31 | Legal | LIC-APP-01 | Component/data/model terms and commercial redistribution | Owner decision block above | 2026-08-18 | `7c9d837587c90bbc82fc7eaf3234eda8ae9951d8db0618e561651a7efd8ded93` | **PARTIAL — gate approved; component rights and legal review blocking** |
 | loidinhm31 | Privacy | LIC-APP-02 | Human/synthetic data processing and withdrawal impact | Owner decision block above | 2026-08-18 | `4f1ea90a9bf196ea7f8bc7f24bb8ae686565ada96155583ca1cb62b11d7ae18f` | **PARTIAL — processing boundary approved; data rights and terms blocking** |
 | loidinhm31 | Security | LIC-APP-03 | Provenance, downloads, processor and supply-chain controls | Owner decision block above | 2026-08-18 | `6b284c6019c4121061975db15b6836ab5480c2ac074a65aeb4e606af66f57de7` | **PARTIAL — controls approved; complete provenance and security review blocking** |
-| loidinhm31 | Release | LIC-APP-04 | Notices, bundle contents, archive and publication scope | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Release | LIC-APP-04 | Notices, bundle contents, archive and publication scope | Owner decision block above | 2026-08-18 | `2a55d61b1ffe24949c20f1a38a6bbf749d2e2a4a5760e82e0072bc0a7ed1e976` | **PARTIAL — gate approved; bundle evidence and release approval blocking** |
 
 ## Blocking checklist
 
