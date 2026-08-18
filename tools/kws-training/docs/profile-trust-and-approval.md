@@ -68,6 +68,20 @@ decision_hash: 1451768af14484c282032115d4999c4f4bbbea483996133ffaaec722c3b74635
 state: OWNER APPROVED PARTIAL — schema implementation, allowed characters/sizes, evidence references, approval identity, and test vectors remain blocking
 ```
 
+Owner key-material decision recorded for `TRUST-APP-01`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-19 (Asia/Ho_Chi_Minh)
+decision: No key material
+private_keys: never stored in repository attestations or evidence
+public_keys: not required for the first-release digest-attestation model
+pki: deferred
+attestation_trust: controlled digest-approval record outside repository secrets
+decision_hash: 08adbadac51117d98471bf30de3cc6717e1378c34da5e4a56e9c12111ad7fbf6
+state: OWNER APPROVED PARTIAL — evidence references, approval identity, authorities, implementation, and threat-model review remain blocking
+```
+
 ## Catalog, bundle, and startup validation
 
 The catalog must map an exact `profile_id` to one immutable release, digest,
@@ -184,7 +198,7 @@ The retention and access policy is governed by
 
 | Owner | Approval role | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| loidinhm31 | Security | TRUST-APP-01 | Threat model, root/path rules, digest and optional PKI decision | Owner decision blocks above | 2026-08-18 | `796556a3badc20c05ee07b1f0060e4c1085927849026fc85a7ff1e26ffe341d6`; `1451768af14484c282032115d4999c4f4bbbea483996133ffaaec722c3b74635` | **PARTIAL — attestation and digest boundary approved; authorities, implementation, and threat-model review blocking** |
+| loidinhm31 | Security | TRUST-APP-01 | Threat model, root/path rules, digest and optional PKI decision | Owner decision blocks above | 2026-08-18 / 2026-08-19 | `796556a3badc20c05ee07b1f0060e4c1085927849026fc85a7ff1e26ffe341d6`; `1451768af14484c282032115d4999c4f4bbbea483996133ffaaec722c3b74635`; `08adbadac51117d98471bf30de3cc6717e1378c34da5e4a56e9c12111ad7fbf6` | **PARTIAL — attestation, digest, and key-material boundary approved; evidence references, approval identity, authorities, implementation, and threat-model review blocking** |
 | loidinhm31 | Release | TRUST-APP-02 | Catalog publisher, attestation workflow, revocation and archive | Owner decision block above | 2026-08-18 | `7b897e1e3899339bddadad34a86e19ecd4c49810c5fde005a203a6524123ad7f` | **PARTIAL — governance principles approved; named authorities and implementation blocking** |
 | loidinhm31 | Technical | TRUST-APP-03 | Schema, engine/ORT allowlist, canonicalization and startup failure | Owner decision block above | 2026-08-18 | `ff2d2cb336e8cd11c43f62f00b865cd218adc0a4fbd2f0b34918a7be5a046e64` | **PARTIAL — validation contract approved; implementation and fixtures blocking** |
 | loidinhm31 | Operator | TRUST-APP-04 | Install, disable, last-known-good retention and recovery drill | Owner decision block above | 2026-08-18 | `07768023a19f802676934d18e888d4a639a092ea5d2a73209f9b5cea5239d409` | **PARTIAL — principles approved; RTO and runbook implementation blocking** |
