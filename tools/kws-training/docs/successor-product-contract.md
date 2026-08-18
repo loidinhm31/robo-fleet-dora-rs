@@ -35,7 +35,7 @@ named last-known-good rollback profile.
 | --- | --- | --- | --- |
 | PROD-01 | Startup semantics | Exactly one `KWS_PROFILE_ID`; restart to switch; no hot reload; invalid or unapproved identity fails before Dora | **OWNER APPROVED — implementation and release gates remain blocking** |
 | PROD-02 | Primary/fallback phrase | Primary display `Hey E.C`; spoken/canonical pronunciation `Hey Ee Cee`; fallback remains intentionally pending as a separately approved later candidate and never an automatic runtime fallback | **PARTIAL — primary recorded; fallback intentionally pending** |
-| PROD-03 | Candidate eligibility | Prefer a short 2–4 word phrase with distinctive phonemes, stable pronunciation, low ordinary-use collision, and no safety/control vocabulary overlap | **USER MUST APPROVE — blocking** |
+| PROD-03 | Candidate eligibility | Require 2–4 spoken words, stable pronunciation, distinctive phonemes, low ordinary-speech collision, no safety/control vocabulary overlap, and no common Rover TTS/command collision | **OWNER APPROVED — acoustic and evidence gates remain blocking** |
 | PROD-04 | Baseline profile | Logical ID `sherpa-hey-kv-v1` mapped to the current Sherpa last-known-good bundle; release ID and digest remain required | **PARTIAL — logical ID recorded; release ID/digest and approval blocking** |
 | PROD-05 | Production identity | Explicit exact `KWS_PROFILE_ID`; no unset-ID or phrase fallback | **OWNER APPROVED — catalog, implementation, evidence, and release gates remain blocking** |
 | PROD-06 | Engine contract | Sherpa Zipformer transducer/BPE baseline and one approved candidate engine contract; ORT/provider compatibility is allowlisted | **TBD — technical feasibility and release approval blocking** |
@@ -104,6 +104,23 @@ recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
 decision: Keep fallback pending
 decision_hash: 370b490640774e79be658eeabf8236aada8dfcc58724a70a52b663669775b44e
 state: BLOCKING — no fallback candidate selected; no runtime fallback permitted
+```
+
+Owner candidate-eligibility input recorded for `PROD-03`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+spoken_word_count: 2-4
+pronunciation: stable canonical pronunciation required
+phonemes: distinctive sequence required
+ordinary_speech_collision: low collision required
+safety_and_control_vocabulary: no overlap permitted
+rover_tts_and_command_collision: no common collision permitted
+synthetic_screening: ranking only
+target_speaker_evidence: required for promotion
+decision_hash: b470e8da7b9f545c21e6143368bc177287e26f613f84454eae41aa0ba64d0cb3
+state: OWNER APPROVED — acoustic feasibility, target-speaker evaluation, and release approval remain blocking
 ```
 
 Owner baseline identity input recorded for `PROD-APP-02`:
