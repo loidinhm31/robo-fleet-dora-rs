@@ -13,7 +13,9 @@ Research proposals are labeled as proposals and are not release authority.
 
 The first release proposes exactly one approved wake-word profile per
 `voice-wake` process. `KWS_PROFILE_ID` is the deployment-owned exact identity;
-restart is the switch boundary. Phrase, tokenizer/pronunciation, threshold,
+it must match lowercase ASCII `[a-z0-9][a-z0-9._-]{0,127}` with no whitespace
+or normalization, and catalog lookup is byte-exact. Restart is the switch
+boundary. Phrase, tokenizer/pronunciation, threshold,
 engine contract, and payload digest are immutable profile fields. A “fallback
 phrase” is only a separately approved candidate for a later explicit profile
 selection; it is never an automatic runtime fallback. There is no live reload,
@@ -35,7 +37,7 @@ named last-known-good rollback profile.
 | PROD-02 | Primary/fallback phrase | Primary display `Hey E.C`; spoken/canonical pronunciation `Hey Ee Cee`; fallback remains intentionally pending as a separately approved later candidate and never an automatic runtime fallback | **PARTIAL — primary recorded; fallback intentionally pending** |
 | PROD-03 | Candidate eligibility | Prefer a short 2–4 word phrase with distinctive phonemes, stable pronunciation, low ordinary-use collision, and no safety/control vocabulary overlap | **USER MUST APPROVE — blocking** |
 | PROD-04 | Baseline profile | Logical ID `sherpa-hey-kv-v1` mapped to the current Sherpa last-known-good bundle; release ID and digest remain required | **PARTIAL — logical ID recorded; release ID/digest and approval blocking** |
-| PROD-05 | Production identity | Explicit exact `KWS_PROFILE_ID`; no unset-ID or phrase fallback | **OWNER APPROVED — catalog, canonicalization, implementation, and release gates remain blocking** |
+| PROD-05 | Production identity | Explicit exact `KWS_PROFILE_ID`; no unset-ID or phrase fallback | **OWNER APPROVED — catalog, implementation, evidence, and release gates remain blocking** |
 | PROD-06 | Engine contract | Sherpa Zipformer transducer/BPE baseline and one approved candidate engine contract; ORT/provider compatibility is allowlisted | **TBD — technical feasibility and release approval blocking** |
 | PROD-07 | Population | Universal/multi-speaker target; language, accent, hearing/speech population, and exclusions | **TBD — product/privacy/data approval blocking** |
 | PROD-08 | Out-of-scope behavior | Defer live reload, multi-profile inference, personalization, arbitrary phrase generation, browser selection, ARM acceptance, and fleet rollout | **USER MUST APPROVE — blocking** |
@@ -133,7 +135,21 @@ switch_boundary: process restart only
 pre_dora_failure_cases: unset; empty; unknown; unapproved; rejected; revoked; malformed; corrupt; hash-mismatched; path-escaping; symlinked; incompatible
 automatic_fallback: prohibited, including the pending fallback phrase
 decision_hash: 4effe4fd34b7c1c16d771bc6af1aa41b5e6e49a070f6756a63f7467be514ba6e
-state: OWNER APPROVED — catalog state, exact ID canonicalization, implementation, evidence, and release approval remain blocking
+state: OWNER APPROVED — catalog state, implementation, evidence, and release approval remain blocking
+```
+
+Owner profile-ID canonicalization input recorded for `PROD-05`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+grammar: [a-z0-9][a-z0-9._-]{0,127}
+normalization: none
+whitespace: reject
+unicode_and_uppercase: reject
+catalog_lookup: byte-exact
+decision_hash: abbee064f84b55793f780702c157d39ad08a8417fe95c0901925ebf9439aa5a0
+state: OWNER APPROVED — catalog implementation, evidence, and release approval remain blocking
 ```
 
 The fallback fields describe a later explicit selection candidate only. Missing,
