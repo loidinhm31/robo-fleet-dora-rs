@@ -40,7 +40,7 @@ named last-known-good rollback profile.
 | PROD-05 | Production identity | Explicit exact `KWS_PROFILE_ID`; no unset-ID or phrase fallback | **OWNER APPROVED — catalog, implementation, evidence, and release gates remain blocking** |
 | PROD-06 | Engine contract | Sherpa Zipformer transducer/BPE baseline and one approved candidate engine contract; ORT/provider compatibility is allowlisted | **TBD — technical feasibility and release approval blocking** |
 | PROD-07 | Population | Universal/multi-speaker target; language, accent, hearing/speech population, and exclusions | **TBD — product/privacy/data approval blocking** |
-| PROD-08 | Out-of-scope behavior | Defer live reload, multi-profile inference, personalization, arbitrary phrase generation, browser selection, ARM acceptance, and fleet rollout | **USER MUST APPROVE — blocking** |
+| PROD-08 | Out-of-scope behavior | Defer live reload, multi-profile inference, personalization, arbitrary phrase generation, browser selection, ARM acceptance, and fleet rollout | **OWNER APPROVED — release implementation and approval gates remain blocking** |
 
 ## Phrase and baseline record
 
@@ -121,6 +121,17 @@ synthetic_screening: ranking only
 target_speaker_evidence: required for promotion
 decision_hash: b470e8da7b9f545c21e6143368bc177287e26f613f84454eae41aa0ba64d0cb3
 state: OWNER APPROVED — acoustic feasibility, target-speaker evaluation, and release approval remain blocking
+```
+
+Owner release-scope input recorded for `PROD-08`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+in_scope: one profile per voice-wake process; restart-only switching; linux/amd64 and x86_64 target
+deferred: live reload; multi-profile inference; personalization; arbitrary phrase generation; browser selection; ARM acceptance; fleet rollout
+decision_hash: d55bbdaad736211358ac77d04216527214505f18fb87a7084f64527c32c77db1
+state: OWNER APPROVED — implementation, target evidence, and release approval remain blocking
 ```
 
 Owner baseline identity input recorded for `PROD-APP-02`:
