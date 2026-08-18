@@ -50,7 +50,8 @@ before Phase 2 begins:
 primary.display_phrase: Hey E.C
 primary.spoken_phrase: Hey Ee Cee
 primary.canonical_pronunciation: Hey Ee Cee
-primary.language_and_accent_scope: TBD [BLOCKING]
+primary.language_and_accent_scope: English; exact accent coverage and exclusions TBD [BLOCKING]
+primary.population: Universal/multi-speaker
 fallback.display_phrase: TBD [BLOCKING]
 fallback.spoken_phrase: TBD [BLOCKING]
 baseline.profile_id: TBD [BLOCKING]
@@ -66,6 +67,19 @@ recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
 decision_hash: e0f2805543d2957d52a7d9e87868d32888d1910ac4a8158dcbca0509dce77920
 state: PARTIAL — phrase fields only; language/accent scope, fallback, feasibility, and product approval remain blocking
 audio_evidence: not required for this label; required later for acoustic feasibility and target evaluation
+```
+
+Owner scope input recorded for `PROD-APP-01`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+language: English
+population: Universal/multi-speaker
+accent_coverage: TBD [BLOCKING]
+exclusions: TBD [BLOCKING]
+decision_hash: 14f2ffd4d81d78ada235dfce51d8c36551e26ee6cf9f7b7e761e9634329eb88a
+state: PARTIAL — language/population recorded; accent coverage and exclusions remain blocking
 ```
 
 The fallback fields describe a later explicit selection candidate only. Missing,
