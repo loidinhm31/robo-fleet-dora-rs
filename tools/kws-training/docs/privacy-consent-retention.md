@@ -81,12 +81,12 @@ component has copyleft or attribution obligations are **TBD [BLOCKING]**.
 
 ## Approval register
 
-| Owner | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
-| --- | --- | --- | --- | --- | --- | --- |
-| Privacy/data owner | PRIV-APP-01 | Data classes, lawful basis, minimization and participant rights | TBD | TBD | Not assigned | **BLOCKING** |
-| Legal/licensing owner | PRIV-APP-02 | Jurisdictions, processor terms, licenses and redistribution | TBD | TBD | Not assigned | **BLOCKING** |
-| Security owner | PRIV-APP-03 | Encryption, key custody, access, blind custody and audit | TBD | TBD | Not assigned | **BLOCKING** |
-| Release owner | PRIV-APP-04 | Artifact publication, notices, deletion impact and archive | TBD | TBD | Not assigned | **BLOCKING** |
+| Owner | Approval role | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| loidinhm31 | Privacy/data owner | PRIV-APP-01 | Data classes, lawful basis, minimization and participant rights | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Legal/licensing owner | PRIV-APP-02 | Jurisdictions, processor terms, licenses and redistribution | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Security owner | PRIV-APP-03 | Encryption, key custody, access, blind custody and audit | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Release owner | PRIV-APP-04 | Artifact publication, notices, deletion impact and archive | TBD | TBD | Not assigned | **BLOCKING** |
 
 Approval references must be opaque, least-privilege, and free of private keys
 or participant identity. This repository records policy decisions and hashes,

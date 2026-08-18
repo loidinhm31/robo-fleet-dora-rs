@@ -53,12 +53,12 @@ privacy, legal, and security approval.
 
 ## Approval register
 
-| Owner | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
-| --- | --- | --- | --- | --- | --- | --- |
-| Legal | LIC-APP-01 | Component/data/model terms and commercial redistribution | TBD | TBD | Not assigned | **BLOCKING** |
-| Privacy | LIC-APP-02 | Human/synthetic data processing and withdrawal impact | TBD | TBD | Not assigned | **BLOCKING** |
-| Security | LIC-APP-03 | Provenance, downloads, processor and supply-chain controls | TBD | TBD | Not assigned | **BLOCKING** |
-| Release | LIC-APP-04 | Notices, bundle contents, archive and publication scope | TBD | TBD | Not assigned | **BLOCKING** |
+| Owner | Approval role | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| loidinhm31 | Legal | LIC-APP-01 | Component/data/model terms and commercial redistribution | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Privacy | LIC-APP-02 | Human/synthetic data processing and withdrawal impact | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Security | LIC-APP-03 | Provenance, downloads, processor and supply-chain controls | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Release | LIC-APP-04 | Notices, bundle contents, archive and publication scope | TBD | TBD | Not assigned | **BLOCKING** |
 
 ## Blocking checklist
 

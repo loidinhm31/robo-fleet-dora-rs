@@ -32,7 +32,7 @@ named last-known-good rollback profile.
 | ID | Decision | Working proposal | Status |
 | --- | --- | --- | --- |
 | PROD-01 | Startup semantics | One profile; restart to switch; no hot reload | **USER MUST APPROVE — blocking** |
-| PROD-02 | Primary/fallback phrase | One primary and one separately approved later candidate; exact display, spoken, canonical pronunciation, language, and token form; candidate is never an automatic runtime fallback | **TBD — product/data approval blocking** |
+| PROD-02 | Primary/fallback phrase | Primary display `Hey E.C`; spoken/canonical pronunciation `Hey Ee Cee`; fallback remains a separately approved later candidate and never an automatic runtime fallback | **PARTIAL — phrase recorded; scope/evidence approval blocking** |
 | PROD-03 | Candidate eligibility | Prefer a short 2–4 word phrase with distinctive phonemes, stable pronunciation, low ordinary-use collision, and no safety/control vocabulary overlap | **USER MUST APPROVE — blocking** |
 | PROD-04 | Baseline profile | Exact named Sherpa profile ID, release ID, and digest | **TBD — operator/release approval blocking** |
 | PROD-05 | Production identity | Explicit `KWS_PROFILE_ID`; no unset-ID fallback | **USER MUST APPROVE — blocking** |
@@ -47,15 +47,25 @@ owners approve them. The record must contain values, not just a display label,
 before Phase 2 begins:
 
 ```text
-primary.display_phrase: TBD [BLOCKING]
-primary.spoken_phrase: TBD [BLOCKING]
-primary.canonical_pronunciation: TBD [BLOCKING]
+primary.display_phrase: Hey E.C
+primary.spoken_phrase: Hey Ee Cee
+primary.canonical_pronunciation: Hey Ee Cee
 primary.language_and_accent_scope: TBD [BLOCKING]
 fallback.display_phrase: TBD [BLOCKING]
 fallback.spoken_phrase: TBD [BLOCKING]
 baseline.profile_id: TBD [BLOCKING]
 baseline.release_id: TBD [BLOCKING]
 baseline.composite_digest: TBD [BLOCKING]
+```
+
+Owner input recorded for `PROD-APP-01`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+decision_hash: e0f2805543d2957d52a7d9e87868d32888d1910ac4a8158dcbca0509dce77920
+state: PARTIAL — phrase fields only; language/accent scope, fallback, feasibility, and product approval remain blocking
+audio_evidence: not required for this label; required later for acoustic feasibility and target evaluation
 ```
 
 The fallback fields describe a later explicit selection candidate only. Missing,
@@ -122,13 +132,13 @@ recovery objective, and emergency recovery authority are **TBD [BLOCKING]**.
 
 ## Approval register
 
-| Owner | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
-| --- | --- | --- | --- | --- | --- | --- |
-| Product | PROD-APP-01 | Phrase, population, deferrals, numeric SLOs | TBD | TBD | Not assigned | **BLOCKING** |
-| Operator | PROD-APP-02 | Target identity, baseline, measurement and rollback procedure | TBD | TBD | Not assigned | **BLOCKING** |
-| Statistician/technical | PROD-APP-03 | Formulas, cooldown, exclusions, subgroup and soak rules | TBD | TBD | Not assigned | **BLOCKING** |
-| Privacy/legal | PROD-APP-04 | Consent, retention, jurisdictions, licenses and redistribution | TBD | TBD | Not assigned | **BLOCKING** |
-| Security/release | PROD-APP-05 | Catalog authority, attestation, revocation and recovery | TBD | TBD | Not assigned | **BLOCKING** |
+| Owner | Approval role | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| loidinhm31 | Product | PROD-APP-01 | Phrase, population, deferrals, numeric SLOs | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Operator | PROD-APP-02 | Target identity, baseline, measurement and rollback procedure | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Statistician/technical | PROD-APP-03 | Formulas, cooldown, exclusions, subgroup and soak rules | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Privacy/legal | PROD-APP-04 | Consent, retention, jurisdictions, licenses and redistribution | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Security/release | PROD-APP-05 | Catalog authority, attestation, revocation and recovery | TBD | TBD | Not assigned | **BLOCKING** |
 
 Hashes are for canonical decision records after approval; do not store private
 keys or participant identities in this repository.

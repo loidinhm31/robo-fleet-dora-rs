@@ -109,12 +109,12 @@ The retention and access policy is governed by
 
 ## Approval register
 
-| Owner | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
-| --- | --- | --- | --- | --- | --- | --- |
-| Security | TRUST-APP-01 | Threat model, root/path rules, digest and optional PKI decision | TBD | TBD | Not assigned | **BLOCKING** |
-| Release | TRUST-APP-02 | Catalog publisher, attestation workflow, revocation and archive | TBD | TBD | Not assigned | **BLOCKING** |
-| Technical | TRUST-APP-03 | Schema, engine/ORT allowlist, canonicalization and startup failure | TBD | TBD | Not assigned | **BLOCKING** |
-| Operator | TRUST-APP-04 | Install, disable, last-known-good retention and recovery drill | TBD | TBD | Not assigned | **BLOCKING** |
+| Owner | Approval role | Decision ID | Required decision | Evidence ref | Date | Decision hash | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| loidinhm31 | Security | TRUST-APP-01 | Threat model, root/path rules, digest and optional PKI decision | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Release | TRUST-APP-02 | Catalog publisher, attestation workflow, revocation and archive | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Technical | TRUST-APP-03 | Schema, engine/ORT allowlist, canonicalization and startup failure | TBD | TBD | Not assigned | **BLOCKING** |
+| loidinhm31 | Operator | TRUST-APP-04 | Install, disable, last-known-good retention and recovery drill | TBD | TBD | Not assigned | **BLOCKING** |
 
 Phase 1 cannot freeze trust or authorize Phase 2 until every row has an
 accepted/revised/rejected decision, owner, date, and canonical decision hash.
