@@ -34,7 +34,7 @@ named last-known-good rollback profile.
 | PROD-01 | Startup semantics | One profile; restart to switch; no hot reload | **USER MUST APPROVE — blocking** |
 | PROD-02 | Primary/fallback phrase | Primary display `Hey E.C`; spoken/canonical pronunciation `Hey Ee Cee`; fallback remains intentionally pending as a separately approved later candidate and never an automatic runtime fallback | **PARTIAL — primary recorded; fallback intentionally pending** |
 | PROD-03 | Candidate eligibility | Prefer a short 2–4 word phrase with distinctive phonemes, stable pronunciation, low ordinary-use collision, and no safety/control vocabulary overlap | **USER MUST APPROVE — blocking** |
-| PROD-04 | Baseline profile | Exact named Sherpa profile ID, release ID, and digest | **TBD — operator/release approval blocking** |
+| PROD-04 | Baseline profile | Logical ID `sherpa-hey-kv-v1` mapped to the current Sherpa last-known-good bundle; release ID and digest remain required | **PARTIAL — logical ID recorded; release ID/digest and approval blocking** |
 | PROD-05 | Production identity | Explicit `KWS_PROFILE_ID`; no unset-ID fallback | **USER MUST APPROVE — blocking** |
 | PROD-06 | Engine contract | Sherpa Zipformer transducer/BPE baseline and one approved candidate engine contract; ORT/provider compatibility is allowlisted | **TBD — technical feasibility and release approval blocking** |
 | PROD-07 | Population | Universal/multi-speaker target; language, accent, hearing/speech population, and exclusions | **TBD — product/privacy/data approval blocking** |
@@ -54,7 +54,7 @@ primary.language_and_accent_scope: English; broad target-user accents; exact mat
 primary.population: Universal/multi-speaker
 fallback.display_phrase: TBD [BLOCKING]
 fallback.spoken_phrase: TBD [BLOCKING]
-baseline.profile_id: TBD [BLOCKING]
+baseline.profile_id: sherpa-hey-kv-v1
 baseline.release_id: TBD [BLOCKING]
 baseline.composite_digest: TBD [BLOCKING]
 ```
@@ -102,6 +102,24 @@ recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
 decision: Keep fallback pending
 decision_hash: 370b490640774e79be658eeabf8236aada8dfcc58724a70a52b663669775b44e
 state: BLOCKING — no fallback candidate selected; no runtime fallback permitted
+```
+
+Owner baseline identity input recorded for `PROD-APP-02`:
+
+```text
+owner: loidinhm31
+recorded_at: 2026-08-18 (Asia/Ho_Chi_Minh)
+profile_id: sherpa-hey-kv-v1
+engine: Sherpa-ONNX Zipformer GigaSpeech 3.3M
+bundle_path: models/.cache/sherpa-onnx/kws/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01
+display_phrase: Hey K.V
+spoken_phrase: Hey Kay Vee
+required_files: encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx; decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx; joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx; tokens.txt; bpe.model
+sample_rate_hz: 16000
+release_id: TBD [BLOCKING]
+composite_digest: TBD [BLOCKING]
+decision_hash: 0591809d47077f7844981915a020c3c2a82c08415cbc52634c742139b0526029
+state: PARTIAL — logical ID and current last-known-good mapping recorded; release ID, payload digest, target identity, and operator approval remain blocking
 ```
 
 The fallback fields describe a later explicit selection candidate only. Missing,
