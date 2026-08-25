@@ -330,6 +330,15 @@ impl SessionRegistry {
         }
     }
 
+    /// Returns the verified subject used for audit records. Browser payloads
+    /// never supply this value, which prevents actor spoofing.
+    pub fn audit_actor(&self, socket_id: &str) -> Option<String> {
+        let registry = self.inner.lock().ok()?;
+        let claims = registry.get(socket_id)?;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+        (claims.exp > now).then(|| claims.sub.clone())
+    }
+
     pub fn remove(&self, socket_id: &str) {
         self.inner.lock().unwrap().remove(socket_id);
     }

@@ -6,15 +6,22 @@ use dora_node_api::{
 use eyre::Result;
 use robo_rover_lib::types::{
     ActiveRoversStatus, DetectionFrame, FleetSelectCommand, FleetStatus, FleetSubscriptionCommand,
-    SpeechTranscription, SttStatus, SystemMetrics, TrackingCommand, TrackingTelemetry,
+    RecordingClipQuery, RecordingDeleteRequest, RecordingDeleteResult, RecordingOccurrence,
+    RecordingPlaybackTicketRequest, RecordingScheduleCommandResult, RecordingScheduleSnapshot,
+    RecordingSchedulerReadiness, RecordingSchedulerStatus, RecordingSessionAction,
+    RecordingSessionCommand, RecordingSessionState, SpeechTranscription, SttStatus, SystemMetrics,
+    TrackingCommand, TrackingTelemetry,
 };
 use robo_rover_lib::{
     capture_age_ms, init_tracing, record_capture_age, ArmCommand, ArmCommandWithMetadata,
     AudioAction, AudioControl, AudioFrameMetadata, AudioFrameSequenceTracker, CameraAction,
     CameraControl, CommandMetadata, CommandPriority, FrameSequenceTracker, InputSource,
-    MetricWindow, PcmSampleFormat, RoverCommand, RoverCommandWithMetadata, StreamCommand,
-    StreamControl, TtsAckState, TtsCommand, TtsCommandAck, TtsCommandResult, TtsConfigState,
-    TtsConfigUpdate, TtsLanguage, TtsRuntimeConfig, VoiceReasonCode, VoiceStatus,
+    MetricWindow, PcmSampleFormat, RecordingClipQueryResult, RecordingCoordinatorFeedback,
+    RecordingReasonCode, RecordingReconciliationRequest, RecordingReconciliationSnapshot,
+    RecordingSessionCommandResult, RecordingSessionStatus, RoverCommand, RoverCommandWithMetadata,
+    ScheduledRecordingIntent, StreamControl, TargetedMediaControl, TtsAckState, TtsCommand,
+    TtsCommandAck, TtsCommandResult, TtsConfigState, TtsConfigUpdate, TtsLanguage,
+    TtsRuntimeConfig, VoiceReasonCode, VoiceStatus,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -44,6 +51,32 @@ use security::{
 
 mod audio_counters;
 use audio_counters::AudioDeliveryCounters;
+
+#[path = "recording-access.rs"]
+mod recording_access;
+#[path = "recording-playback.rs"]
+mod recording_playback;
+#[path = "recording-schedule-feedback-spool.rs"]
+mod recording_schedule_feedback_spool;
+#[path = "recording-schedule-gateway.rs"]
+mod recording_schedule_gateway;
+#[path = "recording-schedule-queues.rs"]
+mod recording_schedule_queues;
+#[path = "recording-socket.rs"]
+mod recording_socket;
+#[path = "scheduled-recording-coordinator.rs"]
+mod scheduled_recording_coordinator;
+use recording_access::RecordingAccess;
+use recording_schedule_feedback_spool::RecordingScheduleFeedbackSpool;
+use recording_schedule_queues::RecordingScheduleState;
+use recording_socket::{
+    PendingRequest, RecordingState, RequestKind, ScheduledCommandGuard,
+};
+use scheduled_recording_coordinator::{CoordinatorEffect, ScheduledRecordingCoordinator};
+
+#[path = "media-demand-registry.rs"]
+mod media_demand_registry;
+use media_demand_registry::{MediaDemandRegistry, MediaDemandTransition, MediaResource};
 
 mod stt_bridge;
 mod stt_ingress;
@@ -190,60 +223,104 @@ fn touch_activity(clients: &Mutex<Vec<ClientState>>, socket_id: &str) {
     }
 }
 
-fn stream_control_for_video_demand(enabled: bool, target_fps: u8) -> StreamControl {
-    StreamControl {
-        command: if enabled {
-            StreamCommand::Start
-        } else {
-            StreamCommand::Stop
-        },
-        video_enabled: enabled,
-        audio_enabled: false,
-        quality: None,
-        target_fps: Some(target_fps),
+fn browser_consumer_prefix(socket_id: &str) -> String {
+    format!("browser:{socket_id}:")
+}
+
+fn browser_consumer_id(socket_id: &str, intent: &str) -> String {
+    format!("{}{}", browser_consumer_prefix(socket_id), intent)
+}
+
+fn enqueue_media_transitions(
+    queue: &Mutex<Vec<TargetedMediaControl>>,
+    transitions: impl IntoIterator<Item = MediaDemandTransition>,
+) {
+    if let Ok(mut queue) = queue.lock() {
+        queue.extend(
+            transitions
+                .into_iter()
+                .map(|transition| transition.targeted_control()),
+        );
     }
 }
 
-fn update_client_video_demand(
-    clients: &Mutex<Vec<ClientState>>,
+fn selected_browser_target(shared_state: &SharedState) -> Option<String> {
+    let selected = shared_state
+        .fleet_status
+        .lock()
+        .ok()?
+        .selected_entity
+        .clone();
+    shared_state
+        .active_rovers_status
+        .lock()
+        .ok()?
+        .active_rovers
+        .contains(&selected)
+        .then_some(selected)
+}
+
+fn active_rover_status_includes(status: &ActiveRoversStatus, entity_id: &str) -> bool {
+    status
+        .active_rovers
+        .iter()
+        .any(|active| active == entity_id)
+}
+
+fn set_browser_media_demand(
+    shared_state: &SharedState,
     socket_id: &str,
+    intent: &str,
+    resource: MediaResource,
     enabled: bool,
-    target_fps: Option<u8>,
-) -> Option<StreamControl> {
-    let mut clients = clients.lock().ok()?;
-    let active_before = clients.iter().filter(|client| client.video_enabled).count();
-
-    let client = clients
-        .iter_mut()
-        .find(|client| client.socket_id == socket_id)?;
-    client.video_enabled = enabled;
-    if let Some(target_fps) = target_fps {
-        client.target_fps = target_fps.clamp(1, 120);
-    }
-    let effective_target_fps = client.target_fps;
-
-    let active_after = clients.iter().filter(|client| client.video_enabled).count();
-    match (active_before, active_after) {
-        (0, n) if n > 0 => Some(stream_control_for_video_demand(true, effective_target_fps)),
-        (n, 0) if n > 0 => Some(stream_control_for_video_demand(false, effective_target_fps)),
-        _ => None,
-    }
+) {
+    let consumer_id = browser_consumer_id(socket_id, intent);
+    let transitions = shared_state
+        .media_demand_registry
+        .lock()
+        .ok()
+        .and_then(|mut registry| {
+            let transition = if enabled {
+                let Some(entity_id) = selected_browser_target(shared_state) else {
+                    tracing::warn!(
+                        socket_id,
+                        "rejected browser media demand without an active selected rover"
+                    );
+                    return None;
+                };
+                registry.acquire(entity_id, consumer_id, resource)
+            } else {
+                registry.release_consumer_resource(&consumer_id, resource)
+            };
+            transition.map(|transition| vec![transition])
+        })
+        .unwrap_or_default();
+    enqueue_media_transitions(&shared_state.targeted_media_control_queue, transitions);
 }
 
-fn remove_client_and_stream_transition(
-    clients: &Mutex<Vec<ClientState>>,
-    socket_id: &str,
-) -> Option<StreamControl> {
-    let mut clients = clients.lock().ok()?;
-    let active_before = clients.iter().filter(|client| client.video_enabled).count();
-    clients.retain(|client| client.socket_id != socket_id);
-    let active_after = clients.iter().filter(|client| client.video_enabled).count();
+fn move_browser_media_demand(shared_state: &SharedState, socket_id: &str, entity_id: &str) {
+    let transitions = shared_state
+        .media_demand_registry
+        .lock()
+        .ok()
+        .map(|mut registry| {
+            registry.move_consumer_prefix(&browser_consumer_prefix(socket_id), entity_id)
+        })
+        .unwrap_or_default();
+    enqueue_media_transitions(&shared_state.targeted_media_control_queue, transitions);
+}
 
-    if active_before > 0 && active_after == 0 {
-        Some(stream_control_for_video_demand(false, 15))
-    } else {
-        None
+fn remove_browser_media_demand(shared_state: &SharedState, socket_id: &str) {
+    if let Ok(mut clients) = shared_state.video_clients.lock() {
+        clients.retain(|client| client.socket_id != socket_id);
     }
+    let transitions = shared_state
+        .media_demand_registry
+        .lock()
+        .ok()
+        .map(|mut registry| registry.release_consumer_prefix(&browser_consumer_prefix(socket_id)))
+        .unwrap_or_default();
+    enqueue_media_transitions(&shared_state.targeted_media_control_queue, transitions);
 }
 
 fn browser_video_frame_payload(
@@ -439,6 +516,7 @@ struct SharedState {
     pub camera_command_queue: Arc<Mutex<Vec<WebCameraCommand>>>,
     pub audio_command_queue: Arc<Mutex<Vec<WebAudioCommand>>>,
     pub stream_command_queue: Arc<Mutex<Vec<StreamControl>>>,
+    pub targeted_media_control_queue: Arc<Mutex<Vec<TargetedMediaControl>>>,
     pub tracking_command_queue: Arc<Mutex<Vec<WebTrackingCommand>>>,
     pub tts_command_queue: Arc<Mutex<Vec<TtsCommand>>>,
     pub walkie_ingress: Arc<Mutex<WalkieIngress>>,
@@ -446,6 +524,7 @@ struct SharedState {
     pub fleet_subscription_command_queue: Arc<Mutex<Vec<WebFleetSubscriptionCommand>>>,
     pub fleet_select_command_queue: Arc<Mutex<Vec<FleetSelectCommand>>>,
     pub video_clients: Arc<Mutex<Vec<ClientState>>>,
+    pub media_demand_registry: Arc<Mutex<MediaDemandRegistry>>,
     pub performance_monitoring_enabled: Arc<Mutex<bool>>,
     pub auth_rate_limiter: Arc<AuthRateLimiter>,
     pub ip_rate_limiter: Arc<IpRateLimiter>,
@@ -460,10 +539,15 @@ struct SharedState {
     /// `SharedState` (not on `ClientState`) so lifetime totals survive
     /// client disconnects. See `audio_counters::AudioDeliveryCounters`.
     pub audio_counters: Arc<AudioDeliveryCounters>,
+    pub recording: RecordingState,
+    pub schedule: RecordingScheduleState,
+    pub schedule_feedback_spool: RecordingScheduleFeedbackSpool,
+    pub scheduled_coordinator: Arc<Mutex<ScheduledRecordingCoordinator>>,
+    pub recording_access: Arc<RecordingAccess>,
 }
 
 impl SharedState {
-    fn new() -> Self {
+    fn new(schedule_feedback_spool: RecordingScheduleFeedbackSpool) -> Self {
         // Read fleet configuration from environment variables
         let selected_entity =
             env::var("SELECTED_ENTITY_ID").unwrap_or_else(|_| "rover-kiwi".to_string());
@@ -500,6 +584,7 @@ impl SharedState {
             camera_command_queue: Arc::new(Mutex::new(Vec::new())),
             audio_command_queue: Arc::new(Mutex::new(Vec::new())),
             stream_command_queue: Arc::new(Mutex::new(Vec::new())),
+            targeted_media_control_queue: Arc::new(Mutex::new(Vec::new())),
             tracking_command_queue: Arc::new(Mutex::new(Vec::new())),
             tts_command_queue: Arc::new(Mutex::new(Vec::new())),
             walkie_ingress: Arc::new(Mutex::new(WalkieIngress::default())),
@@ -507,6 +592,7 @@ impl SharedState {
             fleet_subscription_command_queue: Arc::new(Mutex::new(Vec::new())),
             fleet_select_command_queue: Arc::new(Mutex::new(Vec::new())),
             video_clients: Arc::new(Mutex::new(Vec::new())),
+            media_demand_registry: Arc::new(Mutex::new(MediaDemandRegistry::default())),
             performance_monitoring_enabled: Arc::new(Mutex::new(true)),
             auth_rate_limiter: Arc::new(AuthRateLimiter::new()),
             ip_rate_limiter: Arc::new(IpRateLimiter::new()),
@@ -518,6 +604,11 @@ impl SharedState {
             voice_runtime: Arc::new(Mutex::new(voice_runtime)),
             voice_admission: Arc::new(Mutex::new(VoiceAdmissionState::default())),
             audio_counters: Arc::new(AudioDeliveryCounters::new()),
+            recording: RecordingState::from_env(),
+            schedule: RecordingScheduleState::from_env(),
+            schedule_feedback_spool,
+            scheduled_coordinator: Arc::new(Mutex::new(ScheduledRecordingCoordinator::default())),
+            recording_access: Arc::new(RecordingAccess::from_env()),
         }
     }
 }
@@ -708,6 +799,346 @@ fn setup_socketio(
             shared_state.stt_bridge.request_status();
         }
 
+        for status in shared_state.recording.status_snapshot() {
+            emit_recording_event(&socket, "recording_session_status", status);
+        }
+        recording_schedule_gateway::register(&socket, &socket_id, shared_state.clone());
+
+        let shared_state_clone = shared_state.clone();
+        let socket_id_clone = socket_id.clone();
+        socket.on(
+            "recording_session_command",
+            move |socket: SocketRef, Data::<Value>(data)| {
+                if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
+                    socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                    socket.disconnect().ok();
+                    return;
+                }
+                if !shared_state_clone.command_rate_limiter.check_command(&socket_id_clone) {
+                    log_rate_limit_exceeded(&socket_id_clone, "recording_session_command");
+                    return;
+                }
+                touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
+                let command = match serde_json::from_value::<RecordingSessionCommand>(data) {
+                    Ok(command) => command,
+                    Err(error) => {
+                        log_validation_error(&socket_id_clone, &format!("recording command: {error}"));
+                        return;
+                    }
+                };
+                if let Err(error) = command.validate() {
+                    log_validation_error(&socket_id_clone, &format!("recording command: {error}"));
+                    emit_recording_event(
+                        &socket,
+                        "recording_session_command_result",
+                        rejected_recording_command(
+                            &command.request_id,
+                            RecordingReasonCode::InvalidRequest,
+                            &error,
+                        ),
+                    );
+                    return;
+                }
+                let request_id = command.request_id.clone();
+                let consumer_id = recording_consumer_id(&request_id);
+                match &command.action {
+                    RecordingSessionAction::Start { entity_id, .. } => {
+                        if !is_target_active(&shared_state_clone, entity_id) {
+                            emit_recording_event(
+                                &socket,
+                                "recording_session_command_result",
+                                rejected_recording_command(
+                                    &request_id,
+                                    RecordingReasonCode::InvalidEntity,
+                                    "target rover is not active",
+                                ),
+                            );
+                            return;
+                        }
+                        let scheduled_active = shared_state_clone
+                            .scheduled_coordinator
+                            .lock()
+                            .map(|coordinator| coordinator.has_scheduled_entity(entity_id))
+                            .unwrap_or(false);
+                        if !scheduled_active && shared_state_clone.recording.active_entities.lock().ok().is_some_and(|active| {
+                            active.values().any(|active_entity| active_entity == entity_id)
+                        }) {
+                            emit_recording_event(
+                                &socket,
+                                "recording_session_command_result",
+                                rejected_recording_command(
+                                    &request_id,
+                                    RecordingReasonCode::AlreadyRecording,
+                                    "rover already has an active recording",
+                                ),
+                            );
+                            return;
+                        }
+                        if let Err(reason) = shared_state_clone
+                            .recording
+                            .admit(&request_id, &socket_id_clone, RequestKind::Command)
+                        {
+                            emit_recording_event(
+                                &socket,
+                                "recording_session_command_result",
+                                rejected_recording_command(&request_id, RecordingReasonCode::ResourceLimit, reason),
+                            );
+                            return;
+                        }
+                        // Admission precedes suppression mutation. A full/manual-rejected
+                        // command therefore cannot alter the scheduled group's ownership.
+                        let deferred = shared_state_clone
+                            .scheduled_coordinator
+                            .lock()
+                            .ok()
+                            .and_then(|mut coordinator| coordinator.defer_manual_start(command.clone()));
+                        if let Some(effects) = deferred {
+                            apply_scheduled_effects(&shared_state_clone, effects);
+                            return;
+                        }
+                        if enqueue_recording_demand(&shared_state_clone, entity_id, &consumer_id, true).is_err()
+                            || shared_state_clone.recording.enqueue_command(command.clone()).is_err()
+                        {
+                            shared_state_clone.recording.take(&request_id);
+                            let _ = enqueue_recording_demand(&shared_state_clone, entity_id, &consumer_id, false);
+                            emit_recording_event(
+                                &socket,
+                                "recording_session_command_result",
+                                rejected_recording_command(&request_id, RecordingReasonCode::Internal, "recording queue unavailable"),
+                            );
+                            return;
+                        }
+                        tracing::info!(action = "recording_start", entity_id, request_id = %request_id, outcome = "queued", "recording request admitted");
+                    }
+                    RecordingSessionAction::Stop { recording_id } => {
+                        if shared_state_clone.recording.active_entity(recording_id).is_none() {
+                            emit_recording_event(
+                                &socket,
+                                "recording_session_command_result",
+                                rejected_recording_command(&request_id, RecordingReasonCode::NotFound, "recording session not found"),
+                            );
+                            return;
+                        }
+                        if let Err(reason) = shared_state_clone
+                            .recording
+                            .admit(&request_id, &socket_id_clone, RequestKind::Command)
+                        {
+                            emit_recording_event(
+                                &socket,
+                                "recording_session_command_result",
+                                rejected_recording_command(&request_id, RecordingReasonCode::ResourceLimit, reason),
+                            );
+                            return;
+                        }
+                        let scheduled_stop = shared_state_clone
+                            .scheduled_coordinator
+                            .lock()
+                            .ok()
+                            .and_then(|mut coordinator| coordinator.suppress_manual_stop(command.clone()));
+                        if let Some(effects) = scheduled_stop {
+                            apply_scheduled_effects(&shared_state_clone, effects);
+                            return;
+                        }
+                        if shared_state_clone.recording.enqueue_command(command.clone()).is_err() {
+                            shared_state_clone.recording.take(&request_id);
+                            emit_recording_event(
+                                &socket,
+                                "recording_session_command_result",
+                                rejected_recording_command(&request_id, RecordingReasonCode::Internal, "recording queue unavailable"),
+                            );
+                            return;
+                        }
+                        tracing::info!(action = "recording_stop", clip_id = %recording_id, request_id = %request_id, outcome = "queued", "recording stop admitted");
+                    }
+                }
+            },
+        );
+
+        let shared_state_clone = shared_state.clone();
+        let socket_id_clone = socket_id.clone();
+        socket.on(
+            "recording_clip_list",
+            move |socket: SocketRef, Data::<Value>(data)| {
+                if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
+                    socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                    socket.disconnect().ok();
+                    return;
+                }
+                if !shared_state_clone.command_rate_limiter.check_command(&socket_id_clone) {
+                    log_rate_limit_exceeded(&socket_id_clone, "recording_clip_list");
+                    return;
+                }
+                let query = match serde_json::from_value::<RecordingClipQuery>(data) {
+                    Ok(query) => query,
+                    Err(error) => {
+                        log_validation_error(&socket_id_clone, &format!("recording clip query: {error}"));
+                        return;
+                    }
+                };
+                if let Err(error) = query.validate() {
+                    emit_recording_event(&socket, "recording_clip_list_result", RecordingClipQueryResult {
+                        protocol_version: robo_rover_lib::RECORDING_PROTOCOL_VERSION,
+                        request_id: query.request_id,
+                        accepted: false,
+                        clips: Vec::new(),
+                        reason_code: Some(RecordingReasonCode::InvalidRequest),
+                        detail: Some(error.chars().take(256).collect()),
+                    });
+                    return;
+                }
+                let request_id = query.request_id.clone();
+                let admitted = shared_state_clone
+                    .recording
+                    .admit(&request_id, &socket_id_clone, RequestKind::ClipList);
+                if let Err(reason) = admitted {
+                    emit_recording_event(&socket, "recording_clip_list_result", RecordingClipQueryResult {
+                        protocol_version: robo_rover_lib::RECORDING_PROTOCOL_VERSION,
+                        request_id,
+                        accepted: false,
+                        clips: Vec::new(),
+                        reason_code: Some(RecordingReasonCode::ResourceLimit),
+                        detail: Some(reason.into()),
+                    });
+                    return;
+                }
+                let queued = admitted.is_ok()
+                    && shared_state_clone
+                        .recording
+                        .clip_queries
+                        .lock()
+                        .map(|mut queue| queue.push_back(query))
+                        .is_ok();
+                if !queued {
+                    shared_state_clone.recording.take(&request_id);
+                    emit_recording_event(
+                        &socket,
+                        "recording_clip_list_result",
+                        rejected_recording_clip_query(
+                            &request_id,
+                            RecordingReasonCode::Internal,
+                            "recording queue unavailable",
+                        ),
+                    );
+                    tracing::warn!(action = "recording_clip_list", request_id = %request_id, outcome = "rejected", reason = "queue_full", "recording catalog request rejected");
+                    return;
+                }
+            },
+        );
+
+        let shared_state_clone = shared_state.clone();
+        let socket_id_clone = socket_id.clone();
+        socket.on(
+            "recording_playback_ticket",
+            move |socket: SocketRef, Data::<Value>(data)| {
+                if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
+                    socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                    socket.disconnect().ok();
+                    return;
+                }
+                if !shared_state_clone.command_rate_limiter.check_command(&socket_id_clone) {
+                    log_rate_limit_exceeded(&socket_id_clone, "recording_playback_ticket");
+                    return;
+                }
+                let request = match serde_json::from_value::<RecordingPlaybackTicketRequest>(data) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        log_validation_error(&socket_id_clone, &format!("recording playback request: {error}"));
+                        return;
+                    }
+                };
+                if let Err(error) = request.validate() {
+                    tracing::warn!(action = "playback_ticket", request_id = %request.request_id, outcome = "rejected", reason = %error, "invalid playback ticket request");
+                    emit_recording_event(
+                        &socket,
+                        "recording_playback_ticket_result",
+                        rejected_recording_playback_ticket(
+                            &request.request_id,
+                            RecordingReasonCode::InvalidRequest,
+                            &error,
+                        ),
+                    );
+                    return;
+                }
+                let request_id = request.request_id.clone();
+                let admitted = shared_state_clone
+                    .recording
+                    .admit(&request_id, &socket_id_clone, RequestKind::PlaybackTicket);
+                if let Err(reason) = admitted {
+                    emit_recording_event(
+                        &socket,
+                        "recording_playback_ticket_result",
+                        serde_json::json!({
+                            "protocol_version": robo_rover_lib::RECORDING_PROTOCOL_VERSION,
+                            "request_id": request_id,
+                            "accepted": false,
+                            "reason_code": "resource_limit",
+                            "detail": reason,
+                        }),
+                    );
+                    return;
+                }
+                let queued = admitted.is_ok()
+                    && shared_state_clone
+                        .recording
+                        .playback_queries
+                        .lock()
+                        .map(|mut queue| queue.push_back(request))
+                        .is_ok();
+                if !queued {
+                    shared_state_clone.recording.take(&request_id);
+                    tracing::warn!(action = "playback_ticket", request_id = %request_id, outcome = "rejected", reason = "queue_full", "playback ticket request rejected");
+                    emit_recording_event(
+                        &socket,
+                        "recording_playback_ticket_result",
+                        rejected_recording_playback_ticket(
+                            &request_id,
+                            RecordingReasonCode::Internal,
+                            "recording queue unavailable",
+                        ),
+                    );
+                }
+            },
+        );
+
+        let shared_state_clone = shared_state.clone();
+        let socket_id_clone = socket_id.clone();
+        socket.on(
+            "recording_delete",
+            move |socket: SocketRef, Data::<Value>(data)| {
+                if !shared_state_clone.session_registry.is_valid(&socket_id_clone) {
+                    socket.emit("auth_error", serde_json::json!({"reason": "token_expired"})).ok();
+                    socket.disconnect().ok();
+                    return;
+                }
+                if !shared_state_clone.command_rate_limiter.check_command(&socket_id_clone) {
+                    log_rate_limit_exceeded(&socket_id_clone, "recording_delete");
+                    return;
+                }
+                touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
+                let request = match serde_json::from_value::<RecordingDeleteRequest>(data) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        log_validation_error(&socket_id_clone, &format!("recording delete: {error}"));
+                        return;
+                    }
+                };
+                if let Err(error) = request.validate() {
+                    emit_recording_event(&socket, "recording_delete_result", rejected_recording_delete(&request.request_id, RecordingReasonCode::InvalidRequest, &error));
+                    return;
+                }
+                let request_id = request.request_id.clone();
+                if let Err(reason) = shared_state_clone.recording.admit(&request_id, &socket_id_clone, RequestKind::Delete) {
+                    emit_recording_event(&socket, "recording_delete_result", rejected_recording_delete(&request_id, RecordingReasonCode::ResourceLimit, reason));
+                    return;
+                }
+                let queued = shared_state_clone.recording.delete_queries.lock().map(|mut queue| queue.push_back(request)).is_ok();
+                if !queued {
+                    shared_state_clone.recording.take(&request_id);
+                    emit_recording_event(&socket, "recording_delete_result", rejected_recording_delete(&request_id, RecordingReasonCode::Internal, "recording delete queue unavailable"));
+                }
+            },
+        );
+
         let shared_state_clone = shared_state.clone();
         let socket_id_clone = socket_id.clone();
         socket.on("arm_command", move |socket: SocketRef, Data::<Value>(data)| {
@@ -803,11 +1234,15 @@ fn setup_socketio(
                 touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
                 if let Ok(web_cmd) = serde_json::from_value::<WebCameraCommand>(data) {
                     tracing::debug!("Received camera control: {:?}", web_cmd.command);
-                    shared_state_clone
-                        .camera_command_queue
-                        .lock()
-                        .unwrap()
-                        .push(web_cmd);
+                    if let Some(action) = convert_web_command_to_camera_command(&web_cmd) {
+                        set_browser_media_demand(
+                            &shared_state_clone,
+                            &socket_id_clone,
+                            "camera",
+                            MediaResource::Camera,
+                            matches!(action, CameraAction::Start),
+                        );
+                    }
                 }
             },
         );
@@ -834,22 +1269,17 @@ fn setup_socketio(
                         "stop" | "pause" => false,
                         _ => web_cmd.video_enabled.unwrap_or(false),
                     };
-                    if let Some(command) = update_client_video_demand(
-                        &shared_state_clone.video_clients,
-                        &socket_id_clone,
-                        enabled,
-                        web_cmd.target_fps,
-                    ) {
-                        tracing::info!(
-                            "Video stream demand transition: {:?}, enabled={}",
-                            command.command,
-                            command.video_enabled
-                        );
-                        shared_state_clone
-                            .stream_command_queue
-                            .lock()
-                            .unwrap()
-                            .push(command);
+                    if let Ok(mut clients) = shared_state_clone.video_clients.lock() {
+                        if let Some(client) = clients.iter_mut().find(|client| client.socket_id == socket_id_clone) {
+                            client.video_enabled = enabled;
+                            if let Some(target_fps) = web_cmd.target_fps { client.target_fps = target_fps.clamp(1, 120); }
+                            if let Some(audio_enabled) = web_cmd.audio_enabled { client.audio_enabled = audio_enabled; }
+                        }
+                    }
+                    set_browser_media_demand(&shared_state_clone, &socket_id_clone, "stream", MediaResource::Camera, enabled);
+                    set_browser_media_demand(&shared_state_clone, &socket_id_clone, "stream", MediaResource::Jpeg, enabled);
+                    if let Some(audio_enabled) = web_cmd.audio_enabled {
+                        set_browser_media_demand(&shared_state_clone, &socket_id_clone, "stream", MediaResource::Microphone, audio_enabled);
                     }
                 }
             },
@@ -872,11 +1302,13 @@ fn setup_socketio(
                 touch_activity(&shared_state_clone.video_clients, &socket_id_clone);
                 if let Ok(web_cmd) = serde_json::from_value::<WebAudioCommand>(data) {
                     tracing::debug!("Received audio control: {:?}", web_cmd.command);
-                    shared_state_clone
-                        .audio_command_queue
-                        .lock()
-                        .unwrap()
-                        .push(web_cmd);
+                    if let Some(action) = convert_web_command_to_audio_command(&web_cmd) {
+                        let enabled = matches!(action, AudioAction::Start);
+                        if let Ok(mut clients) = shared_state_clone.video_clients.lock() {
+                            if let Some(client) = clients.iter_mut().find(|client| client.socket_id == socket_id_clone) { client.audio_enabled = enabled; }
+                        }
+                        set_browser_media_demand(&shared_state_clone, &socket_id_clone, "audio", MediaResource::Microphone, enabled);
+                    }
                 }
             },
         );
@@ -1271,11 +1703,17 @@ fn setup_socketio(
                 if let Ok(select_cmd) = serde_json::from_value::<FleetSelectCommand>(data) {
                     tracing::info!("Fleet select requested: {}", select_cmd.entity_id);
 
+                    let target_is_active = shared_state_clone
+                        .active_rovers_status
+                        .lock()
+                        .ok()
+                        .is_some_and(|status| active_rover_status_includes(&status, &select_cmd.entity_id));
+
                     // Update fleet status with new selection
                     let mut fleet_status = shared_state_clone.fleet_status.lock().unwrap();
 
-                    // Verify the entity exists in the roster
-                    if fleet_status.fleet_roster.contains(&select_cmd.entity_id) {
+                    // A selected rover is also routing authority for browser demand.
+                    if fleet_status.fleet_roster.contains(&select_cmd.entity_id) && target_is_active {
                         fleet_status.selected_entity = select_cmd.entity_id.clone();
                         fleet_status.timestamp = select_cmd.timestamp;
 
@@ -1284,12 +1722,15 @@ fn setup_socketio(
                             queue.push(select_cmd.clone());
                         }
 
-                        // Broadcast updated fleet status to all clients
+                        // Migrate only this browser's owned demand. Recorder demand stays pinned.
                         let status_clone = fleet_status.clone();
                         drop(fleet_status); // Release lock before async operation
+                        move_browser_media_demand(&shared_state_clone, &socket_id_clone, &select_cmd.entity_id);
 
                         io_for_fleet_clone.emit("fleet_status", status_clone).ok();
                         tracing::info!("Fleet selection updated and broadcast to all clients");
+                    } else if !target_is_active {
+                        tracing::warn!("Cannot select inactive rover: {}", select_cmd.entity_id);
                     } else {
                         tracing::warn!("Invalid entity_id selection: {}", select_cmd.entity_id);
                     }
@@ -1434,16 +1875,7 @@ fn setup_socketio(
             let socket_id = socket.id.to_string();
             tracing::info!("Client disconnected: {}", socket_id);
 
-            if let Some(command) = remove_client_and_stream_transition(
-                &shared_state_clone.video_clients,
-                &socket_id,
-            ) {
-                shared_state_clone
-                    .stream_command_queue
-                    .lock()
-                    .unwrap()
-                    .push(command);
-            }
+            remove_browser_media_demand(&shared_state_clone, &socket_id);
             let stopped_voice_streams = shared_state_clone.stt_bridge.close_owner(&socket_id);
             if stopped_voice_streams > 0 {
                 tracing::info!(
@@ -1456,7 +1888,7 @@ fn setup_socketio(
                 ingress.remove_socket(&socket_id);
             }
             // Process-level cumulative: this client's per-client counters
-            // are dropped by `remove_client_and_stream_transition`, but
+            // are dropped by `remove_browser_media_demand`, but
             // the cumulative counters in `SharedState` retain all of the
             // work the bridge did for this client during its lifetime.
             shared_state_clone.audio_counters.record_client_disconnect();
@@ -1512,6 +1944,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     security::ensure_indexes(&user_collection).await?;
     security::seed_admin_user(&user_collection).await?;
+    let schedule_feedback_spool = RecordingScheduleFeedbackSpool::from_database(db.clone());
+    schedule_feedback_spool.ensure_indexes().await?;
 
     // Default credential guard
     let allow_default =
@@ -1552,6 +1986,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let camera_command_output = DataId::from("camera_command".to_owned());
     let audio_command_output = DataId::from("audio_command".to_owned());
     let stream_command_output = DataId::from("stream_command".to_owned());
+    let targeted_media_control_output = DataId::from("targeted_media_control".to_owned());
     let tracking_command_output = DataId::from("tracking_command".to_owned());
     let tts_command_output = DataId::from("tts_command".to_owned());
     let tts_config_command_output = DataId::from("tts_config_command".to_owned());
@@ -1563,9 +1998,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let fleet_subscription_command_output = DataId::from("fleet_subscription_command".to_owned());
     let fleet_select_command_output = DataId::from("fleet_select_command".to_owned());
+    let recording_session_command_output = DataId::from("recording_session_command".to_owned());
+    let recording_clip_query_output = DataId::from("recording_clip_query".to_owned());
+    let recording_playback_ticket_output = DataId::from("recording_playback_ticket".to_owned());
+    let recording_delete_output = DataId::from("recording_delete".to_owned());
+    let recording_schedule_command_output = DataId::from("recording_schedule_command".to_owned());
+    let recording_schedule_query_output = DataId::from("recording_schedule_query".to_owned());
+    let scheduler_feedback_output =
+        DataId::from("recording_scheduler_recorder_feedback".to_owned());
+    let reconciliation_request_output = DataId::from("recording_reconciliation_request".to_owned());
+    let reconciliation_snapshot_output =
+        DataId::from("recording_reconciliation_snapshot".to_owned());
 
     let node_handle = Arc::new(Mutex::new(node));
-    let shared_state = SharedState::new();
+    let shared_state = SharedState::new(schedule_feedback_spool);
     let (io, layer) = setup_socketio(
         shared_state.clone(),
         node_handle.clone(),
@@ -1580,7 +2026,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Background sweep: disconnect sessions whose JWT has expired
     let sweep_registry = shared_state.session_registry.clone();
     let sweep_clients = shared_state.video_clients.clone();
-    let sweep_stream_queue = shared_state.stream_command_queue.clone();
+    let sweep_media_registry = shared_state.media_demand_registry.clone();
+    let sweep_media_queue = shared_state.targeted_media_control_queue.clone();
     let sweep_audio_counters = shared_state.audio_counters.clone();
     let sweep_stt = shared_state.stt_bridge.clone();
     let sweep_io = io.clone();
@@ -1591,11 +2038,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let expired = sweep_registry.sweep_expired();
             for socket_id in expired {
                 tracing::debug!("Sweep: disconnecting expired session {}", socket_id);
-                if let Some(command) =
-                    remove_client_and_stream_transition(&sweep_clients, &socket_id)
-                {
-                    sweep_stream_queue.lock().unwrap().push(command);
+                if let Ok(mut clients) = sweep_clients.lock() {
+                    clients.retain(|client| client.socket_id != socket_id);
                 }
+                let transitions = sweep_media_registry
+                    .lock()
+                    .ok()
+                    .map(|mut registry| {
+                        registry.release_consumer_prefix(&browser_consumer_prefix(&socket_id))
+                    })
+                    .unwrap_or_default();
+                enqueue_media_transitions(&sweep_media_queue, transitions);
                 sweep_stt.close_owner(&socket_id);
                 // Process-level cumulative: sweep-driven disconnects must
                 // count toward the lifetime client_disconnects total, and
@@ -1618,7 +2071,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Background sweep: disconnect idle clients exceeding IDLE_TIMEOUT_SECONDS
     let idle_clients = shared_state.video_clients.clone();
-    let idle_stream_queue = shared_state.stream_command_queue.clone();
+    let idle_media_registry = shared_state.media_demand_registry.clone();
+    let idle_media_queue = shared_state.targeted_media_control_queue.clone();
     let idle_audio_counters = shared_state.audio_counters.clone();
     let idle_stt = shared_state.stt_bridge.clone();
     let idle_io = io.clone();
@@ -1649,11 +2103,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             for socket_id in idle_ids {
                 tracing::info!("Idle sweep: disconnecting idle client {}", socket_id);
-                if let Some(command) =
-                    remove_client_and_stream_transition(&idle_clients, &socket_id)
-                {
-                    idle_stream_queue.lock().unwrap().push(command);
+                if let Ok(mut clients) = idle_clients.lock() {
+                    clients.retain(|client| client.socket_id != socket_id);
                 }
+                let transitions = idle_media_registry
+                    .lock()
+                    .ok()
+                    .map(|mut registry| {
+                        registry.release_consumer_prefix(&browser_consumer_prefix(&socket_id))
+                    })
+                    .unwrap_or_default();
+                enqueue_media_transitions(&idle_media_queue, transitions);
                 idle_stt.close_owner(&socket_id);
                 // Process-level cumulative: idle-sweep-driven disconnects
                 // must count toward the lifetime client_disconnects total.
@@ -1672,19 +2132,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Start Socket.IO server
+    let recording_sweep_io = io.clone();
+    let recording_sweep_state = shared_state.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            for (request_id, pending) in recording_sweep_state.recording.expire() {
+                if pending.kind == RequestKind::Command {
+                    release_recording_demand(&recording_sweep_state, &request_id);
+                }
+                emit_recording_timeout(
+                    &recording_sweep_io,
+                    &recording_sweep_state,
+                    &request_id,
+                    &pending,
+                );
+                tracing::warn!(
+                    action = ?pending.kind,
+                    request_id = %request_id,
+                    outcome = "timeout",
+                    reason = "correlation_deadline",
+                    "recording request expired"
+                );
+            }
+        }
+    });
+
+    // Start Socket.IO and ticketed playback server
+    let recording_access_for_http = shared_state.recording_access.clone();
     let socketio_handle = tokio::spawn(async move {
         // Get allowed origins from environment
         let allowed_origins = parse_allowed_origins();
         warn_http_origins(&allowed_origins);
         tracing::info!("CORS allowed origins: {:?}", allowed_origins);
-
-        // Define allowed headers explicitly (required when using credentials)
-        let allowed_headers = [
-            axum::http::header::CONTENT_TYPE,
-            axum::http::header::AUTHORIZATION,
-            axum::http::header::ACCEPT,
-        ];
 
         let cors_layer = if allowed_origins.iter().any(|o| o == "*") {
             // Wildcard: AllowOrigin::list rejects "*", must use permissive()
@@ -1704,14 +2184,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "http://localhost:3000".parse::<HeaderValue>().unwrap(),
                         "http://localhost:5173".parse::<HeaderValue>().unwrap(),
                     ])
-                    .allow_methods([Method::GET, Method::POST])
-                    .allow_headers(allowed_headers)
+                    .allow_methods([Method::GET, Method::POST, Method::HEAD])
+                    .allow_headers([
+                        axum::http::header::CONTENT_TYPE,
+                        axum::http::header::AUTHORIZATION,
+                        axum::http::header::ACCEPT,
+                        axum::http::header::RANGE,
+                    ])
+                    .expose_headers([
+                        axum::http::header::CONTENT_RANGE,
+                        axum::http::header::ACCEPT_RANGES,
+                        axum::http::header::CONTENT_LENGTH,
+                    ])
                     .allow_credentials(true)
             } else {
                 CorsLayer::new()
                     .allow_origin(origins)
-                    .allow_methods([Method::GET, Method::POST])
-                    .allow_headers(allowed_headers)
+                    .allow_methods([Method::GET, Method::POST, Method::HEAD])
+                    .allow_headers([
+                        axum::http::header::CONTENT_TYPE,
+                        axum::http::header::AUTHORIZATION,
+                        axum::http::header::ACCEPT,
+                        axum::http::header::RANGE,
+                    ])
+                    .expose_headers([
+                        axum::http::header::CONTENT_RANGE,
+                        axum::http::header::ACCEPT_RANGES,
+                        axum::http::header::CONTENT_LENGTH,
+                    ])
                     .allow_credentials(true)
             }
         };
@@ -1721,6 +2221,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "/health",
                 axum::routing::get(|| async { axum::Json(serde_json::json!({"status": "ok"})) }),
             )
+            .route(
+                "/recordings/playback/:ticket",
+                axum::routing::get(recording_playback::serve_playback)
+                    .head(recording_playback::serve_playback),
+            )
+            .with_state(recording_access_for_http)
             .layer(middleware::from_fn(security_headers))
             .layer(ServiceBuilder::new().layer(cors_layer).layer(layer));
 
@@ -1742,12 +2248,195 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node_clone_camera = node_clone_arm.clone();
     let node_clone_audio = node_clone_arm.clone();
     let node_clone_stream = node_clone_arm.clone();
+    let node_clone_targeted_media = node_clone_arm.clone();
     let node_clone_tracking = node_clone_arm.clone();
     let node_clone_tts = node_clone_arm.clone();
     let node_clone_audio_stream = node_clone_arm.clone();
     let node_clone_stt = node_clone_arm.clone();
     let node_clone_fleet_sub = node_clone_arm.clone();
+    let node_clone_recording = node_clone_arm.clone();
+    let node_clone_schedule = node_clone_arm.clone();
     let state_clone_arm = shared_state.clone();
+
+    let state_clone_recording = shared_state.clone();
+    let _recording_processor = tokio::spawn(async move {
+        loop {
+            let next = state_clone_recording
+                .recording
+                .next_command()
+                .and_then(|queued| {
+                    if let Some(guard) = queued.scheduled_guard.as_ref() {
+                        let current = state_clone_recording
+                            .scheduled_coordinator
+                            .lock()
+                            .map(|coordinator| {
+                                coordinator.has_current_scheduled_start(
+                                    &guard.group_id,
+                                    guard.generation,
+                                    &queued.command.request_id,
+                                )
+                            })
+                            .unwrap_or(false);
+                        if !current || guard.is_expired_at(unix_now_ms()) {
+                            let _ = enqueue_recording_demand(
+                                &state_clone_recording,
+                                "",
+                                &guard.consumer_id,
+                                false,
+                            );
+                            tracing::info!(
+                                group_id = guard.group_id,
+                                generation = guard.generation,
+                                "discarded stale scheduled recorder command"
+                            );
+                            return None;
+                        }
+                    }
+                    serde_json::to_vec(&queued.command)
+                        .ok()
+                        .map(|bytes| (recording_session_command_output.clone(), bytes))
+                })
+                .or_else(|| {
+                    state_clone_recording
+                        .recording
+                        .clip_queries
+                        .lock()
+                        .ok()
+                        .and_then(|mut queue| {
+                            queue
+                                .pop_front()
+                                .and_then(|query| serde_json::to_vec(&query).ok())
+                                .map(|bytes| (recording_clip_query_output.clone(), bytes))
+                        })
+                })
+                .or_else(|| {
+                    state_clone_recording
+                        .recording
+                        .playback_queries
+                        .lock()
+                        .ok()
+                        .and_then(|mut queue| {
+                            queue
+                                .pop_front()
+                                .and_then(|request| serde_json::to_vec(&request).ok())
+                                .map(|bytes| (recording_playback_ticket_output.clone(), bytes))
+                        })
+                });
+            let next = next.or_else(|| {
+                state_clone_recording
+                    .recording
+                    .delete_queries
+                    .lock()
+                    .ok()
+                    .and_then(|mut queue| {
+                        queue
+                            .pop_front()
+                            .and_then(|request| serde_json::to_vec(&request).ok())
+                            .map(|bytes| (recording_delete_output.clone(), bytes))
+                    })
+            });
+            if let Some((output, bytes)) = next {
+                let arrow_data = BinaryArray::from_vec(vec![bytes.as_slice()]);
+                if let Ok(mut node_guard) = node_clone_recording.lock() {
+                    let _ = node_guard.send_output(output, Default::default(), arrow_data);
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+
+    // Schedule requests retain their bounded in-process admission queue. Recorder
+    // feedback is first persisted in Mongo, so a recorder burst cannot starve
+    // CRUD/reconciliation work or grow an in-memory retry ledger.
+    let state_clone_schedule = shared_state.clone();
+    let _schedule_processor = tokio::spawn(async move {
+        // Keep a dequeued feedback item locally until Dora accepts it. This is
+        // bounded to one item and prevents a transient output failure from
+        // converting terminal recorder evidence into a dropped scheduler reply.
+        let mut pending_feedback = None;
+        let mut prefer_feedback = true;
+        loop {
+            for (request_id, pending) in state_clone_schedule.schedule.expire() {
+                tracing::warn!(
+                    request_id,
+                    socket_id = pending.socket_id,
+                    kind = ?pending.kind,
+                    "recording schedule request timed out"
+                );
+            }
+            let mut feedback = if let Some(feedback) = pending_feedback.take() {
+                Some(feedback)
+            } else {
+                match state_clone_schedule.schedule_feedback_spool.next().await {
+                    Ok(feedback) => feedback,
+                    Err(error) => {
+                        tracing::error!(%error, "recording scheduler feedback spool unavailable; pausing schedule delivery");
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                }
+            };
+            let request = state_clone_schedule
+                .schedule
+                .next_command()
+                .and_then(|value| serde_json::to_vec(&value).ok())
+                .map(|bytes| (recording_schedule_command_output.clone(), bytes, false))
+                .or_else(|| {
+                    state_clone_schedule
+                        .schedule
+                        .next_query()
+                        .and_then(|value| serde_json::to_vec(&value).ok())
+                        .map(|bytes| (recording_schedule_query_output.clone(), bytes, false))
+                });
+            let next = if let Some(value) = feedback.as_ref().filter(|_| prefer_feedback || request.is_none()) {
+                serde_json::to_vec(&value.feedback)
+                    .ok()
+                .map(|bytes| (scheduler_feedback_output.clone(), bytes, true))
+            } else {
+                if feedback.is_some() {
+                    pending_feedback = feedback.take();
+                }
+                request
+            };
+            if let Some((output, bytes, is_feedback)) = next {
+                let arrow_data = BinaryArray::from_vec(vec![bytes.as_slice()]);
+                let send_result = node_clone_schedule
+                    .lock()
+                    .map_err(|_| "Dora node unavailable".to_owned())
+                    .and_then(|mut node| {
+                        node.send_output(output, Default::default(), arrow_data)
+                            .map_err(|error| error.to_string())
+                    });
+                let sent = send_result.is_ok();
+                if let Err(error) = send_result {
+                    tracing::warn!(%error, "failed to forward recording schedule message");
+                    if is_feedback {
+                        pending_feedback = feedback;
+                    }
+                } else if is_feedback {
+                    let Some(feedback) = feedback.take() else {
+                        unreachable!("feedback output requires a spool entry")
+                    };
+                    if let Err(error) = state_clone_schedule
+                        .schedule_feedback_spool
+                        .acknowledge(&feedback.id)
+                        .await
+                    {
+                        tracing::warn!(%error, "scheduler feedback delivered but spool acknowledgement failed");
+                        pending_feedback = Some(feedback);
+                    }
+                }
+                if sent {
+                    prefer_feedback = !is_feedback;
+                }
+            } else if feedback.is_some() {
+                // Serialization of a typed protocol value should not fail. Retain
+                // it defensively rather than silently losing terminal feedback.
+                pending_feedback = feedback;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
 
     let arm_command_processor = tokio::spawn(async move {
         loop {
@@ -1909,6 +2598,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+
+    // Target-aware media demand never relies on mutable fleet selection.
+    let state_clone_targeted_media = shared_state.clone();
+    let targeted_media_output_for_processor = targeted_media_control_output.clone();
+    let targeted_media_control_processor = tokio::spawn(async move {
+        loop {
+            let next = state_clone_targeted_media
+                .targeted_media_control_queue
+                .lock()
+                .ok()
+                .and_then(|mut queue| (!queue.is_empty()).then(|| queue.remove(0)));
+            if let Some(control) = next {
+                if let Ok(serialized) = serde_json::to_vec(&control) {
+                    let arrow_data = BinaryArray::from_vec(vec![serialized.as_slice()]);
+                    if let Ok(mut node_guard) = node_clone_targeted_media.lock() {
+                        let _ = node_guard.send_output(
+                            targeted_media_output_for_processor.clone(),
+                            Default::default(),
+                            arrow_data,
+                        );
+                    }
+                }
+            }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     });
@@ -2898,6 +3613,471 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
+                    "recording_session_command_result" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() > 0 {
+                                let result = match serde_json::from_slice::<
+                                    RecordingSessionCommandResult,
+                                >(
+                                    binary_array.value(0)
+                                ) {
+                                    Ok(result) => result,
+                                    Err(error) => {
+                                        tracing::warn!(%error, "rejected malformed recording command result");
+                                        continue;
+                                    }
+                                };
+                                if let Err(error) = result.validate() {
+                                    tracing::warn!(%error, "rejected invalid recording command result");
+                                    continue;
+                                }
+                                let scheduled_effects = state_for_video
+                                    .scheduled_coordinator
+                                    .lock()
+                                    .map(|mut coordinator| coordinator.recorder_result(&result))
+                                    .unwrap_or_default();
+                                apply_scheduled_effects(&state_for_video, scheduled_effects);
+                                if !result.accepted {
+                                    release_recording_demand(&state_for_video, &result.request_id);
+                                }
+                                if let Some(pending) =
+                                    state_for_video.recording.take(&result.request_id)
+                                {
+                                    if let Ok(payload) = serde_json::to_value(&result) {
+                                        if let Some(io) =
+                                            io_for_video.lock().ok().and_then(|io| io.clone())
+                                        {
+                                            emit_recording_to_owner(
+                                                &io,
+                                                &state_for_video,
+                                                &pending.socket_id,
+                                                "recording_session_command_result",
+                                                payload,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "recording_session_status" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() > 0 {
+                                let status = match serde_json::from_slice::<RecordingSessionStatus>(
+                                    binary_array.value(0),
+                                ) {
+                                    Ok(status) => status,
+                                    Err(error) => {
+                                        tracing::warn!(%error, "rejected malformed recording status");
+                                        continue;
+                                    }
+                                };
+                                if let Err(error) = status.validate() {
+                                    tracing::warn!(%error, "rejected invalid recording status");
+                                    continue;
+                                }
+                                if matches!(
+                                    status.state,
+                                    RecordingSessionState::Starting
+                                        | RecordingSessionState::Recording
+                                        | RecordingSessionState::Stopping
+                                ) {
+                                    if status.state == RecordingSessionState::Starting {
+                                        rename_recording_demand(
+                                            &state_for_video,
+                                            &status.request_id,
+                                            &status.recording_id,
+                                        );
+                                    }
+                                    state_for_video
+                                        .recording
+                                        .remember_active(&status.recording_id, &status.entity_id);
+                                } else {
+                                    release_recording_demand(
+                                        &state_for_video,
+                                        &status.recording_id,
+                                    );
+                                    state_for_video
+                                        .recording
+                                        .forget_active(&status.recording_id);
+                                }
+                                let status_changed =
+                                    state_for_video.recording.cache_status(status.clone());
+                                let scheduled_effects = state_for_video
+                                    .scheduled_coordinator
+                                    .lock()
+                                    .map(|mut coordinator| {
+                                        coordinator
+                                            .recorder_status(&status.recording_id, status.state)
+                                    })
+                                    .unwrap_or_default();
+                                apply_scheduled_effects(&state_for_video, scheduled_effects);
+                                if status_changed {
+                                    if let Some(io) =
+                                        io_for_video.lock().ok().and_then(|io| io.clone())
+                                    {
+                                        if let Some(namespace) = io.of("/") {
+                                            emit_authenticated(
+                                                namespace,
+                                                &state_for_video.session_registry,
+                                                "recording_session_status",
+                                                serde_json::to_value(status).unwrap_or(Value::Null),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "scheduled_recording_intent" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                match serde_json::from_slice::<ScheduledRecordingIntent>(
+                                    binary_array.value(0),
+                                ) {
+                                    Ok(intent) => {
+                                        let effects = state_for_video
+                                            .scheduled_coordinator
+                                            .lock()
+                                            .map(|mut coordinator| coordinator.apply(intent))
+                                            .unwrap_or_default();
+                                        apply_scheduled_effects(&state_for_video, effects);
+                                    }
+                                    Err(error) => {
+                                        tracing::warn!(%error, "rejected malformed scheduled recording intent")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "recording_schedule_command_result" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                let Ok(result) =
+                                    serde_json::from_slice::<RecordingScheduleCommandResult>(
+                                        binary_array.value(0),
+                                    )
+                                else {
+                                    continue;
+                                };
+                                if result.validate().is_err() {
+                                    continue;
+                                }
+                                if let Some(pending) =
+                                    state_for_video.schedule.take(&result.request_id)
+                                {
+                                    if let Some(io) =
+                                        io_for_video.lock().ok().and_then(|io| io.clone())
+                                    {
+                                        emit_recording_to_owner(
+                                            &io,
+                                            &state_for_video,
+                                            &pending.socket_id,
+                                            "recording_schedule_command_result",
+                                            serde_json::to_value(result).unwrap_or(Value::Null),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "recording_schedule_snapshot" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                let Ok(snapshot) =
+                                    serde_json::from_slice::<RecordingScheduleSnapshot>(
+                                        binary_array.value(0),
+                                    )
+                                else {
+                                    continue;
+                                };
+                                if snapshot.validate().is_err() {
+                                    continue;
+                                }
+                                if let Some(pending) =
+                                    state_for_video.schedule.take(&snapshot.request_id)
+                                {
+                                    if let Some(io) =
+                                        io_for_video.lock().ok().and_then(|io| io.clone())
+                                    {
+                                        emit_recording_to_owner(
+                                            &io,
+                                            &state_for_video,
+                                            &pending.socket_id,
+                                            "recording_schedule_snapshot",
+                                            serde_json::to_value(snapshot).unwrap_or(Value::Null),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "recording_occurrence_status" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                let Ok(occurrence) = serde_json::from_slice::<RecordingOccurrence>(
+                                    binary_array.value(0),
+                                ) else {
+                                    continue;
+                                };
+                                if occurrence.validate().is_err() {
+                                    continue;
+                                }
+                                if let Some(io) = io_for_video.lock().ok().and_then(|io| io.clone()) {
+                                    if let Some(namespace) = io.of("/") {
+                                        emit_authenticated(
+                                            namespace,
+                                            &state_for_video.session_registry,
+                                            "recording_occurrence_status",
+                                            serde_json::to_value(occurrence).unwrap_or(Value::Null),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "recording_scheduler_status" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                let Ok(status) = serde_json::from_slice::<RecordingSchedulerStatus>(
+                                    binary_array.value(0),
+                                ) else {
+                                    continue;
+                                };
+                                if status.protocol_version
+                                    != robo_rover_lib::RECORDING_SCHEDULE_PROTOCOL_VERSION
+                                {
+                                    continue;
+                                }
+                                let ready = status.readiness == RecordingSchedulerReadiness::Ready;
+                                state_for_video.schedule.set_ready(ready);
+                                tracing::info!(
+                                    scheduler_ready = ready,
+                                    readiness = ?status.readiness,
+                                    "recording scheduler status updated"
+                                );
+                                if let Some(io) = io_for_video.lock().ok().and_then(|io| io.clone()) {
+                                    if let Some(namespace) = io.of("/") {
+                                        emit_authenticated(
+                                            namespace,
+                                            &state_for_video.session_registry,
+                                            "recording_scheduler_status",
+                                            serde_json::to_value(status).unwrap_or(Value::Null),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "recording_reconciliation_request" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                let Ok(request) =
+                                    serde_json::from_slice::<RecordingReconciliationRequest>(
+                                        binary_array.value(0),
+                                    )
+                                else {
+                                    continue;
+                                };
+                                if request.validate().is_ok() {
+                                    if let Ok(bytes) = serde_json::to_vec(&request) {
+                                        if let Ok(mut node) = node_handle.lock() {
+                                            let _ = node.send_output(
+                                                reconciliation_request_output.clone(),
+                                                Default::default(),
+                                                BinaryArray::from_vec(vec![bytes.as_slice()]),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "recording_reconciliation_snapshot" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                let Ok(snapshot) =
+                                    serde_json::from_slice::<RecordingReconciliationSnapshot>(
+                                        binary_array.value(0),
+                                    )
+                                else {
+                                    continue;
+                                };
+                                if snapshot.validate().is_ok() {
+                                    let effects = state_for_video
+                                        .scheduled_coordinator
+                                        .lock()
+                                        .map(|mut coordinator| {
+                                            coordinator.reconcile_snapshot(&snapshot)
+                                        })
+                                        .unwrap_or_default();
+                                    apply_scheduled_effects(&state_for_video, effects);
+                                    if let Ok(bytes) = serde_json::to_vec(&snapshot) {
+                                        if let Ok(mut node) = node_handle.lock() {
+                                            let _ = node.send_output(
+                                                reconciliation_snapshot_output.clone(),
+                                                Default::default(),
+                                                BinaryArray::from_vec(vec![bytes.as_slice()]),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "recording_scheduler_manual_suppression_ack" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() == 1 {
+                                let Ok(feedback) =
+                                    serde_json::from_slice::<RecordingCoordinatorFeedback>(
+                                        binary_array.value(0),
+                                    )
+                                else {
+                                    continue;
+                                };
+                                let effects = state_for_video
+                                    .scheduled_coordinator
+                                    .lock()
+                                    .map(|mut coordinator| {
+                                        coordinator.manual_suppression_persisted(&feedback)
+                                    })
+                                    .unwrap_or_default();
+                                apply_scheduled_effects(&state_for_video, effects);
+                            }
+                        }
+                    }
+                    "recording_clip_list_result" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() > 0 {
+                                let result = match serde_json::from_slice::<RecordingClipQueryResult>(
+                                    binary_array.value(0),
+                                ) {
+                                    Ok(result) => result,
+                                    Err(error) => {
+                                        tracing::warn!(%error, "rejected malformed recording clip result");
+                                        continue;
+                                    }
+                                };
+                                if let Err(error) = result.validate() {
+                                    tracing::warn!(%error, "rejected invalid recording clip result");
+                                    continue;
+                                }
+                                if let Some(pending) =
+                                    state_for_video.recording.take(&result.request_id)
+                                {
+                                    if let Some(io) =
+                                        io_for_video.lock().ok().and_then(|io| io.clone())
+                                    {
+                                        emit_recording_to_owner(
+                                            &io,
+                                            &state_for_video,
+                                            &pending.socket_id,
+                                            "recording_clip_list_result",
+                                            serde_json::to_value(result).unwrap_or(Value::Null),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "recording_playback_clip_result" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() > 0 {
+                                let result = match serde_json::from_slice::<RecordingClipQueryResult>(
+                                    binary_array.value(0),
+                                ) {
+                                    Ok(result) => result,
+                                    Err(error) => {
+                                        tracing::warn!(%error, "rejected malformed playback lookup result");
+                                        continue;
+                                    }
+                                };
+                                if let Err(error) = result.validate() {
+                                    tracing::warn!(%error, "rejected invalid playback lookup result");
+                                    continue;
+                                }
+                                if let Some(pending) =
+                                    state_for_video.recording.take(&result.request_id)
+                                {
+                                    if let Some(io) =
+                                        io_for_video.lock().ok().and_then(|io| io.clone())
+                                    {
+                                        let payload = if result.accepted && result.clips.len() == 1
+                                        {
+                                            match state_for_video
+                                                .recording_access
+                                                .issue(&result.request_id, &result.clips[0])
+                                            {
+                                                Ok(ticket) => serde_json::to_value(ticket)
+                                                    .unwrap_or(Value::Null),
+                                                Err(error) => serde_json::json!({
+                                                    "protocol_version": robo_rover_lib::RECORDING_PROTOCOL_VERSION,
+                                                    "request_id": result.request_id,
+                                                    "accepted": false,
+                                                    "reason_code": "storage_unavailable",
+                                                    "detail": error.chars().take(256).collect::<String>(),
+                                                }),
+                                            }
+                                        } else {
+                                            serde_json::json!({
+                                                "protocol_version": robo_rover_lib::RECORDING_PROTOCOL_VERSION,
+                                                "request_id": result.request_id,
+                                                "accepted": false,
+                                                "reason_code": result.reason_code.map(|code| serde_json::to_value(code).unwrap_or(Value::Null)).unwrap_or(serde_json::json!("not_found")),
+                                                "detail": result.detail,
+                                            })
+                                        };
+                                        emit_recording_to_owner(
+                                            &io,
+                                            &state_for_video,
+                                            &pending.socket_id,
+                                            "recording_playback_ticket_result",
+                                            payload,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "recording_delete_result" => {
+                        if let Some(binary_array) = data.as_any().downcast_ref::<BinaryArray>() {
+                            if binary_array.len() > 0 {
+                                let result = match serde_json::from_slice::<RecordingDeleteResult>(
+                                    binary_array.value(0),
+                                ) {
+                                    Ok(result) => result,
+                                    Err(error) => {
+                                        tracing::warn!(%error, "rejected malformed recording delete result");
+                                        continue;
+                                    }
+                                };
+                                if let Err(error) = result.validate() {
+                                    tracing::warn!(%error, "rejected invalid recording delete result");
+                                    continue;
+                                }
+                                if let Some(pending) =
+                                    state_for_video.recording.take(&result.request_id)
+                                {
+                                    if result.accepted {
+                                        if let Some(recording_id) = result.recording_id.as_deref() {
+                                            state_for_video.recording_access.revoke(recording_id);
+                                        }
+                                    }
+                                    if let Some(io) =
+                                        io_for_video.lock().ok().and_then(|io| io.clone())
+                                    {
+                                        emit_recording_to_owner(
+                                            &io,
+                                            &state_for_video,
+                                            &pending.socket_id,
+                                            "recording_delete_result",
+                                            serde_json::to_value(result).unwrap_or(Value::Null),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                     "performance_metrics" => {
                         // Handle performance metrics from performance_monitor
                         // Only forward if monitoring is enabled
@@ -2947,6 +4127,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 },
                 Event::Stop(_) => {
+                    let transitions = state_for_video
+                        .media_demand_registry
+                        .lock()
+                        .ok()
+                        .map(|mut registry| registry.shutdown())
+                        .unwrap_or_default();
+                    for control in transitions
+                        .into_iter()
+                        .map(|transition| transition.targeted_control())
+                    {
+                        if let Ok(serialized) = serde_json::to_vec(&control) {
+                            let arrow_data = BinaryArray::from_vec(vec![serialized.as_slice()]);
+                            if let Ok(mut node) = node_handle.lock() {
+                                let _ = node.send_output(
+                                    targeted_media_control_output.clone(),
+                                    Default::default(),
+                                    arrow_data,
+                                );
+                            }
+                        }
+                    }
                     if let Ok(ingress) = state_for_video.walkie_ingress.lock() {
                         ingress.log_metrics("shutdown");
                     }
@@ -3026,6 +4227,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     rover_command_processor.abort();
     camera_command_processor.abort();
     audio_stream_processor.abort();
+    targeted_media_control_processor.abort();
     tracing::info!("Web Bridge shutdown complete");
 
     Ok(())
@@ -3257,21 +4459,6 @@ mod tests {
     }
 
     #[test]
-    fn stream_demand_only_emits_aggregate_transitions() {
-        let clients = Mutex::new(vec![
-            ClientState::new("a".to_owned()),
-            ClientState::new("b".to_owned()),
-        ]);
-
-        let start = update_client_video_demand(&clients, "a", true, Some(15)).unwrap();
-        assert!(start.video_enabled);
-        assert!(update_client_video_demand(&clients, "b", true, Some(15)).is_none());
-        assert!(update_client_video_demand(&clients, "a", false, Some(15)).is_none());
-        let stop = update_client_video_demand(&clients, "b", false, Some(15)).unwrap();
-        assert!(!stop.video_enabled);
-    }
-
-    #[test]
     fn audio_drop_accounting_is_separate_from_video_drops() {
         let client = ClientState::new("client-a".to_owned());
 
@@ -3282,13 +4469,10 @@ mod tests {
     }
 
     #[test]
-    fn active_disconnect_stops_aggregate_demand() {
-        let clients = Mutex::new(vec![ClientState::new("a".to_owned())]);
-        assert!(update_client_video_demand(&clients, "a", true, Some(15)).is_some());
-
-        let stop = remove_client_and_stream_transition(&clients, "a").unwrap();
-        assert!(matches!(stop.command, StreamCommand::Stop));
-        assert!(!stop.video_enabled);
+    fn inactive_rover_cannot_become_browser_demand_target() {
+        let active = ActiveRoversStatus::new(vec!["rover-a".into()]);
+        assert!(active_rover_status_includes(&active, "rover-a"));
+        assert!(!active_rover_status_includes(&active, "rover-b"));
     }
 
     #[test]
@@ -3422,6 +4606,345 @@ fn is_target_active(shared_state: &SharedState, entity_id: &str) -> bool {
         .lock()
         .map(|status| status.active_rovers.contains(&entity_id.to_string()))
         .unwrap_or(false)
+}
+
+fn recording_consumer_id(recording_id: &str) -> String {
+    format!("recording:{recording_id}")
+}
+
+fn unix_now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(i64::MAX)
+}
+
+fn enqueue_recording_demand(
+    shared_state: &SharedState,
+    entity_id: &str,
+    consumer_id: &str,
+    enabled: bool,
+) -> Result<(), &'static str> {
+    let resources = [
+        MediaResource::Camera,
+        MediaResource::Jpeg,
+        MediaResource::Microphone,
+    ];
+    let transitions = shared_state
+        .media_demand_registry
+        .lock()
+        .map_err(|_| "media demand unavailable")
+        .map(|mut registry| {
+            resources
+                .into_iter()
+                .filter_map(|resource| {
+                    if enabled {
+                        registry.acquire(entity_id, consumer_id, resource)
+                    } else {
+                        registry.release_consumer_resource(consumer_id, resource)
+                    }
+                })
+                .collect::<Vec<_>>()
+        })?;
+    enqueue_media_transitions(&shared_state.targeted_media_control_queue, transitions);
+    Ok(())
+}
+
+fn rename_recording_demand(shared_state: &SharedState, request_id: &str, recording_id: &str) {
+    if let Ok(mut registry) = shared_state.media_demand_registry.lock() {
+        registry.rename_consumer(
+            &recording_consumer_id(request_id),
+            &recording_consumer_id(recording_id),
+        );
+    }
+}
+
+fn release_recording_demand(shared_state: &SharedState, recording_id: &str) {
+    let transitions = shared_state
+        .media_demand_registry
+        .lock()
+        .ok()
+        .map(|mut registry| registry.release_consumer(&recording_consumer_id(recording_id)))
+        .unwrap_or_default();
+    enqueue_media_transitions(&shared_state.targeted_media_control_queue, transitions);
+}
+
+fn apply_scheduled_effects(shared_state: &SharedState, effects: Vec<CoordinatorEffect>) {
+    for effect in effects {
+        match effect {
+            CoordinatorEffect::StartScheduled {
+                group_id,
+                generation,
+                entity_id,
+                consumer_id,
+                planned_end_ms,
+                command,
+            } => {
+                let failure = if !is_target_active(shared_state, &entity_id) {
+                    Some("target rover is not active")
+                } else if enqueue_recording_demand(shared_state, &entity_id, &consumer_id, true)
+                    .is_err()
+                {
+                    Some("scheduled media demand unavailable")
+                } else if shared_state
+                    .recording
+                    .enqueue_scheduled_command(
+                        command,
+                        ScheduledCommandGuard {
+                            group_id: group_id.clone(),
+                            generation,
+                            consumer_id: consumer_id.clone(),
+                            planned_end_ms,
+                        },
+                    )
+                    .is_err()
+                {
+                    // The scheduled consumer is generation-scoped, so this rollback
+                    // cannot release a browser/manual recording hold.
+                    let _ = enqueue_recording_demand(shared_state, &entity_id, &consumer_id, false);
+                    Some("recording command queue is full")
+                } else {
+                    shared_state
+                        .scheduled_coordinator
+                        .lock()
+                        .map(|mut coordinator| {
+                            coordinator.scheduled_start_enqueued(&group_id, generation)
+                        })
+                        .ok();
+                    None
+                };
+                if let Some(detail) = failure {
+                    let effects = shared_state
+                        .scheduled_coordinator
+                        .lock()
+                        .map(|mut coordinator| {
+                            coordinator
+                                .scheduled_start_enqueue_failed(&group_id, generation, detail)
+                        })
+                        .unwrap_or_default();
+                    apply_scheduled_effects(shared_state, effects);
+                }
+            }
+            CoordinatorEffect::AcquireMedia {
+                entity_id,
+                consumer_id,
+            } => {
+                if let Err(error) =
+                    enqueue_recording_demand(shared_state, &entity_id, &consumer_id, true)
+                {
+                    tracing::warn!(%error, entity_id, "failed to acquire scheduled recording demand");
+                }
+            }
+            CoordinatorEffect::ReleaseMedia { consumer_id } => {
+                if let Err(error) = enqueue_recording_demand(shared_state, "", &consumer_id, false)
+                {
+                    tracing::warn!(%error, "failed to release scheduled recording demand");
+                }
+            }
+            CoordinatorEffect::RecorderCommand(command) => {
+                let durable_manual_stop = shared_state
+                    .scheduled_coordinator
+                    .lock()
+                    .map(|coordinator| coordinator.is_durable_manual_stop(&command))
+                    .unwrap_or(false);
+                if durable_manual_stop {
+                    // Scheduler suppression is already durable. Wait for the
+                    // bounded recorder queue to make room instead of dropping
+                    // the exact Stop and diverging from that durable state.
+                    while shared_state
+                        .recording
+                        .enqueue_command(command.clone())
+                        .is_err()
+                    {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                } else if shared_state
+                    .recording
+                    .enqueue_command(command.clone())
+                    .is_err()
+                {
+                    tracing::warn!("recording command queue unavailable for scheduled intent");
+                    let effects = shared_state
+                        .scheduled_coordinator
+                        .lock()
+                        .map(|mut coordinator| {
+                            coordinator.recorder_command_enqueue_failed(&command)
+                        })
+                        .unwrap_or_default();
+                    apply_scheduled_effects(shared_state, effects);
+                }
+            }
+            CoordinatorEffect::ManualRecorderCommand(command) => {
+                let RecordingSessionAction::Start { entity_id, .. } = &command.action else {
+                    continue;
+                };
+                let entity_id = entity_id.clone();
+                let consumer_id = recording_consumer_id(&command.request_id);
+                if enqueue_recording_demand(shared_state, &entity_id, &consumer_id, true).is_err() {
+                    tracing::warn!(
+                        entity_id,
+                        "failed to acquire manual replacement media demand"
+                    );
+                    continue;
+                }
+                if shared_state.recording.enqueue_command(command).is_ok() {
+                    // The manual session begins only after terminal scheduled status
+                    // released the generation-scoped scheduled consumer.
+                } else {
+                    let _ = enqueue_recording_demand(shared_state, &entity_id, &consumer_id, false);
+                    tracing::warn!("recording command queue unavailable for manual replacement");
+                }
+            }
+            CoordinatorEffect::Feedback(feedback) => {
+                let _ = shared_state
+                    .schedule_feedback_spool
+                    .persist_blocking(feedback);
+            }
+            CoordinatorEffect::InvariantViolation { entity_id } => {
+                tracing::error!(
+                    entity_id,
+                    "recorder snapshot has multiple active sessions; refusing scheduled adoption"
+                );
+            }
+            CoordinatorEffect::ManualStartDeferred { entity_id } => {
+                tracing::info!(
+                    entity_id,
+                    "manual start deferred until scheduled recording finalizes"
+                );
+            }
+        }
+    }
+}
+
+fn rejected_recording_command(
+    request_id: &str,
+    reason_code: RecordingReasonCode,
+    detail: &str,
+) -> RecordingSessionCommandResult {
+    RecordingSessionCommandResult {
+        protocol_version: robo_rover_lib::RECORDING_PROTOCOL_VERSION,
+        request_id: request_id.to_owned(),
+        accepted: false,
+        recording_id: None,
+        reason_code: Some(reason_code),
+        detail: Some(detail.chars().take(256).collect()),
+    }
+}
+
+fn rejected_recording_clip_query(
+    request_id: &str,
+    reason_code: RecordingReasonCode,
+    detail: &str,
+) -> RecordingClipQueryResult {
+    RecordingClipQueryResult {
+        protocol_version: robo_rover_lib::RECORDING_PROTOCOL_VERSION,
+        request_id: request_id.to_owned(),
+        accepted: false,
+        clips: Vec::new(),
+        reason_code: Some(reason_code),
+        detail: Some(detail.chars().take(256).collect()),
+    }
+}
+
+fn rejected_recording_playback_ticket(
+    request_id: &str,
+    reason_code: RecordingReasonCode,
+    detail: &str,
+) -> Value {
+    serde_json::json!({
+        "protocol_version": robo_rover_lib::RECORDING_PROTOCOL_VERSION,
+        "request_id": request_id,
+        "accepted": false,
+        "reason_code": reason_code,
+        "detail": detail.chars().take(256).collect::<String>(),
+    })
+}
+
+fn rejected_recording_delete(
+    request_id: &str,
+    reason_code: RecordingReasonCode,
+    detail: &str,
+) -> RecordingDeleteResult {
+    RecordingDeleteResult {
+        protocol_version: robo_rover_lib::RECORDING_PROTOCOL_VERSION,
+        request_id: request_id.to_owned(),
+        accepted: false,
+        recording_id: None,
+        reason_code: Some(reason_code),
+        detail: Some(detail.chars().take(256).collect()),
+    }
+}
+
+fn emit_recording_timeout(
+    io: &SocketIo,
+    state: &SharedState,
+    request_id: &str,
+    pending: &PendingRequest,
+) {
+    let detail = "recording request timed out";
+    let (event, payload) = match pending.kind {
+        RequestKind::Command => (
+            "recording_session_command_result",
+            serde_json::to_value(rejected_recording_command(
+                request_id,
+                RecordingReasonCode::Timeout,
+                detail,
+            ))
+            .unwrap_or(Value::Null),
+        ),
+        RequestKind::ClipList => (
+            "recording_clip_list_result",
+            serde_json::to_value(rejected_recording_clip_query(
+                request_id,
+                RecordingReasonCode::Timeout,
+                detail,
+            ))
+            .unwrap_or(Value::Null),
+        ),
+        RequestKind::PlaybackTicket => (
+            "recording_playback_ticket_result",
+            rejected_recording_playback_ticket(request_id, RecordingReasonCode::Timeout, detail),
+        ),
+        RequestKind::Delete => (
+            "recording_delete_result",
+            serde_json::to_value(rejected_recording_delete(
+                request_id,
+                RecordingReasonCode::Timeout,
+                detail,
+            ))
+            .unwrap_or(Value::Null),
+        ),
+    };
+    emit_recording_to_owner(io, state, &pending.socket_id, event, payload);
+}
+
+fn emit_recording_event(socket: &SocketRef, event: &'static str, payload: impl Serialize) {
+    if let Err(error) = socket.emit(event, payload) {
+        tracing::debug!(%error, event, "recording event delivery failed");
+    }
+}
+
+fn emit_recording_to_owner(
+    io: &SocketIo,
+    state: &SharedState,
+    owner: &str,
+    event: &'static str,
+    payload: Value,
+) {
+    if !state.session_registry.is_valid(owner) {
+        return;
+    }
+    let Some(namespace) = io.of("/") else {
+        return;
+    };
+    let Ok(socket_id) = owner.parse() else {
+        return;
+    };
+    if let Some(socket) = namespace.get_socket(socket_id) {
+        socket.emit(event, payload).ok();
+    }
 }
 
 fn is_walkie_active(shared_state: &SharedState, entity_id: &str) -> bool {

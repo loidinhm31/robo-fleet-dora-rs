@@ -8,6 +8,7 @@ description = "Web bridge node via SocketIO with video streaming"
 # Workspace dependencies
 dora-node-api = { workspace = true }
 dora-core = { workspace = true }
+libc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 eyre = { workspace = true }
@@ -15,6 +16,7 @@ uuid = { workspace = true }
 
 # SocketIO server dependencies
 tokio = { version = "1.24.2", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
 socketioxide = "0.12"
 axum = "0.7"
 tower = { version = "0.4", features = ["util"] }
@@ -37,3 +39,6 @@ governor = "0.6"
 mongodb = "2"
 rand = "0.8"
 dotenv = "0.15"
+
+[dev-dependencies]
+tempfile = "3"

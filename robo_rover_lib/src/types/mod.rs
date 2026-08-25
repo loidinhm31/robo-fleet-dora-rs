@@ -7,6 +7,10 @@ pub mod fleet_types;
 pub mod nlu_types;
 mod pcm_frame_packet;
 pub mod performance_types;
+pub mod recording_occurrence_types;
+pub mod recording_schedule_types;
+pub mod recording_schedule_validation;
+pub mod recording_types;
 pub mod rover_types;
 pub mod speech_types;
 pub mod tts_types;
@@ -21,6 +25,10 @@ pub use fleet_types::*;
 pub use nlu_types::*;
 pub use pcm_frame_packet::*;
 pub use performance_types::*;
+pub use recording_occurrence_types::*;
+pub use recording_schedule_types::*;
+pub use recording_schedule_validation::*;
+pub use recording_types::*;
 pub use rover_types::*;
 use serde::{Deserialize, Serialize};
 pub use speech_types::*;
@@ -29,6 +37,10 @@ pub use video_types::*;
 
 #[cfg(test)]
 mod pcm_frame_packet_tests;
+#[cfg(test)]
+mod recording_types_tests;
+#[cfg(test)]
+mod recording_schedule_types_tests;
 #[cfg(test)]
 mod speech_types_tests;
 

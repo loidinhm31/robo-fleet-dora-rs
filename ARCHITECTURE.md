@@ -68,6 +68,7 @@ robo-rover-dora/
 │   ├── central_speech_recognizer/  # Central Sherpa VAD/offline STT runtime
 │   ├── command_parser/             # NLU pattern matching
 │   ├── kokoro_tts/                 # Legacy orchestra TTS package retained in-tree
+│   ├── recording_scheduler/        # Durable recording schedule control plane
 │   ├── zenoh_bridge/               # Orchestra Zenoh bridge (orchestra-only)
 │   └── orchestra-dataflow.yml      # Orchestra Dora dataflow
 │
@@ -699,6 +700,189 @@ All externally visible failures use a bounded `VoiceReasonCode` plus optional
 sanitized detail of at most 256 characters. Unknown enum values, non-finite
 floats, out-of-range config, malformed UUIDs, absolute model paths, and invalid
 state/source combinations are rejected before publication.
+
+### Manual and Scheduled Fleet Media Recording
+
+Manual recording is an Orchestra-side concern. The completed Phase 2
+`orchestra/media_recorder` crate is a dedicated Dora node that consumes the
+JPEG and rover-microphone PCM outputs already validated by `orchestra-bridge`;
+it does not add Zenoh topics or change rover capture. The recorder may run one
+session per rover concurrently, up to a configured fleet-wide limit. Each start
+command pins its `entity_id` until finalization. The planned
+`orchestra/recording_scheduler` node adds durable wall-clock scheduling without
+becoming a second media-control or FFmpeg authority.
+
+```mermaid
+flowchart LR
+    Rover["Rover camera and microphone"]
+    RoverBridge["Rover Zenoh bridge"]
+    OrchestraBridge["Orchestra Zenoh bridge<br/>validate and fan out"]
+    Recorder["media-recorder<br/>per-rover FFmpeg session"]
+    Scheduler["recording-scheduler<br/>recurrence and durable occurrence state"]
+    Mongo["MongoDB<br/>schedules, occurrences, reconciliation state"]
+    Store["Allowlisted recording root<br/>partial then ready MP4"]
+    WebBridge["web-bridge<br/>auth, ownership coordinator, tickets, HTTP Range"]
+    UI["Web and Tauri UI<br/>schedule, record, list, play"]
+
+    Rover --> RoverBridge
+    RoverBridge -->|"JPEG v1 and S16LE PCM v1"| OrchestraBridge
+    OrchestraBridge -->|"Dora JPEG and microphone PCM"| Recorder
+    UI -->|"authenticated Socket.IO control/query"| WebBridge
+    WebBridge -->|"authenticated schedule CRUD/query"| Scheduler
+    Scheduler -->|"coalesced scheduled-session intent"| WebBridge
+    WebBridge -->|"recorder result/status feedback"| Scheduler
+    Scheduler <-->|"CAS state and durable intent"| Mongo
+    WebBridge -->|"Dora command/query"| Recorder
+    Recorder -->|"status and clip metadata"| WebBridge
+    WebBridge -->|"targeted aggregate camera, JPEG, and mic demand"| OrchestraBridge
+    OrchestraBridge -->|"existing targeted control topics"| RoverBridge
+    Recorder -->|"H.264 and AAC MP4"| Store
+    Store -->|"ticketed byte-range response"| WebBridge
+    WebBridge -->|"status, catalog, playback"| UI
+```
+
+Recording invariants:
+
+- `recording_scheduler` is the single writer for schedule, materialized
+  occurrence, retry, suppression, and reconciliation state. It never emits
+  rover camera/audio commands and never starts FFmpeg directly.
+- `web_bridge` remains the sole per-rover media-demand and recording-session
+  coordinator. Scheduled, manual, and browser consumers acquire distinct
+  ownership; only aggregate `0 -> 1` and `1 -> 0` media transitions leave it.
+- Overlapping active occurrences for one rover form one recording group. The
+  first owner starts one session, intermediate owner changes do not restart it,
+  and only the last owner ends it. The earliest occurrence, then occurrence ID,
+  deterministically chooses the group's resolved output directory.
+- Recurrence preserves local wall-clock intent in an IANA timezone while every
+  occurrence stores Unix-millisecond bounds. DST folds choose the earlier
+  instant; gaps shift to the first valid local instant; elapsed duration remains
+  unchanged. Deterministic occurrence/request IDs make replay idempotent.
+- Schedule updates use revision compare-and-set. Any authenticated user may
+  view, create, update, enable, disable, or delete schedules in v1; scheduler
+  RBAC is deferred. The audit actor comes from server-validated session claims,
+  never browser-supplied fields.
+- Startup and reconnect reconcile durable desired owners with recorder status
+  before issuing starts. A matching active recorder session is adopted; a blind
+  duplicate start is forbidden. Transient failures retry after 1, 2, 4, 8, and
+  16 seconds, then every 30 seconds until the planned window ends. Retry alerts
+  are explicitly outside v1 scope.
+- Terminal occurrence/audit documents expire after 90 days; active and other
+  nonterminal documents never receive a TTL. One logical occurrence may retain
+  multiple failed, partial, and recovered clip-attempt references after a crash.
+- A manual stop suppresses the current scheduled group until the next schedule
+  boundary while leaving schedules enabled. Scheduled release never stops a
+  manual session or browser demand. A manual start while a scheduled group is
+  active suppresses that group, finalizes its clip, then starts the requested
+  manual session; it never silently adopts the scheduled clip.
+- A missing scheduler process makes Orchestra unhealthy. An alive scheduler
+  blocked on Mongo or reconciliation reports scheduling as degraded while
+  manual rover control and manual recording remain healthy and available.
+- `RECORDING_ROOT` is required and configured by the Orchestra deployment. It
+  must resolve to a dedicated existing directory below `/home`, not `/home`
+  itself. Browser input is a normalized relative subdirectory and never an
+  arbitrary absolute host path.
+- `FFMPEG_PATH` and `FFPROBE_PATH` are optional overrides; if unset, the
+  recorder resolves `ffmpeg` and `ffprobe` from `PATH`.
+  `RECORDING_TIMESTAMP_ENABLED` is a deployment-owned boolean that defaults to
+  enabled and may disable the saved-file timestamp without changing capture.
+- `RECORDING_MAX_CONCURRENT`, `RECORDING_MAX_DURATION_SECONDS`,
+  `RECORDING_MAX_OUTPUT_BYTES`, `RECORDING_STARTUP_TIMEOUT_SECONDS`,
+  `RECORDING_FINALIZATION_TIMEOUT_SECONDS`, `RECORDING_MIN_FREE_BYTES`,
+  `RECORDING_QUEUE_CAPACITY`, `RECORDING_AUDIO_SAMPLE_RATE`,
+  `RECORDING_AUDIO_CHANNELS`, and `RECORDING_VIDEO_FPS` bound runtime
+  concurrency, storage, and encoder behavior.
+- The recorder keys active sessions by `entity_id`; later fleet-selection
+  changes cannot retarget a running session. Duplicate starts for one rover are
+  rejected, while different rovers may record concurrently within the limit.
+- `web-bridge` owns an in-memory, per-rover demand registry for camera capture,
+  JPEG publication, and microphone capture. Browser viewers and recording
+  sessions acquire independent demands; only aggregate zero-to-one and
+  one-to-zero transitions reach a rover. A recording stop or failure cannot
+  disable media still required by a viewer or another consumer.
+- Recorder demand uses target-aware control envelopes. `orchestra-bridge`
+  validates the requested `entity_id` against the active fleet and routes it
+  explicitly; recording never relies on the mutable selected-rover fallback.
+  A session remains `starting` until valid media arrives and fails with a
+  bounded timeout that also releases its demand.
+- JPEG frames remain in bounded memory and flow directly to an owned FFmpeg
+  child through anonymous pipes. Individual JPEG files are never created. Rover
+  microphone S16LE is the only audio source in the first release; timestamp
+  gaps are represented by inserted silence so one missing input does not stall
+  finalization. The recorder uses one bounded FIFO queue for video and audio:
+  when full, a video frame replaces the oldest queued video, or the oldest
+  queued audio if no video is waiting; total capacity stays fixed and the live
+  paths still see no backpressure.
+- FFmpeg writes an encoded `<recording_id>.mp4.partial` under `.partial/` and
+  the recorder atomically renames it to a collision-free `<recording_id>.mp4`
+  only after both inputs close and the child exits successfully. The adjacent
+  manifest is written as `<recording_id>.manifest.json` in the final directory.
+  Only finalized clips are playable. Stale partials are reported and handled
+  only within the configured root.
+- H.264 video plus AAC audio in MP4 is the browser playback contract. Capture
+  timestamps establish each session timeline; regressions, resets, dropped
+  video, inserted silence, and encoder failures remain observable in status and
+  clip metadata. When configured, the recorder's existing FFmpeg encode burns
+  `YYYY-MM-DD HH:MM:SS UTC` into each saved MP4 video frame, advancing from the
+  pinned UTC capture-time origin. The live JPEG feed and detection overlays
+  remain byte-for-byte outside that filter path.
+- Recorder media queues are bounded and cannot backpressure the live web,
+  tracking, speech, or control paths. Duration, concurrent-session, free-space,
+  and output-size limits fail closed for new starts without stopping other
+  Orchestra nodes.
+- The recorder owns clip discovery and metadata. `web-bridge` owns external
+  signed-in session checks, request correlation, short-lived playback
+  tickets, and HTTP byte-range delivery. Browser-visible records use opaque clip
+  IDs and relative display paths; absolute host paths never leave the server.
+- Finalized clip deletion is a recorder-owned permanent operation exposed as a
+  versioned Dora and Socket.IO request/result. `web-bridge` authenticates and
+  rate-limits the request, but never deletes files. Immediately before unlink,
+  the recorder revalidates the opaque recording ID, allowlisted relative path,
+  regular-file/no-symlink status, manifest-to-MP4 identity, and containment
+  beneath `RECORDING_ROOT`. Active recordings, partial files, malformed pairs,
+  and missing clips are rejected; successful deletion removes the finalized
+  MP4 and adjacent manifest, fsyncs the parent directory, and causes
+  `web-bridge` to revoke every playback ticket for that recording ID. Unix
+  deletion walks from the recording-root descriptor with no-follow directory
+  opens and uses descriptor-relative rename/unlink operations. A catalog scan
+  completes any recorder-owned hidden delete transaction left by interruption.
+- The recording UI lives in the separately versioned
+  `/mnt/data/ws/sharing/glean-oak/embed-app/robo-control-app` checkout. Shared UI
+  components serve both web and Tauri shells. One recording store is hoisted
+  above the Control/Recordings view switch, so CameraViewer start/stop controls,
+  its elapsed `REC` indicator, and the Recordings-tab active-count badge share
+  authoritative state across tab changes. Browser viewing and recorder
+  sessions remain separate consumers in the aggregate per-rover demand
+  registry; neither opens another camera nor releases the other's camera/JPEG
+  hold. The browser never uses `MediaRecorder`, records the live JPEG stream,
+  assembles media files locally, or opens `/dev/video*`.
+- Phase 5 adds a third shared `SCHEDULER` view. It is scoped to the currently
+  selected rover and uses the authenticated `recording_schedule_query` and
+  `recording_schedule_command` Socket.IO contracts for schedule CRUD. Create,
+  update, enable/disable, and delete carry request IDs; mutations also carry
+  the schedule's expected revision where applicable. The client displays
+  pending state but does not optimistically persist a schedule: command
+  results and follow-up snapshots are authoritative. A compare-and-set
+  conflict replaces the stale record with the returned current revision and
+  prompts the user to reapply their edit.
+- The scheduler publishes occurrence lifecycle updates and readiness to the
+  web bridge. The bridge validates them and broadcasts
+  `recording_occurrence_status` and `recording_scheduler_status` only to
+  authenticated clients. The selected-rover store discards other-rover
+  occurrences, applies occurrence updates monotonically by `updated_at_ms`,
+  and clears pending/local state before an authoritative resync on reconnect,
+  authentication loss, or rover selection change. Degraded scheduler status
+  disables scheduler admission while leaving manual recording available.
+- Phase 3 completes the backend control/query/playback wiring: authenticated and
+  rate-limited Socket.IO handlers route commands and catalog lookups through
+  Dora by request ID, replay cached session status on reconnect, and maintain
+  recorder media demand independently of the initiating browser. Playback uses
+  short-lived opaque tickets and a streaming `GET`/`HEAD` route with one-byte
+  range support; the server opens each path component with no-follow semantics
+  before rechecking MP4 and manifest identity. `RECORDING_CONTROL_QUEUE_CAPACITY`
+  and `RECORDING_REQUEST_TIMEOUT_SECONDS` bound bridge control state.
+- Phase 4 owns deployment integration around this node, and Phases 5-6 own UI
+  consumption and end-to-end rollout. Phase 2 provides the recorder, storage
+  layout, and safe FFmpeg finalization path.
 
 ## References
 

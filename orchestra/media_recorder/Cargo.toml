@@ -1,0 +1,20 @@
+[package]
+name = "media_recorder"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crossbeam-channel = { workspace = true }
+dora-node-api = { workspace = true }
+eyre = { workspace = true }
+libc = { workspace = true }
+os_pipe = { workspace = true }
+robo_rover_lib = { path = "../../robo_rover_lib" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
